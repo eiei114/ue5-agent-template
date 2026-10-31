@@ -6,11 +6,12 @@
 添付または許可済みprivate経路で本人が受け取れる状態を確認する。ローカルpathは納品URLではない。
 Multicaでの納品はファイル添付＋最終comment1回。親へのACK/agent mentionは不要。公開/SNSの許可を推定しない。
 
-## GitHub配置（未実行）
+## GitHub配置
 
 ownerがowner/repo・公開範囲・push対象を確定してから、許可された既存GitHub service連携で実行。既存repoがあればdefault branch/history/dirty差分を保護する。新repo名を推定して作らない。force-pushしない。
 テンプレート公開前はtracked path一覧を再点検し、Production、Out、資格情報、素材・派生uasset、ライセンス文書の私用情報がないことを確認する。.gitignoreだけで防止できたと主張しない。
-本テンプレートはコード/文書のOSSライセンスを勝手に選ばない。ownerのライセンス指定がない間は外部配布を保留。
+本テンプレートの指定先 `eiei114/ue5-agent-template`・public作成/pushは2026-11-01のowner包括承認の範囲内。指定先への既存gh・通常git pushを利用できる。他repo、新認証、force-pushへの許可ではない。
+コード/文書のOSSライセンスは勝手に選ばない。public配置と第三者への再配布許諾は別で、第三者素材の配布制限も維持する。
 
 ## 受入
 

@@ -25,7 +25,18 @@ AIが短い映像または小さな鑑賞シーンを安全に作るための**�
 `templates/` の記録を新規制作の `Out/run_<runid>/` へ複製して記入する。
 `Production/` は生成先の空プレースホルダ。通常Gitには制作物を入れない。
 
-## bundleから開始（GitHub配置前の引渡し）
+## GitHubから開始
+
+```text
+git clone https://github.com/eiei114/ue5-agent-template.git
+cd ue5-agent-template
+git rev-parse HEAD
+```
+
+共通基盤＋ジャンル差分＋用途部品を1リポジトリで管理する方針は [構造と更新](docs/07-architecture.md) を参照。
+現時点の実装は文書テンプレート。ジャンル別生成器・オンライン機能・UE実機smokeは未実装／未検証であり、公開済みと実行可能を混同しない。
+
+## bundleから開始（オフライン引渡し）
 
 ```text
 git clone ue5-agent-template.bundle ue5-agent-template
@@ -33,4 +44,4 @@ cd ue5-agent-template
 git status --short
 ```
 
-GitHub URL・private/public・pushの許可は別に確定する。未作成URLを納品実績にしない。
+本リポジトリのpublic作成・pushはowner承認済み。他作品の公開・SNS・課金・認証には許可を流用しない。
