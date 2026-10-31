@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "issue_id": null,
+  "run_id": null,
+  "source_commit_or_sha256": null,
+  "host": null,
+  "ue_version": null,
+  "requested_model_effort": null,
+  "effective_model_effort": null,
+  "lease_released_receipt": null,
+  "artifacts": [],
+  "artifact_required_fields": ["filename", "bytes", "sha256", "kind", "version", "test_receipt", "delivery_receipt"],
+  "rights_receipt": null,
+  "qa_receipt": null,
+  "unverified_scope": ["populate before delivery"],
+  "github_url": null,
+  "github_visibility": null,
+  "publication_authorized": false,
+  "owner_accepted": false
+}
