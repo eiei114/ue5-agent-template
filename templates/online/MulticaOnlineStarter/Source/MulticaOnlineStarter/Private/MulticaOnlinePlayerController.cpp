@@ -4,7 +4,12 @@
 
 void AMulticaOnlinePlayerController::RequestSampleScoreIncrement(const int32 Amount)
 {
-	const int32 SafeAmount = FMath::Clamp(Amount, 1, 5);
+	if (Amount < 1)
+	{
+		return;
+	}
+
+	const int32 SafeAmount = FMath::Min(Amount, 5);
 	if (HasAuthority())
 	{
 		ServerRequestSampleScoreIncrement_Implementation(SafeAmount);
@@ -29,6 +34,8 @@ void AMulticaOnlinePlayerController::ServerRequestSampleScoreIncrement_Implement
 
 	if (AMulticaOnlineGameState* OnlineGameState = GetWorld() ? GetWorld()->GetGameState<AMulticaOnlineGameState>() : nullptr)
 	{
-		OnlineGameState->SetSampleScoreFromServer(OnlineGameState->GetSampleScore() + Amount);
+		const int32 CurrentScore = OnlineGameState->GetSampleScore();
+		const int32 NextScore = CurrentScore > MAX_int32 - Amount ? MAX_int32 : CurrentScore + Amount;
+		OnlineGameState->SetSampleScoreFromServer(NextScore);
 	}
 }

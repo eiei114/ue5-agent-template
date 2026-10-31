@@ -49,11 +49,17 @@ private:
 	EOperation ActiveOperation = EOperation::None;
 	bool bOperationPending = false;
 	bool bOperationTimedOut = false;
+	bool bReturnToMenuAfterDestroy = false;
+	bool bDestroyOperationCanSucceed = true;
 	FString PendingMapPackagePath;
+	FString PendingDestroySuccessMessage;
+	FString PendingDestroyFailureMessage;
 	float PendingTimeoutSeconds = 15.0f;
 
 	void BeginOperation(EOperation Operation, float TimeoutSeconds);
 	void FinishOperation(bool bSucceeded, const FString& Message);
+	void StartDestroyOperation(bool bReturnToMenu, bool bOperationSucceededAfterDestroy, const FString& SuccessMessage, const FString& FailureMessage);
+	void FinishDestroyOperation(bool bWasSuccessful);
 	void HandleOperationTimeout();
 	void BroadcastImmediateFailure(const FString& Message);
 

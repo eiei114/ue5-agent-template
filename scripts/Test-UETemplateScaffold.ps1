@@ -5,6 +5,8 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $productionRoot = Join-Path $repoRoot 'Production'
 $generator = Join-Path $PSScriptRoot 'New-UETemplateScaffold.ps1'
+$initialCheckoutStatus = @(& git -C $repoRoot status --porcelain --untracked-files=all)
+if ($LASTEXITCODE -ne 0) { throw 'Could not record the developer checkout status before testing.' }
 $testId = [Guid]::NewGuid().ToString('N')
 $fixtureRoot = Join-Path $productionRoot ('.scaffold-test-' + $testId)
 $fixtureEngine = Join-Path $fixtureRoot 'EngineRoot'
@@ -58,6 +60,30 @@ try {
 		Write-FixtureJson (Join-Path $fixtureEngine $plugin.RelativePath) ("{`"FileVersion`":3,`"Version`":1,`"VersionName`":`"$($plugin.Version)`"}")
 	}
 
+	$dirtyTemplateRoot = Join-Path $fixtureRoot 'DirtyTemplate'
+	$templateBranch = (& git -C $repoRoot branch --show-current).Trim()
+	if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($templateBranch)) {
+		throw 'Could not determine the template branch for the isolated dirty-template fixture.'
+	}
+	& git -C $repoRoot clone --quiet --local --no-hardlinks --no-tags --single-branch --branch $templateBranch $repoRoot $dirtyTemplateRoot
+	if ($LASTEXITCODE -ne 0) { throw 'Could not create the isolated dirty-template repository fixture.' }
+	[System.IO.Directory]::CreateDirectory((Join-Path $dirtyTemplateRoot 'Production')) | Out-Null
+	$dirtyMarker = Join-Path $dirtyTemplateRoot 'DirtyTemplate.marker'
+	[System.IO.File]::WriteAllText($dirtyMarker, 'fixture only', [System.Text.UTF8Encoding]::new($false))
+	$dirtyGenerator = Join-Path $dirtyTemplateRoot 'scripts\New-UETemplateScaffold.ps1'
+	$dirtyProjectName = "Dirty_$testId"
+	$dirtyOutput = Join-Path (Join-Path $dirtyTemplateRoot 'Production') "${dirtyProjectName}_dirty-rejected"
+	$dirtyFailure = ''
+	try {
+		& $dirtyGenerator -Recipe 'spectator-explore' -ProjectName $dirtyProjectName -RunId 'dirty-rejected' -EngineRoot $fixtureEngine -ProjectDiff @() | Out-Null
+	} catch {
+		$dirtyFailure = $_.Exception.Message
+	}
+	Assert-True ($dirtyFailure.Contains('template working tree is dirty')) 'dirty template is rejected when AllowDirtyTemplate is omitted'
+	Assert-True (-not (Test-Path -LiteralPath $dirtyOutput)) 'dirty-template rejection creates no output project'
+	Assert-True ([System.IO.File]::ReadAllText($dirtyMarker) -ceq 'fixture only') 'dirty-template rejection leaves the isolated fixture marker unchanged'
+	Write-Output 'PASS: dirty template is rejected using an isolated fixture without touching the developer checkout'
+
 	$projectName = $projectPrefix
 	$diff = @('Map: /Game/Test/Maps/L_Set', 'Exposure: capture preset A')
 	Invoke-Generator 'spectator-explore' $projectName "$testId-a" $diff
@@ -65,7 +91,15 @@ try {
 	$firstOutput = $outputPaths[0]
 	$secondOutput = $outputPaths[1]
 	Assert-True (Test-Path -LiteralPath (Join-Path $firstOutput 'TP_FirstPerson.uproject')) 'game recipe copies the selected engine project template'
+	$firstDescriptor = [System.IO.File]::ReadAllText((Join-Path $firstOutput 'TP_FirstPerson.uproject')) | ConvertFrom-Json
+	foreach ($pluginName in @('MovieRenderPipeline', 'OnlineSubsystem', 'OnlineSubsystemNull', 'OnlineSubsystemUtils', 'MulticaOnlineStarter')) {
+		$pluginEntries = @($firstDescriptor.Plugins | Where-Object { $_.Name -eq $pluginName })
+		Assert-True ($pluginEntries.Count -eq 1 -and $pluginEntries[0].Enabled -eq $true) "game recipe enables $pluginName in the project descriptor"
+	}
 	Assert-True (Test-Path -LiteralPath (Join-Path $firstOutput 'Plugins\MulticaOnlineStarter\MulticaOnlineStarter.uplugin')) 'game recipe includes the Null/LAN plugin'
+	$starterDescriptor = [System.IO.File]::ReadAllText((Join-Path $firstOutput 'Plugins\MulticaOnlineStarter\MulticaOnlineStarter.uplugin')) | ConvertFrom-Json
+	$nullPluginEntries = @($starterDescriptor.Plugins | Where-Object { $_.Name -eq 'OnlineSubsystemNull' })
+	Assert-True ($nullPluginEntries.Count -eq 1 -and $nullPluginEntries[0].Enabled -eq $true) 'online starter plugin enables OnlineSubsystemNull'
 	$pluginConfig = [System.IO.File]::ReadAllText((Join-Path $firstOutput 'Plugins\MulticaOnlineStarter\Config\DefaultEngine.ini'))
 	Assert-True ($pluginConfig.Contains('DefaultPlatformService=Null')) 'online plugin selects the Null provider'
 	Assert-True (-not $pluginConfig.Contains('GlobalDefaultGameMode')) 'online plugin does not override a template-specific GameMode/Pawn'
@@ -86,6 +120,9 @@ try {
 	Invoke-Generator 'vertical-loop' $loopProjectName "$testId-a" @('capture: 1080x1920')
 	$loopOutput = $outputPaths[2]
 	Assert-True (Test-Path -LiteralPath (Join-Path $loopOutput 'TP_BlankBP.uproject')) 'video-only recipe copies the blank engine template'
+	$loopDescriptor = [System.IO.File]::ReadAllText((Join-Path $loopOutput 'TP_BlankBP.uproject')) | ConvertFrom-Json
+	$movieRenderPlugins = @($loopDescriptor.Plugins | Where-Object { $_.Name -eq 'MovieRenderPipeline' })
+	Assert-True ($movieRenderPlugins.Count -eq 1 -and $movieRenderPlugins[0].Enabled -eq $true) 'video-only recipe enables MovieRenderPipeline in the project descriptor'
 	Assert-True (Test-Path -LiteralPath (Join-Path $loopOutput 'Recipe\Capture.md')) 'video-only recipe has capture instructions'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $loopOutput 'Recipe\Play.md'))) 'video-only recipe does not add a play delta'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $loopOutput 'Plugins\MulticaOnlineStarter'))) 'video-only recipe does not add online gameplay code'
@@ -112,4 +149,7 @@ try {
 	if (Test-Path -LiteralPath $fixtureRoot -PathType Container) {
 		Remove-Item -LiteralPath $fixtureRoot -Recurse -Force
 	}
+	$finalCheckoutStatus = @(& git -C $repoRoot status --porcelain --untracked-files=all)
+	if ($LASTEXITCODE -ne 0) { throw 'Could not verify the developer checkout status after testing.' }
+	Assert-True (($finalCheckoutStatus -join "`n") -ceq ($initialCheckoutStatus -join "`n")) 'test suite leaves the developer checkout unchanged'
 }

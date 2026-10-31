@@ -1,6 +1,6 @@
 # 少人数オンライン基盤の方式比較
 
-調査・照合日: 2026-11-01。UE公式ページはUE 5.8 documentationを参照。料金・provider契約は利用時に再確認する。公式仕様、費用の推定、当hostの実測は混ぜない。
+調査・照合日: 2026-11-01 (JST)。UE公式ページはUE 5.8 documentationを参照。料金・provider契約は利用時に再確認する。公式仕様、費用の推定、当hostの実測は混ぜない。
 
 ## 比較と採用方針
 
@@ -43,7 +43,7 @@ UE docs describe capability and configuration, not this project's connection suc
 
 | 日付 | 対象 | 結果 | 制約 |
 |---|---|---|---|
-| 2026-11-01 | Windows host preflight / installed UE / plugins | UE 5.8.4とNull/EOS/Steam OSS plugin filesを確認。認証済みEOS/Steam accountやinternet sessionを試していない | インストール存在はcompile/PIE/NAT成功を示さない。今回の正確なbuild/PIE結果は最終Issue commentとQA記録を参照 |
-| 2026-11-01 | UE Editor target compile（`TP_FirstPersonEditor Win64 Development`） | PASS。UE 5.8.4 / CL 58902052、MSVC 14.44 + Windows SDK 10.0.22621、37 actions、58.62秒。TP_FirstPersonとMulticaOnlineStarterのC++をcompile/link | 260文字path制限に対してcheckoutを一時Q: driveに割り当てて実行。これはEditor buildでありPIE/ゲーム動作の合格ではない |
-| 2026-11-01 | 2プロセスNull/LAN standalone接続probe | Unverified。23.9秒のprobeでUE game processを2つ起動したが、world/NetDriver listeningに到達せず、connect assertionなし。ログにあったTrace control portの`listening`はgame listenerではない。shared project shader/DDC初期化が続いた。所有processと一時Q: mappingを回収 | PIEの2-client、session create/find/join/leave、score/player-count replication、disconnect/reconnect、MRQ/ffprobe/visualは未検証。UI automationなしでPIEを実測したとは扱わない |
-| 2026-11-01 | `scripts/Test-UETemplateScaffold.ps1` | PASS。game+capture/official template/plugin/deterministic lock、capture-only recipe、path traversal拒否、既存出力保護の4 assertion groups | 合成Engine fixtureでのgenerator test。実UE assets/Editor map生成の検査ではない |
+| 2026-11-01 (JST) | Windows host preflight / installed UE / plugins | UE 5.8.4とNull/EOS/Steam OSS plugin filesを確認。認証済みEOS/Steam accountやinternet sessionを試していない | インストール存在はcompile/PIE/NAT成功を示さない。今回の正確なbuild/PIE結果は最終Issue commentとQA記録を参照 |
+| 2026-11-01 (JST) | UE Editor target compile（`TP_FirstPersonEditor Win64 Development`） | PASS。UE 5.8.4 / CL 58902052、MSVC 14.44 + Windows SDK 10.0.22621、37 actions、58.62秒。TP_FirstPersonとMulticaOnlineStarterのC++をcompile/link | 260文字path制限に対してcheckoutを一時Q: driveに割り当てて実行。これはEditor buildでありPIE/ゲーム動作の合格ではない |
+| 2026-11-01 (JST) | 2プロセスNull/LAN standalone接続probe | Unverified。23.9秒のprobeでUE game processを2つ起動したが、world/NetDriver listeningに到達せず、connect assertionなし。ログにあったTrace control portの`listening`はgame listenerではない。shared project shader/DDC初期化が続いた。所有processと一時Q: mappingを回収 | PIEの2-client、session create/find/join/leave、score/player-count replication、disconnect/reconnect、MRQ/ffprobe/visualは未検証。UI automationなしでPIEを実測したとは扱わない |
+| 2026-11-01 (JST) | `scripts/Test-UETemplateScaffold.ps1` | PASS。game+capture/official template/plugin/deterministic lock、capture-only recipe、path traversal拒否、既存出力保護の4 assertion groups | 合成Engine fixtureでのgenerator test。実UE assets/Editor map生成の検査ではない |

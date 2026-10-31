@@ -23,7 +23,8 @@ asset. It is not an EOS/Steam-ready or internet-NAT-tested product.
    `RequestSampleScoreIncrement`, or enter `MulticaRequestScoreIncrement 1`
    in the local player's console. The client RPC is sent by its owned
    `PlayerController`; only server code changes `AMulticaOnlineGameState`.
-4. From a menu/Blueprint, call `HostListenServer("/Game/Maps/L_Lobby")` on
+4. From a menu/Blueprint, call `HostListenServer` with the package path of the
+   map selected or created in step 3 (for example, `/Game/Maps/L_Lobby`) on
    `UMulticaOnlineSessionSubsystem` on one player. On another, call
    `FindAndJoinFirstLanSession()`. Bind `OnOperationCompleted` and preserve
    failures/timeouts in the project's QA record.
@@ -44,6 +45,9 @@ attempts cleanup after a late success, and rejects another operation until that
 callback arrives. Provider calls that never complete require closing/restarting
 the test project through its own verified cleanup path; do not infer success or
 delete another run's lease.
+
+LAN sessions advertise an identifier derived from the active UE project name;
+search results with a different identifier are not joined.
 
 The plugin's default config is Null/LAN. Do not switch it to EOS or Steam and
 call this helper a working adapter: their login, product/AppID, invitation,

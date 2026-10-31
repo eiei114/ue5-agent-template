@@ -1,14 +1,62 @@
 #include "MulticaOnlineSessionSubsystem.h"
 
+#include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
+#include "Misc/App.h"
 #include "OnlineSessionSettings.h"
 #include "OnlineSubsystem.h"
+#include "OnlineSubsystemUtils.h"
 #include "TimerManager.h"
 
 namespace
 {
 	const FName GameSessionName(TEXT("GameSession"));
+	const FName ProjectIdentifierSetting(TEXT("MulticaProjectIdentifier"));
+
+	FString GetProjectIdentifier()
+	{
+		const FString ProjectName(FApp::GetProjectName());
+		return FString::Printf(TEXT("eiei114.ue5-agent-template:%s"), *ProjectName);
+	}
+
+	IOnlineSubsystem* GetOnlineSubsystemForWorld(UWorld* World)
+	{
+		IOnlineSubsystemUtils* Utils = Online::GetUtils();
+		return World && Utils ? IOnlineSubsystem::Get(Utils->GetOnlineIdentifier(World)) : nullptr;
+	}
+
+	void RegisterDeferredCreateCleanup(const IOnlineSessionPtr& SessionInterface)
+	{
+		const IOnlineSessionPtr SessionForCleanup = SessionInterface;
+		const TSharedRef<FDelegateHandle> CleanupHandle = MakeShared<FDelegateHandle>();
+		*CleanupHandle = SessionForCleanup->AddOnCreateSessionCompleteDelegate_Handle(
+			FOnCreateSessionCompleteDelegate::CreateLambda(
+				[SessionForCleanup, CleanupHandle](FName SessionName, const bool bWasSuccessful)
+				{
+					SessionForCleanup->ClearOnCreateSessionCompleteDelegate_Handle(*CleanupHandle);
+					if (bWasSuccessful)
+					{
+						SessionForCleanup->DestroySession(SessionName);
+					}
+				}));
+	}
+
+	void RegisterDeferredJoinCleanup(const IOnlineSessionPtr& SessionInterface)
+	{
+		const IOnlineSessionPtr SessionForCleanup = SessionInterface;
+		const TSharedRef<FDelegateHandle> CleanupHandle = MakeShared<FDelegateHandle>();
+		*CleanupHandle = SessionForCleanup->AddOnJoinSessionCompleteDelegate_Handle(
+			FOnJoinSessionCompleteDelegate::CreateLambda(
+				[SessionForCleanup, CleanupHandle](FName SessionName, const EOnJoinSessionCompleteResult::Type Result)
+				{
+					SessionForCleanup->ClearOnJoinSessionCompleteDelegate_Handle(*CleanupHandle);
+					if (Result == EOnJoinSessionCompleteResult::Success)
+					{
+						SessionForCleanup->DestroySession(SessionName);
+					}
+				}));
+	}
 }
 
 void UMulticaOnlineSessionSubsystem::Deinitialize()
@@ -24,10 +72,27 @@ void UMulticaOnlineSessionSubsystem::Deinitialize()
 		{
 			SessionInterface->CancelFindSessions();
 		}
+		if (ActiveOperation == EOperation::Create && CreateHandle.IsValid())
+		{
+			SessionInterface->ClearOnCreateSessionCompleteDelegate_Handle(CreateHandle);
+			CreateHandle.Reset();
+			RegisterDeferredCreateCleanup(SessionInterface);
+		}
+		if (ActiveOperation == EOperation::Join && JoinHandle.IsValid())
+		{
+			SessionInterface->ClearOnJoinSessionCompleteDelegate_Handle(JoinHandle);
+			JoinHandle.Reset();
+			RegisterDeferredJoinCleanup(SessionInterface);
+		}
 		if (CreateHandle.IsValid()) SessionInterface->ClearOnCreateSessionCompleteDelegate_Handle(CreateHandle);
 		if (FindHandle.IsValid()) SessionInterface->ClearOnFindSessionsCompleteDelegate_Handle(FindHandle);
 		if (JoinHandle.IsValid()) SessionInterface->ClearOnJoinSessionCompleteDelegate_Handle(JoinHandle);
 		if (DestroyHandle.IsValid()) SessionInterface->ClearOnDestroySessionCompleteDelegate_Handle(DestroyHandle);
+		if (ActiveOperation != EOperation::Create && ActiveOperation != EOperation::Join && ActiveOperation != EOperation::Destroy &&
+			SessionInterface->GetNamedSession(GameSessionName) != nullptr)
+		{
+			SessionInterface->DestroySession(GameSessionName);
+		}
 	}
 
 	Super::Deinitialize();
@@ -48,7 +113,7 @@ void UMulticaOnlineSessionSubsystem::HostListenServer(const FString& MapPackageP
 		return;
 	}
 
-	IOnlineSubsystem* OnlineSubsystem = IOnlineSubsystem::Get();
+	IOnlineSubsystem* OnlineSubsystem = GetOnlineSubsystemForWorld(GetWorld());
 	SessionInterface = OnlineSubsystem ? OnlineSubsystem->GetSessionInterface() : nullptr;
 	if (!SessionInterface.IsValid())
 	{
@@ -74,6 +139,7 @@ void UMulticaOnlineSessionSubsystem::HostListenServer(const FString& MapPackageP
 	Settings.bAllowJoinInProgress = true;
 	Settings.bUsesPresence = false;
 	Settings.NumPublicConnections = FMath::Clamp(MaxPlayers, 1, 16);
+	Settings.Set(ProjectIdentifierSetting, GetProjectIdentifier(), EOnlineDataAdvertisementType::ViaOnlineServiceAndPing);
 
 	CreateHandle = SessionInterface->AddOnCreateSessionCompleteDelegate_Handle(
 		FOnCreateSessionCompleteDelegate::CreateUObject(this, &ThisClass::HandleCreateCompleted));
@@ -93,7 +159,7 @@ void UMulticaOnlineSessionSubsystem::FindAndJoinFirstLanSession(const float Time
 		return;
 	}
 
-	IOnlineSubsystem* OnlineSubsystem = IOnlineSubsystem::Get();
+	IOnlineSubsystem* OnlineSubsystem = GetOnlineSubsystemForWorld(GetWorld());
 	SessionInterface = OnlineSubsystem ? OnlineSubsystem->GetSessionInterface() : nullptr;
 	if (!SessionInterface.IsValid())
 	{
@@ -129,7 +195,7 @@ void UMulticaOnlineSessionSubsystem::LeaveSession()
 		return;
 	}
 
-	IOnlineSubsystem* OnlineSubsystem = IOnlineSubsystem::Get();
+	IOnlineSubsystem* OnlineSubsystem = GetOnlineSubsystemForWorld(GetWorld());
 	SessionInterface = OnlineSubsystem ? OnlineSubsystem->GetSessionInterface() : nullptr;
 	if (!SessionInterface.IsValid() || SessionInterface->GetNamedSession(GameSessionName) == nullptr)
 	{
@@ -137,20 +203,11 @@ void UMulticaOnlineSessionSubsystem::LeaveSession()
 		return;
 	}
 
-	BeginOperation(EOperation::Destroy, 15.0f);
-	if (!bOperationPending)
-	{
-		return;
-	}
-
-	DestroyHandle = SessionInterface->AddOnDestroySessionCompleteDelegate_Handle(
-		FOnDestroySessionCompleteDelegate::CreateUObject(this, &ThisClass::HandleDestroyCompleted));
-	if (!SessionInterface->DestroySession(GameSessionName))
-	{
-		SessionInterface->ClearOnDestroySessionCompleteDelegate_Handle(DestroyHandle);
-		DestroyHandle.Reset();
-		FinishOperation(false, TEXT("DestroySession was rejected by the selected subsystem."));
-	}
+	StartDestroyOperation(
+		true,
+		true,
+		TEXT("Session left; disconnect and return-to-menu requested."),
+		TEXT("The online subsystem could not destroy the session."));
 }
 
 void UMulticaOnlineSessionSubsystem::BeginOperation(const EOperation Operation, const float TimeoutSeconds)
@@ -184,6 +241,10 @@ void UMulticaOnlineSessionSubsystem::FinishOperation(const bool bSucceeded, cons
 	ActiveOperation = EOperation::None;
 	bOperationPending = false;
 	bOperationTimedOut = false;
+	bReturnToMenuAfterDestroy = false;
+	bDestroyOperationCanSucceed = true;
+	PendingDestroySuccessMessage.Reset();
+	PendingDestroyFailureMessage.Reset();
 	OnOperationCompleted.Broadcast(bSucceeded, Message);
 }
 
@@ -212,6 +273,81 @@ void UMulticaOnlineSessionSubsystem::BroadcastImmediateFailure(const FString& Me
 	OnOperationCompleted.Broadcast(false, Message);
 }
 
+void UMulticaOnlineSessionSubsystem::StartDestroyOperation(
+	const bool bReturnToMenu,
+	const bool bOperationSucceededAfterDestroy,
+	const FString& SuccessMessage,
+	const FString& FailureMessage)
+{
+	UWorld* World = GetWorld();
+	if (World)
+	{
+		World->GetTimerManager().ClearTimer(TimeoutHandle);
+	}
+
+	ActiveOperation = EOperation::Destroy;
+	bOperationPending = true;
+	bOperationTimedOut = false;
+	bReturnToMenuAfterDestroy = bReturnToMenu;
+	bDestroyOperationCanSucceed = bOperationSucceededAfterDestroy;
+	PendingDestroySuccessMessage = SuccessMessage;
+	PendingDestroyFailureMessage = FailureMessage;
+	PendingTimeoutSeconds = 15.0f;
+
+	if (!World || !SessionInterface.IsValid())
+	{
+		FinishDestroyOperation(false);
+		return;
+	}
+
+	World->GetTimerManager().SetTimer(
+		TimeoutHandle, this, &ThisClass::HandleOperationTimeout, PendingTimeoutSeconds, false);
+	DestroyHandle = SessionInterface->AddOnDestroySessionCompleteDelegate_Handle(
+		FOnDestroySessionCompleteDelegate::CreateUObject(this, &ThisClass::HandleDestroyCompleted));
+	if (!SessionInterface->DestroySession(GameSessionName))
+	{
+		SessionInterface->ClearOnDestroySessionCompleteDelegate_Handle(DestroyHandle);
+		DestroyHandle.Reset();
+		FinishDestroyOperation(false);
+	}
+}
+
+void UMulticaOnlineSessionSubsystem::FinishDestroyOperation(const bool bWasSuccessful)
+{
+	if (ActiveOperation != EOperation::Destroy)
+	{
+		return;
+	}
+
+	if (bOperationTimedOut)
+	{
+		bOperationTimedOut = false;
+		bOperationPending = true;
+	}
+	if (!bOperationPending)
+	{
+		return;
+	}
+
+	bool bOperationSucceeded = bWasSuccessful && bDestroyOperationCanSucceed;
+	FString Message = bWasSuccessful ? PendingDestroySuccessMessage : PendingDestroyFailureMessage;
+	if (bWasSuccessful && bReturnToMenuAfterDestroy)
+	{
+		UWorld* World = GetWorld();
+		if (GEngine && World)
+		{
+			GEngine->HandleDisconnect(World, World->GetNetDriver());
+		}
+		else
+		{
+			bOperationSucceeded = false;
+			Message = PendingDestroyFailureMessage;
+		}
+	}
+
+	FinishOperation(bOperationSucceeded, Message);
+}
+
 void UMulticaOnlineSessionSubsystem::HandleCreateCompleted(FName SessionName, const bool bWasSuccessful)
 {
 	if (SessionInterface.IsValid() && CreateHandle.IsValid())
@@ -221,9 +357,19 @@ void UMulticaOnlineSessionSubsystem::HandleCreateCompleted(FName SessionName, co
 	CreateHandle.Reset();
 	if (bOperationTimedOut)
 	{
-		bOperationTimedOut = false;
-		ActiveOperation = EOperation::None;
-		if (bWasSuccessful && SessionInterface.IsValid()) SessionInterface->DestroySession(SessionName);
+		if (bWasSuccessful)
+		{
+			StartDestroyOperation(
+				false,
+				false,
+				TEXT("The timed-out create completed late; its session has been removed."),
+				TEXT("The timed-out create completed late and its session could not be removed."));
+		}
+		else
+		{
+			bOperationTimedOut = false;
+			ActiveOperation = EOperation::None;
+		}
 		return;
 	}
 	if (!bOperationPending || ActiveOperation != EOperation::Create)
@@ -241,8 +387,11 @@ void UMulticaOnlineSessionSubsystem::HandleCreateCompleted(FName SessionName, co
 	if (!ListenURL.Contains(TEXT("?listen"))) ListenURL += TEXT("?listen");
 	if (!World || !World->ServerTravel(ListenURL, true))
 	{
-		SessionInterface->DestroySession(SessionName);
-		FinishOperation(false, TEXT("The session was created, but the listen-server map travel failed."));
+		StartDestroyOperation(
+			false,
+			false,
+			TEXT("Listen-server travel failed; the created session was removed."),
+			TEXT("Listen-server travel failed and the created session could not be removed."));
 		return;
 	}
 	FinishOperation(true, TEXT("LAN session created; listen-server travel requested."));
@@ -264,16 +413,29 @@ void UMulticaOnlineSessionSubsystem::HandleFindCompleted(const bool bWasSuccessf
 	{
 		return;
 	}
-	if (!bWasSuccessful || !SessionSearch.IsValid() || SessionSearch->SearchResults.IsEmpty())
+	if (!bWasSuccessful || !SessionSearch.IsValid())
 	{
 		FinishOperation(false, TEXT("LAN search failed or found no advertised session."));
+		return;
+	}
+
+	const FOnlineSessionSearchResult* MatchingSession = SessionSearch->SearchResults.FindByPredicate(
+		[](const FOnlineSessionSearchResult& SearchResult)
+		{
+			FString ResultProjectIdentifier;
+			return SearchResult.Session.SessionSettings.Get(ProjectIdentifierSetting, ResultProjectIdentifier) &&
+				ResultProjectIdentifier == GetProjectIdentifier();
+		});
+	if (!MatchingSession)
+	{
+		FinishOperation(false, TEXT("LAN search found no session for this project."));
 		return;
 	}
 
 	ActiveOperation = EOperation::Join;
 	JoinHandle = SessionInterface->AddOnJoinSessionCompleteDelegate_Handle(
 		FOnJoinSessionCompleteDelegate::CreateUObject(this, &ThisClass::HandleJoinCompleted));
-	if (!SessionInterface->JoinSession(0, GameSessionName, SessionSearch->SearchResults[0]))
+	if (!SessionInterface->JoinSession(0, GameSessionName, *MatchingSession))
 	{
 		SessionInterface->ClearOnJoinSessionCompleteDelegate_Handle(JoinHandle);
 		JoinHandle.Reset();
@@ -296,9 +458,19 @@ void UMulticaOnlineSessionSubsystem::HandleJoinCompleted(FName SessionName, cons
 	JoinHandle.Reset();
 	if (bOperationTimedOut)
 	{
-		bOperationTimedOut = false;
-		ActiveOperation = EOperation::None;
-		if (Result == EOnJoinSessionCompleteResult::Success && SessionInterface.IsValid()) SessionInterface->DestroySession(SessionName);
+		if (Result == EOnJoinSessionCompleteResult::Success)
+		{
+			StartDestroyOperation(
+				false,
+				false,
+				TEXT("The timed-out join completed late; its session has been removed."),
+				TEXT("The timed-out join completed late and its session could not be removed."));
+		}
+		else
+		{
+			bOperationTimedOut = false;
+			ActiveOperation = EOperation::None;
+		}
 		return;
 	}
 	if (!bOperationPending || ActiveOperation != EOperation::Join)
@@ -315,8 +487,11 @@ void UMulticaOnlineSessionSubsystem::HandleJoinCompleted(FName SessionName, cons
 	APlayerController* PlayerController = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr;
 	if (!SessionInterface->GetResolvedConnectString(SessionName, ConnectString) || !PlayerController)
 	{
-		SessionInterface->DestroySession(SessionName);
-		FinishOperation(false, TEXT("The session joined, but no connect string or local player controller was available."));
+		StartDestroyOperation(
+			false,
+			false,
+			TEXT("The join had no connect string or player controller; the session was removed."),
+			TEXT("The join had no connect string or player controller, and session cleanup failed."));
 		return;
 	}
 	PlayerController->ClientTravel(ConnectString, TRAVEL_Absolute);
@@ -330,15 +505,5 @@ void UMulticaOnlineSessionSubsystem::HandleDestroyCompleted(FName SessionName, c
 		SessionInterface->ClearOnDestroySessionCompleteDelegate_Handle(DestroyHandle);
 	}
 	DestroyHandle.Reset();
-	if (bOperationTimedOut)
-	{
-		bOperationTimedOut = false;
-		ActiveOperation = EOperation::None;
-		return;
-	}
-	if (!bOperationPending || ActiveOperation != EOperation::Destroy)
-	{
-		return;
-	}
-	FinishOperation(bWasSuccessful, bWasSuccessful ? TEXT("Session left.") : TEXT("The online subsystem could not destroy the session."));
+	FinishDestroyOperation(bWasSuccessful);
 }
