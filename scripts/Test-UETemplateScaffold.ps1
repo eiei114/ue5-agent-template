@@ -61,16 +61,19 @@ try {
 	}
 
 	$dirtyTemplateRoot = Join-Path $fixtureRoot 'DirtyTemplate'
-	$templateBranch = (& git -C $repoRoot branch --show-current).Trim()
-	if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($templateBranch)) {
-		throw 'Could not determine the template branch for the isolated dirty-template fixture.'
+	$templateRevision = (& git -C $repoRoot rev-parse HEAD).Trim()
+	if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($templateRevision)) {
+		throw 'Could not determine the template revision for the isolated dirty-template fixture.'
 	}
-	& git -C $repoRoot clone --quiet --local --no-hardlinks --no-tags --single-branch --branch $templateBranch $repoRoot $dirtyTemplateRoot
+	& git -C $repoRoot clone --quiet --local --no-hardlinks --no-tags --no-checkout $repoRoot $dirtyTemplateRoot
 	if ($LASTEXITCODE -ne 0) { throw 'Could not create the isolated dirty-template repository fixture.' }
+	& git -C $dirtyTemplateRoot checkout --quiet --detach $templateRevision
+	if ($LASTEXITCODE -ne 0) { throw "Could not check out revision $templateRevision in the isolated dirty-template repository fixture." }
 	[System.IO.Directory]::CreateDirectory((Join-Path $dirtyTemplateRoot 'Production')) | Out-Null
 	$dirtyMarker = Join-Path $dirtyTemplateRoot 'DirtyTemplate.marker'
 	[System.IO.File]::WriteAllText($dirtyMarker, 'fixture only', [System.Text.UTF8Encoding]::new($false))
 	$dirtyGenerator = Join-Path $dirtyTemplateRoot 'scripts\New-UETemplateScaffold.ps1'
+	Copy-Item -LiteralPath $generator -Destination $dirtyGenerator -Force
 	$dirtyProjectName = "Dirty_$testId"
 	$dirtyOutput = Join-Path (Join-Path $dirtyTemplateRoot 'Production') "${dirtyProjectName}_dirty-rejected"
 	$dirtyFailure = ''

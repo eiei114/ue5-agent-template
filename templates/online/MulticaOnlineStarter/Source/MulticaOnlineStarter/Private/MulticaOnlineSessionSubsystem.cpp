@@ -34,6 +34,10 @@ namespace
 			FOnCreateSessionCompleteDelegate::CreateLambda(
 				[SessionForCleanup, CleanupHandle](FName SessionName, const bool bWasSuccessful)
 				{
+					if (SessionName != GameSessionName)
+					{
+						return;
+					}
 					SessionForCleanup->ClearOnCreateSessionCompleteDelegate_Handle(*CleanupHandle);
 					if (bWasSuccessful)
 					{
@@ -50,6 +54,10 @@ namespace
 			FOnJoinSessionCompleteDelegate::CreateLambda(
 				[SessionForCleanup, CleanupHandle](FName SessionName, const EOnJoinSessionCompleteResult::Type Result)
 				{
+					if (SessionName != GameSessionName)
+					{
+						return;
+					}
 					SessionForCleanup->ClearOnJoinSessionCompleteDelegate_Handle(*CleanupHandle);
 					if (Result == EOnJoinSessionCompleteResult::Success)
 					{
@@ -350,6 +358,10 @@ void UMulticaOnlineSessionSubsystem::FinishDestroyOperation(const bool bWasSucce
 
 void UMulticaOnlineSessionSubsystem::HandleCreateCompleted(FName SessionName, const bool bWasSuccessful)
 {
+	if (SessionName != GameSessionName)
+	{
+		return;
+	}
 	if (SessionInterface.IsValid() && CreateHandle.IsValid())
 	{
 		SessionInterface->ClearOnCreateSessionCompleteDelegate_Handle(CreateHandle);
@@ -451,6 +463,10 @@ void UMulticaOnlineSessionSubsystem::HandleFindCompleted(const bool bWasSuccessf
 
 void UMulticaOnlineSessionSubsystem::HandleJoinCompleted(FName SessionName, const EOnJoinSessionCompleteResult::Type Result)
 {
+	if (SessionName != GameSessionName)
+	{
+		return;
+	}
 	if (SessionInterface.IsValid() && JoinHandle.IsValid())
 	{
 		SessionInterface->ClearOnJoinSessionCompleteDelegate_Handle(JoinHandle);
@@ -500,6 +516,10 @@ void UMulticaOnlineSessionSubsystem::HandleJoinCompleted(FName SessionName, cons
 
 void UMulticaOnlineSessionSubsystem::HandleDestroyCompleted(FName SessionName, const bool bWasSuccessful)
 {
+	if (SessionName != GameSessionName)
+	{
+		return;
+	}
 	if (SessionInterface.IsValid() && DestroyHandle.IsValid())
 	{
 		SessionInterface->ClearOnDestroySessionCompleteDelegate_Handle(DestroyHandle);
