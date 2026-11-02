@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "recipe": "spectator-explore",
+  "purpose": "game-and-capture",
+  "engine_template": "TP_FirstPerson",
+  "required_plugins": [
+    "MovieRenderPipeline",
+    "OnlineSubsystem",
+    "OnlineSubsystemNull",
+    "OnlineSubsystemUtils",
+    "MulticaOnlineStarter"
+  ]
+}
