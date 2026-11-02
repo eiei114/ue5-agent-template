@@ -6,7 +6,7 @@ AIが短い映像または小さな鑑賞シーンを安全に作るための**�
 ## 現在の範囲
 
 - UE5.8系の既存制作から手順を抽出。UE本体、Room Seven、Fab、Splice、Mixamo、NCSの素材実物は含まない。
-- 生成器はインストール済みUE公式`TP_FirstPerson` / `TP_BlankBP` project templateから新規`.uproject`を排他的に作成する。ソースrepoにはEngine由来Contentや`.uasset`を含めない。
+- 生成器はインストール済みUE公式`TP_FirstPerson` / `TP_BlankBP` project templateから新規`.uproject`を排他的に作成する。projectファイル名と`Modules[].Name`はtemplate名のまま、`EngineAssociation`は必ず非空で、identityは`template-lock.json`の`identity`に記録する（詳細は[構造と更新](docs/07-architecture.md)）。ソースrepoにはEngine由来Contentや`.uasset`を含めない。
 - `scripts/New-UETemplateScaffold.ps1`は共通set契約・recipe・`template-lock.json`を加える。実際のmap/Sequence/作品Contentは出力しない。
 - Null/LAN用の小さなC++ plugin scaffoldを同梱する。UE版ごとのbuild/PIE/MRQ結果はQAに記録し、未検証範囲を実装済み/検証済みと混同しない。
 - 追加インストール・課金・公開・Git pushは自動化しない。
@@ -41,7 +41,7 @@ cleanなtemplate checkoutと既存UE installを指定し、同じName/RunIdの�
   -ProjectDiff 'Shared map: /Game/EmberWatch/Maps/L_Environment'
 ```
 
-映像専用は`-Recipe vertical-loop`を選ぶ。生成後の`template-lock.json`、作品差分、`.uproject`のengine template/plugin設定を確認してからEditorで開く。更新で既存作品を再生成/上書きしない。
+映像専用は`-Recipe vertical-loop`を選ぶ。生成されるprojectファイルはtemplate名のまま（`TP_FirstPerson.uproject` / `TP_BlankBP.uproject`）で、`<ProjectName>.uproject`ではない。生成後の`template-lock.json`で`identity.project_file` / `identity.project_modules` / `identity.engine_association`、作品差分、`.uproject`のplugin設定を確認してからEditorで開く。templateのdescriptorと`Source/`が一致しない場合、generatorは生コピーを出さず停止する。更新で既存作品を再生成/上書きしない。
 コード境界とNull/LAN手順は`templates/online/MulticaOnlineStarter/README.md`および[方式比較](docs/08-online-foundations.md)を参照。
 
 ## GitHubから開始

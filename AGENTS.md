@@ -37,7 +37,7 @@ README → docs/01-start → 対象工程のdocs。現行Issue・owner指示・�
 
 ```text
 Production/<Name>_<runid>/
-  <Name>.uproject / Config/ / Content/ / Source/ [Plugins/]
+  <EngineTemplate>.uproject / Config/ / Content/ / Source/ [Plugins/]
   Art/                 # 許可済み取得物。Gitテンプレートへ入れない
   Tools/               # 当該project用。秘密なし
   Out/run_<runid>/
@@ -45,5 +45,7 @@ Production/<Name>_<runid>/
     QA.md CREDITS.md DELIVERY.json SHA256SUMS.txt
   LEASE.json           # active所有者のみ。Git外
 ```
+
+project identityの契約は1つだけ。`scripts/New-UETemplateScaffold.ps1`はインストール済みUE公式template（`TP_FirstPerson` / `TP_BlankBP`）をコピーし、**projectファイル名・`Modules[].Name`はtemplate名のまま**、`EngineAssociation`は`Engine/Build/Build.version`から導いた値（例`5.8`）を必ず書き込む。置換した場合は`Source/**/*.Build.cs`と一致しなくなるため、generatorはコピー前にdescriptorと`Source/`を照合し、既知パターンに一致しなければ**推測で続行せず停止**して未一致pathを列挙する。生成直後に`.uproject`をrenameしない。identityは`template-lock.json`の`identity`（`project_file` / `project_modules` / `engine_association`、`schema_version: 2`）に記録され、そこで確認できる。
 
 旧版は上書きしない。Out/_v1のような旧運用よりrun別の分離を推奨。Outに置いただけで納品とは呼ばない。
