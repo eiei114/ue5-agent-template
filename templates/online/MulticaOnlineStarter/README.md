@@ -36,8 +36,9 @@ The project identity is the one defined in `AGENTS.md`: the project file keeps
 the engine template name (`TP_FirstPerson.uproject`, not `<ProjectName>.uproject`),
 `Modules[].Name` stays `TP_FirstPerson`, and `EngineAssociation` is never left
 empty. `template-lock.json` records all three under `identity`; do not rename the
-project file by hand, because `Source/TP_FirstPerson/TP_FirstPerson.Build.cs` and
-the module descriptor would no longer agree.
+project file by hand. Renaming only the file leaves `Modules[].Name` pointing at
+`Source/TP_FirstPerson/TP_FirstPerson.Build.cs`, so the renamed project no longer
+matches the `identity.project_file` its own lock recorded.
 
 `AMulticaOnlineGameMode` uses UE's server-owned default spawn/restart flow;
 server-side `PostLogin`/`Logout` update the replicated player count. Bind the

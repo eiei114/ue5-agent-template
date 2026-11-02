@@ -168,6 +168,34 @@ try {
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $productionRoot "escape_$testId"))) 'path traversal did not create an out-of-scope directory'
 	Write-Output 'PASS: path traversal rejected before output creation'
 
+	# Negative case: Build.version carries a non-numeric version field. Deriving 5.8 from it would
+	# write a fragment such as '.8' into the descriptor and the lock and then report success, so the
+	# generator must stop before copying and leave no output behind.
+	$badVersionRepoRoot = Join-Path $fixtureRoot 'BadVersionTemplate'
+	& git -C $repoRoot clone --quiet --local --no-hardlinks --no-tags --no-checkout $repoRoot $badVersionRepoRoot
+	if ($LASTEXITCODE -ne 0) { throw 'Could not create the isolated bad-Build.version repository fixture.' }
+	& git -C $badVersionRepoRoot checkout --quiet --detach $templateRevision
+	if ($LASTEXITCODE -ne 0) { throw "Could not check out revision $templateRevision in the isolated bad-Build.version repository fixture." }
+	[System.IO.Directory]::CreateDirectory((Join-Path $badVersionRepoRoot 'Production')) | Out-Null
+	$badVersionGenerator = Join-Path $badVersionRepoRoot 'scripts\New-UETemplateScaffold.ps1'
+	Copy-Item -LiteralPath $generator -Destination $badVersionGenerator -Force
+	$badVersionEngine = Join-Path $fixtureRoot 'BadVersionEngineRoot'
+	Write-FixtureTemplate (Join-Path $badVersionEngine 'Templates\TP_BlankBP') 'TP_BlankBP' 'TP_BlankBP'
+	New-Item -ItemType Directory -Force -Path (Join-Path $badVersionEngine 'Engine\Build') | Out-Null
+	Write-FixtureJson (Join-Path $badVersionEngine 'Engine\Build\Build.version') '{"MajorVersion":"","MinorVersion":8,"PatchVersion":4,"Changelist":58902052}'
+	Write-FixtureJson (Join-Path $badVersionEngine 'Engine\Plugins\MovieScene\MovieRenderPipeline\MovieRenderPipeline.uplugin') '{"FileVersion":3,"Version":1,"VersionName":"1.0"}'
+	$badVersionProjectName = "BadVer_$testId"
+	$badVersionOutput = Join-Path (Join-Path $badVersionRepoRoot 'Production') "${badVersionProjectName}_badver"
+	$badVersionFailure = ''
+	try {
+		& $badVersionGenerator -Recipe 'vertical-loop' -ProjectName $badVersionProjectName -RunId 'badver' -EngineRoot $badVersionEngine -ProjectDiff @() -AllowDirtyTemplate | Out-Null
+	} catch {
+		$badVersionFailure = $_.Exception.Message
+	}
+	Assert-True ($badVersionFailure.Contains('does not define a numeric MajorVersion')) 'a non-numeric Build.version field stops the generator instead of deriving a fragment'
+	Assert-True (-not (Test-Path -LiteralPath $badVersionOutput)) 'bad Build.version stop writes no project'
+	Write-Output 'PASS: non-numeric Build.version fields stop generation instead of writing a partial EngineAssociation'
+
 	# Negative case: the template project file names a module that its Source/ tree does not
 	# contain. The generator must stop instead of emitting a raw copy with an unresolved identity.
 	$driftTemplateName = 'TP_IdentityDrift'
