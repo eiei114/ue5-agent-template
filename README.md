@@ -41,7 +41,7 @@ cleanなtemplate checkoutと既存UE installを指定し、同じName/RunIdの�
   -ProjectDiff 'Shared map: /Game/EmberWatch/Maps/L_Environment'
 ```
 
-映像専用は`-Recipe vertical-loop`を選ぶ。生成後の`template-lock.json`、作品差分、`.uproject`のengine template/plugin設定を確認してからEditorで開く。更新で既存作品を再生成/上書きしない。
+映像専用は`-Recipe vertical-loop`を選ぶ。三人称ゲーム（アクション・探索・街）は`-Recipe third-person-game`で、`<ProjectName>.uproject`／`Source/<ProjectName>`へ名前を置換した状態で生成する（ProjectNameはC++識別子）。生成後の`template-lock.json`、作品差分、`.uproject`のengine template/plugin設定を確認してからEditorで開く。更新で既存作品を再生成/上書きしない。
 コード境界とNull/LAN手順は`templates/online/MulticaOnlineStarter/README.md`および[方式比較](docs/08-online-foundations.md)を参照。
 
 ## GitHubから開始

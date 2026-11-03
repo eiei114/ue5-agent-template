@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
 	[Parameter(Mandatory = $true)]
-	[ValidateSet('spectator-explore', 'vertical-loop')]
+	[ValidateSet('spectator-explore', 'vertical-loop', 'third-person-game')]
 	[string]$Recipe,
 
 	[Parameter(Mandatory = $true)]
@@ -21,6 +21,92 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+function Convert-TemplateName([string]$Text, [string]$TemplateName, [string]$Name) {
+	# Same order as TemplateDefs.ini: UPPERCASE and lowercase (case-sensitive), then any case.
+	$Text = $Text.Replace($TemplateName.ToUpperInvariant(), $Name.ToUpperInvariant())
+	$Text = $Text.Replace($TemplateName.ToLowerInvariant(), $Name.ToLowerInvariant())
+	return [regex]::Replace($Text, [regex]::Escape($TemplateName), $Name.Replace('$', '$$'), [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+}
+
+function Read-TemplateDefs([string]$Path, [string]$TemplateName) {
+	$defs = [ordered]@{ FoldersToIgnore = @(); FilesToIgnore = @(); FolderRenames = @(); Extensions = @(); SharedContentPacks = @(); DetailLevel = 'High' }
+	foreach ($line in [System.IO.File]::ReadAllLines($Path)) {
+		$trimmed = $line.Trim()
+		if ($trimmed -match '^FoldersToIgnore=(.+)$') { $defs.FoldersToIgnore += $Matches[1].Trim('"').Replace('%TEMPLATENAME%', $TemplateName).Replace('\', '/') }
+		elseif ($trimmed -match '^FilesToIgnore=(.+)$') { $defs.FilesToIgnore += $Matches[1].Trim('"').Replace('%TEMPLATENAME%', $TemplateName).Replace('\', '/') }
+		elseif ($trimmed -match '^FolderRenames=\(From="([^"]+)",To="([^"]+)"\)') { $defs.FolderRenames += ,@($Matches[1].Replace('%TEMPLATENAME%', $TemplateName), $Matches[2]) }
+		elseif ($trimmed -match '^ReplacementsInFiles=\(Extensions=\(([^)]*)\)') { $defs.Extensions += @($Matches[1].Split(',') | ForEach-Object { $_.Trim().Trim('"').ToLowerInvariant() }) }
+		elseif ($trimmed -match '^SharedContentPacks=\(MountName="([^"]+)"') { $defs.SharedContentPacks += $Matches[1] }
+		elseif ($trimmed -match '^EditDetailLevelPreference="?([^"]+)"?$') { $defs.DetailLevel = $Matches[1] }
+	}
+	$defs.Extensions = @($defs.Extensions | Select-Object -Unique)
+	$defs.SharedContentPacks = @($defs.SharedContentPacks | Select-Object -Unique)
+	return $defs
+}
+
+function Copy-TextWithReplacement([string]$From, [string]$To, [string]$TemplateName, [string]$Name) {
+	$reader = [System.IO.StreamReader]::new($From, [System.Text.UTF8Encoding]::new($false), $true)
+	try { $text = $reader.ReadToEnd(); $encoding = $reader.CurrentEncoding } finally { $reader.Dispose() }
+	$hadBom = $false
+	$bytes = [System.IO.File]::ReadAllBytes($From)
+	if ($bytes.Length -ge 2 -and (($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB) -or ($bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) -or ($bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF))) { $hadBom = $true }
+	if (-not $hadBom -and $encoding -is [System.Text.UTF8Encoding]) { $encoding = [System.Text.UTF8Encoding]::new($false) }
+	[System.IO.File]::WriteAllText($To, (Convert-TemplateName -Text $text -TemplateName $TemplateName -Name $Name), $encoding)
+}
+
+function Copy-MaterializedTemplate([string]$SourceTemplate, [string]$Destination, [string]$TemplateName, [string]$Name, [string]$EngineTemplateRoot) {
+	$defsPath = Join-Path $SourceTemplate 'Config\TemplateDefs.ini'
+	if (-not (Test-Path -LiteralPath $defsPath -PathType Leaf)) { throw "The template has no Config/TemplateDefs.ini to materialize from: $defsPath" }
+	$defs = Read-TemplateDefs -Path $defsPath -TemplateName $TemplateName
+	$sourceRoot = [System.IO.Path]::GetFullPath($SourceTemplate).TrimEnd('\', '/')
+	foreach ($file in Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Force) {
+		$relative = $file.FullName.Substring($sourceRoot.Length + 1).Replace('\', '/')
+		if ($relative -ieq "$TemplateName.uproject") {
+			Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $Destination "$Name.uproject")
+			continue
+		}
+		if (@($defs.FilesToIgnore | Where-Object { $relative -ieq $_ }).Count -gt 0) { continue }
+		if (@($defs.FoldersToIgnore | Where-Object { $relative.StartsWith($_.TrimEnd('/') + '/', [System.StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) { continue }
+		$target = $relative
+		foreach ($rename in $defs.FolderRenames) {
+			$from = $rename[0].TrimEnd('/') + '/'
+			if ($target.StartsWith($from, [System.StringComparison]::OrdinalIgnoreCase)) {
+				$target = $rename[1].Replace('%PROJECTNAME%', $Name).TrimEnd('/') + '/' + $target.Substring($from.Length)
+			}
+		}
+		$extension = [System.IO.Path]::GetExtension($file.Name).TrimStart('.').ToLowerInvariant()
+		$isText = $defs.Extensions -contains $extension
+		if ($isText) {
+			$leaf = Convert-TemplateName -Text ([System.IO.Path]::GetFileName($target)) -TemplateName $TemplateName -Name $Name
+			$target = ([System.IO.Path]::GetDirectoryName($target.Replace('/', '\')) + '\' + $leaf).TrimStart('\')
+		}
+		$targetPath = Join-Path $Destination $target.Replace('/', '\')
+		[System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($targetPath)) | Out-Null
+		if (Test-Path -LiteralPath $targetPath) { throw "Materialized template paths collide: $target" }
+		if ($isText) { Copy-TextWithReplacement -From $file.FullName -To $targetPath -TemplateName $TemplateName -Name $Name }
+		else { Copy-Item -LiteralPath $file.FullName -Destination $targetPath }
+	}
+	foreach ($mount in $defs.SharedContentPacks) {
+		$packContent = Join-Path $EngineTemplateRoot ("TemplateResources\{0}\{1}\Content" -f $defs.DetailLevel, $mount)
+		if (-not (Test-Path -LiteralPath $packContent -PathType Container)) { throw "Shared content pack is missing from the installed engine: $packContent" }
+		$packTarget = Join-Path $Destination ("Content\" + $mount)
+		[System.IO.Directory]::CreateDirectory($packTarget) | Out-Null
+		Get-ChildItem -LiteralPath $packContent -Force | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $packTarget $_.Name) -Recurse }
+	}
+	# Blueprints in the template Content were saved against /Script/<TemplateName>.
+	$engineIni = Join-Path $Destination 'Config\DefaultEngine.ini'
+	[System.IO.File]::AppendAllText($engineIni, [Environment]::NewLine + '[CoreRedirects]' + [Environment]::NewLine + ('+PackageRedirects=(OldName="/Script/{0}",NewName="/Script/{1}")' -f $TemplateName, $Name) + [Environment]::NewLine)
+	$gameIni = Join-Path $Destination 'Config\DefaultGame.ini'
+	if (Test-Path -LiteralPath $gameIni -PathType Leaf) {
+		$guid = [Guid]::NewGuid().ToByteArray()
+		$parts = 0..3 | ForEach-Object { [BitConverter]::ToInt32($guid, $_ * 4) }
+		$gameText = [System.IO.File]::ReadAllText($gameIni)
+		$gameText = [regex]::Replace($gameText, '(?m)^ProjectID=.*$', ('ProjectID=(A={0},B={1},C={2},D={3})' -f $parts[0], $parts[1], $parts[2], $parts[3]))
+		$gameText = [regex]::Replace($gameText, '(?m)^ProjectName=.*$', ('ProjectName={0}' -f $Name))
+		[System.IO.File]::WriteAllText($gameIni, $gameText, [System.Text.UTF8Encoding]::new($false))
+	}
+}
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $productionRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot 'Production'))
@@ -67,6 +153,13 @@ $templateProjectFile = Join-Path $sourceTemplate ($templateName + '.uproject')
 if (-not (Test-Path -LiteralPath $templateProjectFile -PathType Leaf)) {
 	throw "The installed engine does not contain the selected official project template: $templateProjectFile"
 }
+# materialize_project: apply the template's own Config/TemplateDefs.ini rules (as the UE New Project
+# wizard does) so the output is <ProjectName>.uproject with renamed module/source, not TP_* names.
+$materialize = ($null -ne $recipeData.PSObject.Properties['materialize_project']) -and [bool]$recipeData.materialize_project
+if ($materialize -and $ProjectName -notmatch '^[A-Za-z][A-Za-z0-9_]{0,39}$') {
+	throw 'Recipes that materialize a C++ project need a ProjectName that is a C++ identifier (letter first, letters/digits/underscore only).'
+}
+$projectFileName = if ($materialize) { $ProjectName + '.uproject' } else { $templateName + '.uproject' }
 
 $destinationName = '{0}_{1}' -f $ProjectName, $RunId
 $destinationPath = [System.IO.Path]::GetFullPath((Join-Path $productionRoot $destinationName))
@@ -96,11 +189,21 @@ if (-not [MulticaTemplateDirectory]::CreateDirectory($destinationPath, [IntPtr]:
 
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 try {
-	Get-ChildItem -LiteralPath $sourceTemplate -Force | ForEach-Object {
-		Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $destinationPath $_.Name) -Recurse
+	if ($materialize) {
+		Copy-MaterializedTemplate -SourceTemplate $sourceTemplate -Destination $destinationPath -TemplateName $templateName -Name $ProjectName -EngineTemplateRoot $engineTemplateRoot
+	} else {
+		Get-ChildItem -LiteralPath $sourceTemplate -Force | ForEach-Object {
+			Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $destinationPath $_.Name) -Recurse
+		}
 	}
 
-	$projectDescriptor = Get-Content -Raw -LiteralPath (Join-Path $destinationPath ($templateName + '.uproject')) | ConvertFrom-Json
+	$projectDescriptor = Get-Content -Raw -LiteralPath (Join-Path $destinationPath $projectFileName) | ConvertFrom-Json
+	if ($materialize) {
+		foreach ($module in @($projectDescriptor.Modules | Where-Object { $null -ne $_ })) {
+			$module.Name = Convert-TemplateName -Text ([string]$module.Name) -TemplateName $templateName -Name $ProjectName
+		}
+		$projectDescriptor.EngineAssociation = '{0}.{1}' -f $buildData.MajorVersion, $buildData.MinorVersion
+	}
 	$projectPlugins = @($projectDescriptor.Plugins | Where-Object { $null -ne $_ })
 	foreach ($pluginName in $recipeData.required_plugins) {
 		$existing = $projectPlugins | Where-Object { $_.Name -eq $pluginName } | Select-Object -First 1
@@ -116,7 +219,7 @@ try {
 		$projectDescriptor.Plugins = $projectPlugins
 	}
 	$projectJson = ConvertTo-Json -InputObject $projectDescriptor -Depth 30
-	[System.IO.File]::WriteAllText((Join-Path $destinationPath ($templateName + '.uproject')), $projectJson + [Environment]::NewLine, $utf8NoBom)
+	[System.IO.File]::WriteAllText((Join-Path $destinationPath $projectFileName), $projectJson + [Environment]::NewLine, $utf8NoBom)
 
 	$requiredPlugins = @($recipeData.required_plugins)
 	foreach ($pluginName in $requiredPlugins) {
@@ -186,6 +289,9 @@ try {
 	Copy-Item -LiteralPath (Join-Path $recipeRoot 'common\SET.md') -Destination (Join-Path $recipeOutput 'SET.md')
 	Copy-Item -LiteralPath (Join-Path (Join-Path $recipeRoot $Recipe) 'recipe.json') -Destination (Join-Path $recipeOutput 'recipe.json')
 	Copy-Item -LiteralPath (Join-Path (Join-Path $recipeRoot $Recipe) 'Capture.md') -Destination (Join-Path $recipeOutput 'Capture.md')
+	if ($Recipe -eq 'third-person-game') {
+		Copy-Item -LiteralPath (Join-Path (Join-Path $recipeRoot $Recipe) 'Play.md') -Destination (Join-Path $recipeOutput 'Play.md')
+	}
 	if ($Recipe -eq 'spectator-explore') {
 		Copy-Item -LiteralPath (Join-Path (Join-Path $recipeRoot $Recipe) 'Play.md') -Destination (Join-Path $recipeOutput 'Play.md')
 		$onlinePluginTarget = Join-Path $destinationPath 'Plugins\MulticaOnlineStarter'
@@ -198,7 +304,7 @@ try {
 	$lockPath = Join-Path $destinationPath 'template-lock.json'
 	[System.IO.File]::WriteAllText($lockPath, $lockJson + [Environment]::NewLine, $utf8NoBom)
 
-	$projectFile = Join-Path $destinationPath ($templateName + '.uproject')
+	$projectFile = Join-Path $destinationPath $projectFileName
 	if (-not (Test-Path -LiteralPath $projectFile -PathType Leaf)) {
 		throw 'The installed template project file was not copied.'
 	}
