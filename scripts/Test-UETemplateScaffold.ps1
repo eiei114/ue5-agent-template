@@ -26,6 +26,29 @@ function Assert-True([bool]$Condition, [string]$Message) {
 	if (-not $Condition) { throw "ASSERT FAILED: $Message" }
 }
 
+function Get-ProductionResidue {
+	# .gitignore excludes Production/* from `git status --untracked-files=all`, so an ignored leftover
+	# from a crashed or interrupted run is invisible to the checkout comparison at the end of the
+	# suite. The repository ships exactly one file under Production/, so the directory is compared
+	# directly instead of trusting git to report what it ignores. This run's own fixture root and the
+	# generated project outputs are the transient entries allowed here; all of them are removed in the
+	# finally block.
+	$violations = New-Object System.Collections.Generic.List[string]
+	$allowed = @('PLACEHOLDER.md') + @([System.IO.Path]::GetFileName($fixtureRoot)) + @($outputNames)
+	if (-not (Test-Path -LiteralPath $productionRoot -PathType Container)) {
+		$violations.Add('Production/: the directory is missing')
+		return $violations.ToArray()
+	}
+	if (-not (Test-Path -LiteralPath (Join-Path $productionRoot 'PLACEHOLDER.md') -PathType Leaf)) {
+		$violations.Add('Production/PLACEHOLDER.md: the tracked placeholder is missing')
+	}
+	foreach ($entry in @(Get-ChildItem -LiteralPath $productionRoot -Force)) {
+		if ($allowed -contains $entry.Name) { continue }
+		$violations.Add("Production/$($entry.Name): unexpected entry (ignored by .gitignore, so git status does not report it)")
+	}
+	return $violations.ToArray()
+}
+
 function Write-FixtureJson([string]$Path, [string]$Json) {
 	$parent = Split-Path -Parent $Path
 	[System.IO.Directory]::CreateDirectory($parent) | Out-Null
@@ -62,6 +85,9 @@ function Assert-GeneratorFails([scriptblock]$Action, [string]$Message) {
 }
 
 try {
+	$initialProductionResidue = @(Get-ProductionResidue)
+	Assert-True ($initialProductionResidue.Count -eq 0) ("Production/ holds only the tracked placeholder before testing: " + ($initialProductionResidue -join '; '))
+
 	[System.IO.Directory]::CreateDirectory($fixtureEngine) | Out-Null
 	Write-FixtureJson (Join-Path $fixtureEngine 'Engine\Build\Build.version') '{"MajorVersion":5,"MinorVersion":8,"PatchVersion":4,"Changelist":58902052}'
 
@@ -285,6 +311,7 @@ try {
 	Assert-True ([System.IO.File]::ReadAllText($sentinel) -ceq 'untouched') 'existing output content is not overwritten'
 	Write-Output 'PASS: exclusive output-directory creation preserves existing content'
 } finally {
+	$suiteError = $_
 	foreach ($path in $outputPaths) {
 		if (Test-Path -LiteralPath $path -PathType Container) {
 			Remove-Item -LiteralPath $path -Recurse -Force
@@ -293,7 +320,18 @@ try {
 	if (Test-Path -LiteralPath $fixtureRoot -PathType Container) {
 		Remove-Item -LiteralPath $fixtureRoot -Recurse -Force
 	}
+	$cleanupProblems = @(Get-ProductionResidue | ForEach-Object { "Production/ residual entry after cleanup: $_" })
+	if (Test-Path -LiteralPath $fixtureRoot) { $cleanupProblems += "fixture root still exists: $fixtureRoot" }
 	$finalCheckoutStatus = @(& git -C $repoRoot status --porcelain --untracked-files=all)
 	if ($LASTEXITCODE -ne 0) { throw 'Could not verify the developer checkout status after testing.' }
-	Assert-True (($finalCheckoutStatus -join "`n") -ceq ($initialCheckoutStatus -join "`n")) 'test suite leaves the developer checkout unchanged'
+	if (($finalCheckoutStatus -join "`n") -cne ($initialCheckoutStatus -join "`n")) {
+		$cleanupProblems += 'test suite leaves the developer checkout unchanged'
+		$cleanupProblems += ('before: ' + ($initialCheckoutStatus -join ' | '))
+		$cleanupProblems += ('after: ' + ($finalCheckoutStatus -join ' | '))
+	}
+	if ($cleanupProblems.Count -gt 0) {
+		if ($null -ne $suiteError) { Write-Output "ASSERT FAILED: $($suiteError.Exception.Message)" }
+		Assert-True $false ('test suite did not leave a clean tree: ' + ($cleanupProblems -join '; '))
+	}
+	if ($null -ne $suiteError) { throw $suiteError }
 }
