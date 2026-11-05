@@ -37,7 +37,7 @@ README → docs/01-start → 対象工程のdocs。現行Issue・owner指示・�
 
 ```text
 Production/<Name>_<runid>/
-  <EngineTemplate>.uproject / Config/ / Content/ / Source/ [Plugins/]
+  <ProjectFile>.uproject / Config/ / Content/ / Source/ [Plugins/]   # materialize_projectなら<Name>、それ以外は<EngineTemplate>
   Art/                 # 許可済み取得物。Gitテンプレートへ入れない
   Tools/               # 当該project用。秘密なし
   Out/run_<runid>/
@@ -46,6 +46,11 @@ Production/<Name>_<runid>/
   LEASE.json           # active所有者のみ。Git外
 ```
 
-project identityの契約は1つだけ。`scripts/New-UETemplateScaffold.ps1`はインストール済みUE公式template（`TP_FirstPerson` / `TP_BlankBP`）をコピーし、**projectファイル名・`Modules[].Name`はtemplate名のまま**、`EngineAssociation`は`Engine/Build/Build.version`から導いた値（例`5.8`）を必ず書き込む。置換した場合は`Source/**/*.Build.cs`と一致しなくなるため、generatorはコピー前にdescriptorと`Source/`を照合し、既知パターンに一致しなければ**推測で続行せず停止**して未一致pathを列挙する。生成直後に`.uproject`をrenameしない。identityは`template-lock.json`の`identity`（`project_file` / `project_modules` / `engine_association`、`schema_version: 2`）に記録され、そこで確認できる。
+project identityの契約は1つだけ。`scripts/New-UETemplateScaffold.ps1`はインストール済みUE公式templateから生成し、**projectファイル名・`Modules[].Name`・`Source/<Module>`は常に互いに一致**していなければならない。`EngineAssociation`は`Engine/Build/Build.version`から導いた値（例`5.8`）を必ず書き込む。
+
+- `materialize_project: true`のrecipe（`third-person-game`）は、template自身の`Config/TemplateDefs.ini`をUEウィザードと同じ規則で適用するため、`<Name>.uproject` / `Source/<Name>` / `Modules[].Name = <Name>`になる。
+- それ以外のrecipe（`spectator-explore` / `vertical-loop`）は生コピーするため、template名（`TP_FirstPerson` / `TP_BlankBP`）がそのまま残る。ここで`.uproject`だけrenameすると`Source/**/*.Build.cs`と食い違う。
+
+generatorはコピー前にdescriptorと`Source/`を照合し、既知パターンに一致しなければ**推測で続行せず停止**して未一致pathを列挙する。コピー後にもコピー物同士で同じ照合を行い、食い違えばdescriptorを書き換えずに停止する。生成後に`.uproject`を手でrenameしない。identityは`template-lock.json`の`identity`（`project_file` / `project_modules` / `engine_association`、`schema_version: 2`）に記録され、そこで確認できる。
 
 旧版は上書きしない。Out/_v1のような旧運用よりrun別の分離を推奨。Outに置いただけで納品とは呼ばない。
