@@ -180,6 +180,134 @@ function Get-DirectorySnapshot([string]$Directory) {
 	}) -join "`n")
 }
 
+# ---------------------------------------------------------------- fixture input registry
+# The suite builds every fixture itself, so "the inspector never changed its input" is only worth
+# asserting if each fixture is compared with the state it had when the suite finished building it.
+# A group-local before/after pair is not enough: a later group can still corrupt an earlier fixture
+# and nothing looks at it again. Every fixture therefore registers its snapshot as soon as it is
+# built, and one gate at the end compares all of them and names the paths that moved.
+$script:fixtureBaselines = [ordered]@{}
+$script:declaredFixtureRootFiles = New-Object System.Collections.Generic.List[string]
+$script:refusedReportCounter = 0
+
+function Register-FixtureSnapshot([string]$RelativePath) {
+	$full = Join-Path $fixtureRoot $RelativePath
+	Assert-True (Test-Path -LiteralPath $full -PathType Container) "fixture '$RelativePath' exists before its baseline is recorded"
+	$script:fixtureBaselines[$RelativePath] = Get-DirectorySnapshot $full
+}
+
+function Register-FixtureRootFile([string]$Name) {
+	if (-not $script:declaredFixtureRootFiles.Contains($Name)) { $script:declaredFixtureRootFiles.Add($Name) }
+}
+
+function ConvertTo-SnapshotPath([string]$Line) {
+	# Snapshot lines are "D:<path>" or "F:<path>:<sha256>". The gate has to name a path a human can
+	# open, not a hash line.
+	if ($Line.StartsWith('D:')) { return (($Line.Substring(2).TrimStart('\') -replace '\\', '/') + '/') }
+	if ($Line.StartsWith('F:')) {
+		$rest = $Line.Substring(2)
+		$lastColon = $rest.LastIndexOf(':')
+		if ($lastColon -gt 0) { $rest = $rest.Substring(0, $lastColon) }
+		return ($rest.TrimStart('\') -replace '\\', '/')
+	}
+	return $Line
+}
+
+function ConvertTo-SnapshotMap([string]$Snapshot) {
+	$map = @{}
+	foreach ($line in @($Snapshot -split "`n")) {
+		if ([string]::IsNullOrEmpty($line)) { continue }
+		$map[(ConvertTo-SnapshotPath $line)] = $line
+	}
+	return $map
+}
+
+function Get-FixtureInputDrift {
+	$violations = New-Object System.Collections.Generic.List[string]
+	foreach ($relative in @($script:fixtureBaselines.Keys)) {
+		$full = Join-Path $fixtureRoot $relative
+		if (-not (Test-Path -LiteralPath $full -PathType Container)) {
+			$violations.Add("$relative/: the fixture directory is gone")
+			continue
+		}
+		$before = ConvertTo-SnapshotMap $script:fixtureBaselines[$relative]
+		$after = ConvertTo-SnapshotMap (Get-DirectorySnapshot $full)
+		foreach ($path in @($before.Keys)) {
+			if (-not $after.ContainsKey($path)) { $violations.Add("$relative/$path : removed") }
+			elseif ($before[$path] -cne $after[$path]) { $violations.Add("$relative/$path : content changed") }
+		}
+		foreach ($path in @($after.Keys)) {
+			if (-not $before.ContainsKey($path)) { $violations.Add("$relative/$path : added") }
+		}
+	}
+	return $violations.ToArray()
+}
+
+function Get-FixtureRootDrift {
+	$violations = New-Object System.Collections.Generic.List[string]
+	if (-not (Test-Path -LiteralPath $fixtureRoot -PathType Container)) {
+		$violations.Add('the fixture root is gone')
+		return $violations.ToArray()
+	}
+	$known = @('reports') + @($script:fixtureBaselines.Keys) + @($script:declaredFixtureRootFiles)
+	foreach ($entry in @(Get-ChildItem -LiteralPath $fixtureRoot -Force)) {
+		if ($known -notcontains $entry.Name) { $violations.Add("$($entry.Name): unexpected entry in the fixture root") }
+	}
+	return $violations.ToArray()
+}
+
+function Get-ReportDrift {
+	# reports/ is the only subtree the suite writes on purpose, so it is excluded from the fixture
+	# snapshots above and accounted for separately: one non-empty .json file per report path the suite
+	# allocated, minus the paths it deliberately had refused.
+	$violations = New-Object System.Collections.Generic.List[string]
+	if (-not (Test-Path -LiteralPath $reportRoot -PathType Container)) {
+		$violations.Add('reports/: the report directory is gone')
+		return $violations.ToArray()
+	}
+	$reports = @(Get-ChildItem -LiteralPath $reportRoot -Force)
+	foreach ($report in $reports) {
+		if ($report.PSIsContainer) { $violations.Add("reports/$($report.Name): unexpected directory") }
+		elseif ([System.IO.Path]::GetExtension($report.Name) -ne '.json') { $violations.Add("reports/$($report.Name): unexpected report name") }
+		elseif ($report.Length -le 0) { $violations.Add("reports/$($report.Name): empty report") }
+	}
+	$expectedReports = $script:reportCounter - $script:refusedReportCounter
+	$reportFiles = @($reports | Where-Object { -not $_.PSIsContainer }).Count
+	if ($reportFiles -ne $expectedReports) {
+		$violations.Add("reports/: expected $expectedReports report(s) for the allocated paths, found $reportFiles")
+	}
+	return $violations.ToArray()
+}
+
+function Assert-FixtureInputsUnchanged {
+	$drift = @(Get-FixtureInputDrift) + @(Get-FixtureRootDrift) + @(Get-ReportDrift)
+	Assert-True ($drift.Count -eq 0) ("fixture inputs changed during the suite: " + ($drift -join '; '))
+}
+
+function Get-ProductionResidue {
+	# .gitignore excludes Production/* from `git status --untracked-files=all`, so an ignored leftover
+	# from a crashed or interrupted run is invisible to the checkout comparison at the end of the
+	# suite. The repository ships exactly one file under Production/, so the directory is compared
+	# directly instead of trusting git to report what it ignores. This run's own fixture root is the
+	# single transient entry allowed here; it is created after the pre-flight check and removed before
+	# the post-flight one.
+	$violations = New-Object System.Collections.Generic.List[string]
+	$ownFixtureName = [System.IO.Path]::GetFileName($fixtureRoot)
+	if (-not (Test-Path -LiteralPath $productionRoot -PathType Container)) {
+		$violations.Add('Production/: the directory is missing')
+		return $violations.ToArray()
+	}
+	if (-not (Test-Path -LiteralPath (Join-Path $productionRoot 'PLACEHOLDER.md') -PathType Leaf)) {
+		$violations.Add('Production/PLACEHOLDER.md: the tracked placeholder is missing')
+	}
+	foreach ($entry in @(Get-ChildItem -LiteralPath $productionRoot -Force)) {
+		if ($entry.Name -eq 'PLACEHOLDER.md') { continue }
+		if ($entry.PSIsContainer -and $entry.Name -eq $ownFixtureName) { continue }
+		$violations.Add("Production/$($entry.Name): unexpected entry (ignored by .gitignore, so git status does not report it)")
+	}
+	return $violations.ToArray()
+}
+
 function Invoke-Measure {
 	param([hashtable]$Bound)
 	$captured = New-Object System.Collections.Generic.List[string]
@@ -215,6 +343,13 @@ function Get-FailureCategories($Report) {
 
 Initialize-Crc32Table
 
+# Reported before the fixture root exists, so an ignored leftover from an earlier interrupted run is
+# surfaced instead of silently sharing the directory with this suite's fixtures.
+$initialProductionResidue = @(Get-ProductionResidue)
+Assert-True ($initialProductionResidue.Count -eq 0) ("Production/ holds only the tracked placeholder before testing: " + ($initialProductionResidue -join '; '))
+
+$suiteError = $null
+$script:cleanupFailures = New-Object System.Collections.Generic.List[string]
 try {
 	[System.IO.Directory]::CreateDirectory($reportRoot) | Out-Null
 
@@ -223,6 +358,7 @@ try {
 	# real MRQ run produces: zero-based, six-digit, end-exclusive.
 	$cleanDir = Join-Path $fixtureRoot 'clean240'
 	New-FrameSequence -Directory $cleanDir -Start 0 -EndExclusive 240
+	Register-FixtureSnapshot 'clean240'
 	$cleanBefore = Get-DirectorySnapshot $cleanDir
 	$cleanReport = New-ReportPath 'clean240'
 	$cleanResult = Invoke-Measure @{
@@ -286,6 +422,7 @@ try {
 	Copy-Item -LiteralPath $cleanDir -Destination $swapDir -Recurse
 	Remove-Item -LiteralPath (Join-Path $swapDir '000120.png') -Force
 	Add-Frame -Directory $swapDir -Index 240
+	Register-FixtureSnapshot 'swap240'
 	$swapFileCount = @(Get-ChildItem -LiteralPath $swapDir -File).Count
 	Assert-True ($swapFileCount -eq 240) 'the swap fixture holds exactly 240 image files, like the baseline expects'
 	$swapReport = New-ReportPath 'swap240'
@@ -323,6 +460,7 @@ try {
 	foreach ($gapIndex in @(0, 3, 5)) {
 		$gapDir = Join-Path $fixtureRoot ("gap-$gapIndex")
 		New-FrameSequence -Directory $gapDir -Start 0 -EndExclusive 6 -Skip @($gapIndex)
+		Register-FixtureSnapshot "gap-$gapIndex"
 		$gapReport = New-ReportPath "gap-$gapIndex"
 		$gapResult = Invoke-Measure @{
 			FramesDirectory    = $gapDir
@@ -345,6 +483,7 @@ try {
 	# ============================================================ group 5: one extra frame beyond 240
 	$extraDir = Join-Path $fixtureRoot 'extra241'
 	New-FrameSequence -Directory $extraDir -Start 0 -EndExclusive 241
+	Register-FixtureSnapshot 'extra241'
 	$extraReport = New-ReportPath 'extra241'
 	$extraResult = Invoke-Measure @{
 		FramesDirectory    = $extraDir
@@ -367,6 +506,7 @@ try {
 	New-FrameSequence -Directory $paddingDir -Start 0 -EndExclusive 6 -Skip @(2)
 	Add-Frame -Directory $paddingDir -Index 2
 	Move-Item -LiteralPath (Join-Path $paddingDir '000002.png') -Destination (Join-Path $paddingDir '2.png')
+	Register-FixtureSnapshot 'padding'
 	$paddingReport = New-ReportPath 'padding'
 	$paddingResult = Invoke-Measure @{
 		FramesDirectory    = $paddingDir
@@ -383,6 +523,7 @@ try {
 	$caseDir = Join-Path $fixtureRoot 'case'
 	New-FrameSequence -Directory $caseDir -Start 0 -EndExclusive 6
 	Move-Item -LiteralPath (Join-Path $caseDir '000003.png') -Destination (Join-Path $caseDir '000003.PNG')
+	Register-FixtureSnapshot 'case'
 	$caseReport = New-ReportPath 'case'
 	$caseResult = Invoke-Measure @{
 		FramesDirectory    = $caseDir
@@ -400,6 +541,7 @@ try {
 	$nestedDir = Join-Path $fixtureRoot 'nested'
 	New-FrameSequence -Directory $nestedDir -Start 0 -EndExclusive 6
 	[System.IO.Directory]::CreateDirectory((Join-Path $nestedDir 'Shot0001')) | Out-Null
+	Register-FixtureSnapshot 'nested'
 	$nestedReport = New-ReportPath 'nested'
 	$nestedResult = Invoke-Measure @{
 		FramesDirectory    = $nestedDir
@@ -417,6 +559,7 @@ try {
 	$strayDir = Join-Path $fixtureRoot 'stray'
 	New-FrameSequence -Directory $strayDir -Start 0 -EndExclusive 6
 	[System.IO.File]::WriteAllText((Join-Path $strayDir 'notes.txt'), 'fixture note', [System.Text.UTF8Encoding]::new($false))
+	Register-FixtureSnapshot 'stray'
 	$strayReport = New-ReportPath 'stray'
 	$strayResult = Invoke-Measure @{
 		FramesDirectory    = $strayDir
@@ -433,6 +576,7 @@ try {
 	$emptyDir = Join-Path $fixtureRoot 'empty'
 	New-FrameSequence -Directory $emptyDir -Start 0 -EndExclusive 6 -Skip @(2)
 	[System.IO.File]::WriteAllBytes((Join-Path $emptyDir '000002.png'), [byte[]]@())
+	Register-FixtureSnapshot 'empty'
 	$emptyReport = New-ReportPath 'empty'
 	$emptyResult = Invoke-Measure @{
 		FramesDirectory    = $emptyDir
@@ -461,6 +605,7 @@ try {
 	$corruptHeader[61] = [byte]($corruptHeader[61] -bxor 0xFF)
 	$corruptHeader[62] = [byte]($corruptHeader[62] -bxor 0xFF)
 	[System.IO.File]::WriteAllBytes((Join-Path $corruptDir '000004.png'), $corruptHeader)
+	Register-FixtureSnapshot 'corrupt'
 	$corruptReport = New-ReportPath 'corrupt'
 	$corruptResult = Invoke-Measure @{
 		FramesDirectory    = $corruptDir
@@ -486,6 +631,7 @@ try {
 	$resolutionDir = Join-Path $fixtureRoot 'resolution'
 	New-FrameSequence -Directory $resolutionDir -Start 0 -EndExclusive 6 -Skip @(4)
 	Add-Frame -Directory $resolutionDir -Index 4 -Width 32 -Height 24
+	Register-FixtureSnapshot 'resolution'
 	$resolutionReport = New-ReportPath 'resolution'
 	$resolutionResult = Invoke-Measure @{
 		FramesDirectory    = $resolutionDir
@@ -503,6 +649,7 @@ try {
 
 	$unconfiguredDir = Join-Path $fixtureRoot 'unconfigured'
 	New-FrameSequence -Directory $unconfiguredDir -Start 0 -EndExclusive 6
+	Register-FixtureSnapshot 'unconfigured'
 	$unconfiguredReport = New-ReportPath 'unconfigured'
 	$unconfiguredResult = Invoke-Measure @{
 		FramesDirectory    = $unconfiguredDir
@@ -524,12 +671,14 @@ try {
 		ExpectedWidth      = 64
 	}
 	Assert-True ($halfResult.Threw) 'a half-configured resolution is refused instead of guessed'
+	$script:refusedReportCounter++
 	Assert-True ($halfResult.Error.Contains('must be given together')) 'the refusal explains the paired requirement'
 	Write-Output 'PASS: resolution mismatches fail and unconfigured or half-configured resolution stays unverified'
 
 	# ============================================================ group 10: range inputs
 	$offsetDir = Join-Path $fixtureRoot 'offset'
 	New-FrameSequence -Directory $offsetDir -Start 10 -EndExclusive 16
+	Register-FixtureSnapshot 'offset'
 	$offsetReport = New-ReportPath 'offset'
 	$offsetResult = Invoke-Measure @{
 		FramesDirectory    = $offsetDir
@@ -565,12 +714,14 @@ try {
 		ReportPath         = (New-ReportPath 'equal-range')
 	}
 	Assert-True ($equalRangeResult.Threw) 'an empty end-exclusive range is refused instead of passing trivially'
+	$script:refusedReportCounter++
 	Assert-True ($equalRangeResult.Error.Contains('greater than StartNumber')) 'the refusal explains the end-exclusive range rule'
 	Write-Output 'PASS: non-zero starts need an explicit declaration and an empty range cannot pass'
 
 	# ============================================================ group 11: decoder absence, failure, timeout
 	$decoderDir = Join-Path $fixtureRoot 'decoder'
 	New-FrameSequence -Directory $decoderDir -Start 0 -EndExclusive 6
+	Register-FixtureSnapshot 'decoder'
 	$missingDecoderReport = New-ReportPath 'decoder-missing'
 	$missingDecoderResult = Invoke-Measure @{
 		FramesDirectory    = $decoderDir
@@ -591,6 +742,7 @@ try {
 
 	$failingDecoder = Join-Path $fixtureRoot 'failing-decoder.cmd'
 	[System.IO.File]::WriteAllText($failingDecoder, "@echo off`r`nexit /b 3", [System.Text.UTF8Encoding]::new($false))
+	Register-FixtureRootFile 'failing-decoder.cmd'
 	$failingDecoderReport = New-ReportPath 'decoder-failing'
 	$failingDecoderResult = Invoke-Measure @{
 		FramesDirectory    = $decoderDir
@@ -608,6 +760,7 @@ try {
 
 	$slowDecoder = Join-Path $fixtureRoot 'slow-decoder.cmd'
 	[System.IO.File]::WriteAllText($slowDecoder, "@echo off`r`nping -n 20 127.0.0.1 >nul`r`nexit /b 0", [System.Text.UTF8Encoding]::new($false))
+	Register-FixtureRootFile 'slow-decoder.cmd'
 	$timeoutReport = New-ReportPath 'decoder-timeout'
 	$timeoutResult = Invoke-Measure @{
 		FramesDirectory             = $decoderDir
@@ -627,15 +780,94 @@ try {
 	Assert-True ($timeoutData.artifact_verdict -eq 'unverified') 'a decode timeout cannot produce a pass'
 	Write-Output 'PASS: missing, failing and slow decoders stay unverified or fail, and the timeout is bounded'
 
-	# ============================================================ group 12: shipped sequence untouched
-	$finalCheck = Get-DirectorySnapshot $fixtureRoot
-	Assert-True ($finalCheck -notmatch 'frames-mutated') 'fixture root snapshot is stable'
-	Write-Output 'PASS: fixture tree inspected before cleanup'
-} finally {
-	if (Test-Path -LiteralPath $fixtureRoot -PathType Container) {
-		Remove-Item -LiteralPath $fixtureRoot -Recurse -Force
+	# ============================================================ group 12: the untouched-input gate can actually fail
+	# A gate that has never been observed to fail is the same defect one level up. This group corrupts a
+	# throwaway fixture in each of the three ways a suite regression would - a removed file, a rewritten
+	# file, an added file - and requires the gate to name every path. It then restores the fixture and
+	# requires the gate to fall silent, so a fixed-but-vacuous gate cannot pass this group either.
+	# It also corrupts an ignored Production/ path, because `git status --untracked-files=all` never
+	# reports an entry under Production/* and the checkout comparison at the end of the suite cannot.
+	$probeDir = Join-Path $fixtureRoot 'gate-probe'
+	New-FrameSequence -Directory $probeDir -Start 0 -EndExclusive 3
+	Register-FixtureSnapshot 'gate-probe'
+	$probeFile = Join-Path $probeDir '000001.png'
+	$probeOriginal = [System.IO.File]::ReadAllBytes($probeFile)
+	$residueProbe = Join-Path $productionRoot '.render-artifacts-test-residue-probe'
+	try {
+		Remove-Item -LiteralPath (Join-Path $probeDir '000000.png') -Force
+		[System.IO.File]::WriteAllBytes($probeFile, [byte[]](1, 2, 3, 4))
+		[System.IO.File]::WriteAllText((Join-Path $probeDir 'MUTATED.txt'), 'injected', [System.Text.UTF8Encoding]::new($false))
+		[System.IO.File]::WriteAllText((Join-Path $fixtureRoot 'STRAY-ROOT.txt'), 'injected', [System.Text.UTF8Encoding]::new($false))
+		[System.IO.Directory]::CreateDirectory((Join-Path $residueProbe 'reports')) | Out-Null
+		[System.IO.File]::WriteAllText((Join-Path $residueProbe 'reports\001-clean240.json'), '{}', [System.Text.UTF8Encoding]::new($false))
+
+		$probeDrift = @(Get-FixtureInputDrift | Where-Object { $_.StartsWith('gate-probe/') })
+		$probeText = $probeDrift -join '; '
+		Assert-True ($probeDrift.Count -eq 3) "the gate reports each corruption exactly once, got $($probeDrift.Count): $probeText"
+		Assert-True ($probeText.Contains('gate-probe/000000.png : removed')) "the gate names the removed file, got: $probeText"
+		Assert-True ($probeText.Contains('gate-probe/000001.png : content changed')) "the gate names the rewritten file, got: $probeText"
+		Assert-True ($probeText.Contains('gate-probe/MUTATED.txt : added')) "the gate names the added file, got: $probeText"
+		$rootDrift = @(Get-FixtureRootDrift)
+		Assert-True (($rootDrift -join '; ').Contains('STRAY-ROOT.txt')) "the gate names an unexpected fixture-root entry, got: $($rootDrift -join '; ')"
+		$residueDrift = @(Get-ProductionResidue)
+		Assert-True (($residueDrift -join '; ').Contains('.render-artifacts-test-residue-probe')) "the residue check names an ignored Production/ leftover that git status does not report, got: $($residueDrift -join '; ')"
+
+		$gateFailed = $false
+		$gateMessage = ''
+		try { Assert-FixtureInputsUnchanged } catch { $gateFailed = $true; $gateMessage = $_.Exception.Message }
+		Assert-True $gateFailed 'the aggregate gate throws instead of reporting success while an input changed'
+		Assert-True ($gateMessage.Contains('gate-probe/000000.png') -and $gateMessage.Contains('STRAY-ROOT.txt')) "the aggregate gate failure names both the fixture and the root entry, got: $gateMessage"
+	} finally {
+		if (Test-Path -LiteralPath $residueProbe) { Remove-Item -LiteralPath $residueProbe -Recurse -Force }
+		if (Test-Path -LiteralPath (Join-Path $fixtureRoot 'STRAY-ROOT.txt')) { Remove-Item -LiteralPath (Join-Path $fixtureRoot 'STRAY-ROOT.txt') -Force }
+		if (Test-Path -LiteralPath (Join-Path $probeDir 'MUTATED.txt')) { Remove-Item -LiteralPath (Join-Path $probeDir 'MUTATED.txt') -Force }
+		if (-not (Test-Path -LiteralPath (Join-Path $probeDir '000000.png'))) { Add-Frame -Directory $probeDir -Index 0 }
+		[System.IO.File]::WriteAllBytes($probeFile, $probeOriginal)
 	}
+	Assert-True (@(Get-FixtureInputDrift).Count -eq 0) 'the gate is silent again once the corrupted fixture is restored'
+	Assert-True (@(Get-FixtureRootDrift).Count -eq 0) 'the gate reports no unexpected fixture-root entry once it is removed'
+	Assert-True (@(Get-ProductionResidue).Count -eq 0) 'the residue check is silent again once the ignored leftover is removed'
+	Write-Output 'PASS: the untouched-input gate names removed, rewritten and added files and the ignored Production/ leftover, and is silent when they are restored'
+
+	# ============================================================ group 13: the inspector never changed its input
+	# Every fixture built above registered the snapshot it had when the suite finished building it.
+	# This gate compares all 16 of them again, so a later group that corrupts an earlier fixture is
+	# caught here by path instead of being reported as a pass by a tautology. reports/ is excluded from
+	# those snapshots because the suite writes it on purpose; its contents are accounted separately
+	# (one non-empty report per allocated path, minus the deliberately refused ones).
+	Assert-FixtureInputsUnchanged
+	$fixtureCount = $script:fixtureBaselines.Count
+	Assert-True ($fixtureCount -eq 17) "every fixture directory built by the suite is covered by the comparison, got $fixtureCount"
+	Assert-True (@(Get-FixtureInputDrift).Count -eq 0) 'no fixture directory was modified, added to or removed after it was built'
+	Assert-True (@(Get-ReportDrift).Count -eq 0) 'reports/ holds exactly one non-empty report per allocated report path'
+	Write-Output "PASS: all $fixtureCount fixture directories and the report directory are unchanged since they were built"
+} catch {
+	$suiteError = $_
+} finally {
+	# The suite has to prove it left no trace even when an assertion above failed, so cleanup and the
+	# residual-state checks run unconditionally and the original failure is re-thrown at the end.
+	$cleanupProblems = @()
+	try {
+		if (Test-Path -LiteralPath $fixtureRoot -PathType Container) {
+			Remove-Item -LiteralPath $fixtureRoot -Recurse -Force
+		}
+	} catch {
+		$cleanupProblems += "fixture root cleanup: $($_.Exception.Message)"
+	}
+	$cleanupProblems += @(Get-ProductionResidue | ForEach-Object { "Production/ residual entry after cleanup: $_" })
+	if (Test-Path -LiteralPath $fixtureRoot) { $cleanupProblems += "fixture root still exists: $fixtureRoot" }
 	$finalCheckoutStatus = @(& git -C $repoRoot status --porcelain --untracked-files=all)
 	if ($LASTEXITCODE -ne 0) { throw 'Could not verify the developer checkout status after testing.' }
-	Assert-True (($finalCheckoutStatus -join "`n") -ceq ($initialCheckoutStatus -join "`n")) 'test suite leaves the developer checkout unchanged'
+	if (($finalCheckoutStatus -join "`n") -cne ($initialCheckoutStatus -join "`n")) {
+		$cleanupProblems += 'test suite leaves the developer checkout unchanged'
+		$cleanupProblems += ('before: ' + ($initialCheckoutStatus -join ' | '))
+		$cleanupProblems += ('after: ' + ($finalCheckoutStatus -join ' | '))
+	}
+	if ($cleanupProblems.Count -gt 0) {
+		if ($null -ne $suiteError) {
+			Write-Output "ASSERT FAILED: $($suiteError.Exception.Message)"
+		}
+		Assert-True $false ('test suite did not leave a clean tree: ' + ($cleanupProblems -join '; '))
+	}
+	if ($null -ne $suiteError) { throw $suiteError }
 }
