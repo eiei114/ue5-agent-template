@@ -1,0 +1,51 @@
+name: verify
+
+# The repository historically shipped no CI, so every pull request reached the
+# merge gate with zero successful checks. The managed delivery lane reads
+# "no successful check" as a repairable defect and opens a repair issue per PR,
+# which cannot fix a repository-wide gap: the repair burns, the PR waits, and the
+# next PR conflicts with it. This workflow is the missing check.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scaffold:
+    name: scaffold generator
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The generator records the template commit and refuses a dirty tree.
+          # The suite builds its own fixtures and clones itself from this checkout.
+          fetch-depth: 1
+
+      - name: Test-UETemplateScaffold.ps1
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./scripts/Test-UETemplateScaffold.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Test-UETemplateScaffold.ps1 exited $LASTEXITCODE" }
+
+  render-artifacts:
+    name: render artifact inspection
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Test-UERenderArtifacts.ps1
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./scripts/Test-UERenderArtifacts.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Test-UERenderArtifacts.ps1 exited $LASTEXITCODE" }
