@@ -8,10 +8,12 @@ Windows offlineなら新規buildをqueueして成功扱いしない。MacBookは
 
 ## 新規UE projectを作る（許可Windowsのみ）
 
+project identityの契約は[AGENTS.md](../AGENTS.md)の「フォルダ」節にある1つだけ。`.uproject`名と`Modules[].Name`はtemplate名のまま、`EngineAssociation`は非空。読み先は`template-lock.json`の`identity`。
+
 1. 正規既存UEのversion/pathとFirst Person C++テンプレートの存在、C++ toolchainを確認。過去実績はUE5.8.4の `Templates/TP_FirstPerson` 系、Variant_Horror系譜。
 2. 一意なproject parentを原子的作成する。例 `Production/Smoke_<full-runid>/`。UEウィザードが非空dirを拒否する場合は、その配下の新規project dirへ生成し、実際の構造を記録（上書きしない）。
 3. UE Project BrowserでGames → First Person → C++、当該版で利用できるvariantを選び、Starter Contentは不要なら無効。project名は空白・記号なしにする。
-4. 既存UE同梱templateの生コピーは推奨しない。Source/Target/module名等の置換漏れを避けるためウィザードを優先。RoomSevenをコピー元にしない。
+4. 既存UE同梱templateを**生コピーして名前だけそのまま使う**のは、generatorを使わない手作業の場合だけ許可する。本リポジトリの`scripts/New-UETemplateScaffold.ps1`はウィザードではないが、生コピー放置ではない: コピー前に`.uproject`の`Modules[].Name`と`Source/**/[Module].Build.cs`を照合し、一致しなければ停止する。`EngineAssociation`も`Build.version`から導いて必ず埋める。手作業でrenameする場合はこの契約から外れるため、`template-lock.json`の`identity`と一致しないことを明記する。RoomSevenをコピー元にしない。
 5. Editor targetをbuildし、新規projectだけを開く。必要な場合にPython Editor Script Plugin / Editor Scripting Utilities / Movie Render Queueを有効にし、自分のEditorだけ再起動する。
 6. `/Game/<Name>/Maps/L_<Name>` を保存。Project SettingsでEditor Startup MapとGame Default Mapを指定。Package対象mapに含める。GameModeとPawn、camera、collision、入力設定をPlayで照合。
 7. 映像smokeなら原作の床・cube・point light・camera・2秒sequenceのみ。実行版なら歩ける小mapのみ。Fab/Splice不要で成立させる。
