@@ -8,6 +8,7 @@
 #include "OnlineSubsystem.h"
 #include "OnlineSubsystemUtils.h"
 #include "TimerManager.h"
+#include "MulticaOnlineDeferredDestroyCleanup.h"
 
 namespace
 {
@@ -65,6 +66,37 @@ namespace
 					}
 				}));
 	}
+
+	TSharedRef<FDeferredDestroySessionCleanupOperations> MakeDestroyCleanupOperations(
+		const IOnlineSessionPtr& SessionInterface)
+	{
+		const IOnlineSessionPtr SessionForCleanup = SessionInterface;
+		TSharedRef<FDeferredDestroySessionCleanupOperations> Operations =
+			MakeShared<FDeferredDestroySessionCleanupOperations>();
+		Operations->AddOnDestroyComplete = [SessionForCleanup](FOnDestroySessionCompleteDelegate Delegate)
+		{
+			return SessionForCleanup->AddOnDestroySessionCompleteDelegate_Handle(MoveTemp(Delegate));
+		};
+		Operations->ClearOnDestroyComplete = [SessionForCleanup](const FDelegateHandle& Handle)
+		{
+			SessionForCleanup->ClearOnDestroySessionCompleteDelegate_Handle(Handle);
+		};
+		Operations->DestroySession = [SessionForCleanup](const FName SessionName)
+		{
+			return SessionForCleanup->DestroySession(SessionName);
+		};
+		Operations->HasNamedSession = [SessionForCleanup](const FName SessionName)
+		{
+			return SessionForCleanup->GetNamedSession(SessionName) != nullptr;
+		};
+		Operations->ReportUnresolved = [](const FName SessionName, const bool bLastDestroyReportedSuccess)
+		{
+			UE_LOG(LogTemp, Error,
+				TEXT("Deferred teardown cleanup could not remove session '%s' (provider reported success: %s); a later host attempt will report the unresolved session."),
+				*SessionName.ToString(), bLastDestroyReportedSuccess ? TEXT("true") : TEXT("false"));
+		};
+		return Operations;
+	}
 }
 
 void UMulticaOnlineSessionSubsystem::Deinitialize()
@@ -95,7 +127,19 @@ void UMulticaOnlineSessionSubsystem::Deinitialize()
 		if (CreateHandle.IsValid()) SessionInterface->ClearOnCreateSessionCompleteDelegate_Handle(CreateHandle);
 		if (FindHandle.IsValid()) SessionInterface->ClearOnFindSessionsCompleteDelegate_Handle(FindHandle);
 		if (JoinHandle.IsValid()) SessionInterface->ClearOnJoinSessionCompleteDelegate_Handle(JoinHandle);
-		if (DestroyHandle.IsValid()) SessionInterface->ClearOnDestroySessionCompleteDelegate_Handle(DestroyHandle);
+		if (ActiveOperation == EOperation::Destroy && DestroyHandle.IsValid())
+		{
+			// Register the provider-owned callback before clearing the UObject-bound one so the
+			// in-flight operation always has a completion observer.
+			RegisterDeferredDestroySessionCleanup(
+				MakeDestroyCleanupOperations(SessionInterface), GameSessionName, DestroyHandle);
+			DestroyHandle.Reset();
+		}
+		else if (DestroyHandle.IsValid())
+		{
+			SessionInterface->ClearOnDestroySessionCompleteDelegate_Handle(DestroyHandle);
+			DestroyHandle.Reset();
+		}
 		if (ActiveOperation != EOperation::Create && ActiveOperation != EOperation::Join && ActiveOperation != EOperation::Destroy &&
 			SessionInterface->GetNamedSession(GameSessionName) != nullptr)
 		{
@@ -130,7 +174,7 @@ void UMulticaOnlineSessionSubsystem::HostListenServer(const FString& MapPackageP
 	}
 	if (SessionInterface->GetNamedSession(GameSessionName) != nullptr)
 	{
-		BroadcastImmediateFailure(TEXT("A local session already exists; leave it before hosting again."));
+		BroadcastImmediateFailure(TEXT("A local session already exists; it may be unresolved teardown cleanup. Leave it before hosting again."));
 		return;
 	}
 
