@@ -54,8 +54,16 @@ callback arrives. Provider calls that never complete require closing/restarting
 the test project through its own verified cleanup path; do not infer success or
 delete another run's lease.
 
-LAN sessions advertise an identifier derived from the active UE project name;
-search results with a different identifier are not joined.
+LAN sessions advertise the project-scoped identifier written by the scaffold;
+search results with a different identifier are not joined. The scaffold writes
+`MulticaOnlineStarter.SessionProjectIdentifier` into the plugin's generated
+`Config/DefaultEngine.ini` using the requested `-ProjectName` (not the engine
+template name or run ID), and records the same value in
+`template-lock.json` as `online_session_identifier`. All clients for one project
+must be generated with the same `-ProjectName`; distinct project names produce
+distinct session identifiers. A missing or malformed identifier causes host and
+search/join operations to fail explicitly rather than using a shared fallback.
+Do not hand-edit the setting to bypass the scaffold contract.
 
 The plugin's default config is Null/LAN. Do not switch it to EOS or Steam and
 call this helper a working adapter: their login, product/AppID, invitation,

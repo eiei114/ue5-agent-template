@@ -1,5 +1,12 @@
 # 変更履歴
 
+## Unreleased — DOT-3366
+
+- `spectator-explore` scaffold now writes a stable `MulticaOnlineStarter.SessionProjectIdentifier` derived from `-ProjectName` into the generated plugin config and records it in `template-lock.json`. Null/LAN search joins only a session advertising that same identifier; missing or malformed settings fail explicitly instead of sharing the engine template name.
+- Added scaffold assertions for same-project stability across run IDs and distinct identifiers across project names, plus a UE automation test for matching/mismatching and missing/invalid session identifiers. `MulticaOnlineStarter` advances from 1.0.0 to 1.0.1.
+
+Migration: regenerate projects that need project-scoped Null/LAN sessions with the same `-ProjectName` on every client and verify that the generated lock and plugin setting agree. Existing generated projects lack the key and now report an explicit failure until regenerated/configured. This does not establish two-client runtime behavior; UE automation, build, and permitted Null/LAN runtime checks are recorded separately.
+
 ## Unreleased — DOT-2997
 
 - エンコード前の画像列検査を追加。`scripts/Measure-UERenderArtifacts.ps1`が期待範囲（start/end-exclusive）と実ファイルの番号集合を照合し、欠番・範囲外・曖昧名・0 byte・decode不能・解像度不一致を検出する。読み取り専用で、既存画像の改名・修復・削除をしない。

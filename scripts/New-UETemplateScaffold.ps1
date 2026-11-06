@@ -55,6 +55,32 @@ function Copy-TextWithReplacement([string]$From, [string]$To, [string]$TemplateN
 	[System.IO.File]::WriteAllText($To, (Convert-TemplateName -Text $text -TemplateName $TemplateName -Name $Name), $encoding)
 }
 
+function Set-OnlineSessionProjectIdentifier([string]$PluginConfigPath, [string]$Identifier) {
+	if (-not (Test-Path -LiteralPath $PluginConfigPath -PathType Leaf)) {
+		throw "The online starter config is missing: $PluginConfigPath"
+	}
+	$configText = [System.IO.File]::ReadAllText($PluginConfigPath)
+	$sectionMatches = [regex]::Matches($configText, '(?m)^\[MulticaOnlineStarter\][ \t]*\r?$')
+	$keyPattern = '(?m)^SessionProjectIdentifier=[ \t]*\r?$'
+	$keyMatches = [regex]::Matches($configText, $keyPattern)
+	$nextSectionIndex = [int]::MaxValue
+	if ($sectionMatches.Count -eq 1) {
+		foreach ($sectionHeading in [regex]::Matches($configText, '(?m)^\[')) {
+			if ($sectionHeading.Index -gt $sectionMatches[0].Index) {
+				$nextSectionIndex = $sectionHeading.Index
+				break
+			}
+		}
+	}
+	if ($sectionMatches.Count -ne 1 -or $keyMatches.Count -ne 1 -or
+		$keyMatches[0].Index -le $sectionMatches[0].Index -or
+		$keyMatches[0].Index -ge $nextSectionIndex) {
+		throw 'The online starter config must contain exactly one empty SessionProjectIdentifier under [MulticaOnlineStarter].'
+	}
+	$configText = [regex]::Replace($configText, $keyPattern, ('SessionProjectIdentifier={0}' -f $Identifier), 1)
+	[System.IO.File]::WriteAllText($PluginConfigPath, $configText, [System.Text.UTF8Encoding]::new($false))
+}
+
 function Copy-MaterializedTemplate([string]$SourceTemplate, [string]$Destination, [string]$TemplateName, [string]$Name, [string]$EngineTemplateRoot) {
 	$defsPath = Join-Path $SourceTemplate 'Config\TemplateDefs.ini'
 	if (-not (Test-Path -LiteralPath $defsPath -PathType Leaf)) { throw "The template has no Config/TemplateDefs.ini to materialize from: $defsPath" }
@@ -378,6 +404,7 @@ try {
 		recipe = [string]$recipeData.recipe
 		purpose = [string]$recipeData.purpose
 		plugins = $pluginVersions
+		online_session_identifier = if (@($recipeData.required_plugins) -contains 'MulticaOnlineStarter') { 'eiei114.ue5-agent-template:{0}' -f $ProjectName } else { $null }
 		project_differences = $projectDifferences
 	}
 	$lockJson = ConvertTo-Json -InputObject $lock -Depth 12
@@ -397,6 +424,9 @@ try {
 		Get-ChildItem -LiteralPath (Join-Path $repoRoot 'templates\online\MulticaOnlineStarter') -Force | ForEach-Object {
 			Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $onlinePluginTarget $_.Name) -Recurse
 		}
+		Set-OnlineSessionProjectIdentifier `
+			-PluginConfigPath (Join-Path $onlinePluginTarget 'Config\DefaultEngine.ini') `
+			-Identifier ('eiei114.ue5-agent-template:{0}' -f $ProjectName)
 	}
 
 	$lockPath = Join-Path $destinationPath 'template-lock.json'

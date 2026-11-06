@@ -13,12 +13,14 @@ $fixtureEngine = Join-Path $fixtureRoot 'EngineRoot'
 $projectPrefix = "Ex_$testId"
 $loopProjectName = "Lp_$testId"
 $existingProjectName = "No_$testId"
+$otherProjectName = "Alt_$testId"
 $outputNames = @(
 	"${projectPrefix}_$testId-a",
 	"${projectPrefix}_$testId-b",
 	"${loopProjectName}_$testId-a",
 	"${existingProjectName}_$testId-preserved",
-	"Tp_${testId}_$testId-a"
+	"Tp_${testId}_$testId-a",
+	"${otherProjectName}_$testId-c"
 )
 $outputPaths = @($outputNames | ForEach-Object { Join-Path $productionRoot $_ })
 
@@ -136,8 +138,10 @@ try {
 	$diff = @('Map: /Game/Test/Maps/L_Set', 'Exposure: capture preset A')
 	Invoke-Generator 'spectator-explore' $projectName "$testId-a" $diff
 	Invoke-Generator 'spectator-explore' $projectName "$testId-b" @($diff[1], $diff[0])
+	Invoke-Generator 'spectator-explore' $otherProjectName "$testId-c" $diff
 	$firstOutput = $outputPaths[0]
 	$secondOutput = $outputPaths[1]
+	$otherOutput = $outputPaths[5]
 	Assert-True (Test-Path -LiteralPath (Join-Path $firstOutput 'TP_FirstPerson.uproject')) 'game recipe copies the selected engine project template'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $firstOutput "$projectName.uproject"))) 'generated project file does not advertise a project name the template does not use'
 	$firstDescriptor = [System.IO.File]::ReadAllText((Join-Path $firstOutput 'TP_FirstPerson.uproject')) | ConvertFrom-Json
@@ -154,6 +158,9 @@ try {
 	Assert-True ($nullPluginEntries.Count -eq 1 -and $nullPluginEntries[0].Enabled -eq $true) 'online starter plugin enables OnlineSubsystemNull'
 	$pluginConfig = [System.IO.File]::ReadAllText((Join-Path $firstOutput 'Plugins\MulticaOnlineStarter\Config\DefaultEngine.ini'))
 	Assert-True ($pluginConfig.Contains('DefaultPlatformService=Null')) 'online plugin selects the Null provider'
+	$expectedSessionIdentifier = "eiei114.ue5-agent-template:$projectName"
+	$otherSessionIdentifier = "eiei114.ue5-agent-template:$otherProjectName"
+	Assert-True ($pluginConfig.Contains("SessionProjectIdentifier=$expectedSessionIdentifier")) 'online plugin config uses the requested stable project key'
 	Assert-True (-not $pluginConfig.Contains('GlobalDefaultGameMode')) 'online plugin does not override a template-specific GameMode/Pawn'
 	Assert-True (Test-Path -LiteralPath (Join-Path $firstOutput 'Recipe\Play.md')) 'game recipe has a play delta'
 	Assert-True (Test-Path -LiteralPath (Join-Path $firstOutput 'Recipe\Capture.md')) 'game recipe has a capture delta'
@@ -165,12 +172,19 @@ try {
 	$lockData = $firstLock | ConvertFrom-Json
 	Assert-True ($lockData.engine_version -eq '5.8.4') 'lock records the installed engine version'
 	Assert-True ($lockData.template_commit -match '^[0-9a-f]{40}$') 'lock records a full template commit SHA'
-	Assert-True ($lockData.plugins.MulticaOnlineStarter -eq '1.0.0') 'lock records the project plugin version'
+	Assert-True ($lockData.plugins.MulticaOnlineStarter -eq '1.0.1') 'lock records the project plugin version'
 	Assert-True ($lockData.project_differences.Count -eq 2) 'lock records normalized project-specific differences'
 	Assert-True ($lockData.schema_version -eq 2) 'lock records the identity-bearing schema version'
 	Assert-True ($lockData.identity.project_file -eq 'TP_FirstPerson.uproject') 'lock records the generated project file name'
 	Assert-True (@($lockData.identity.project_modules) -join ',' -eq 'TP_FirstPerson') 'lock records the generated project module identity'
 	Assert-True ($lockData.identity.engine_association -eq '5.8') 'lock records the generated engine association'
+	Assert-True ($lockData.online_session_identifier -ceq $expectedSessionIdentifier) 'lock records the same session identifier as the effective plugin config'
+	$secondLockData = $secondLock | ConvertFrom-Json
+	Assert-True ($secondLockData.online_session_identifier -ceq $expectedSessionIdentifier) 'copies of the same project keep a stable session identifier across run IDs'
+	$otherPluginConfig = [System.IO.File]::ReadAllText((Join-Path $otherOutput 'Plugins\MulticaOnlineStarter\Config\DefaultEngine.ini'))
+	$otherLockData = [System.IO.File]::ReadAllText((Join-Path $otherOutput 'template-lock.json')) | ConvertFrom-Json
+	Assert-True ($otherPluginConfig.Contains("SessionProjectIdentifier=$otherSessionIdentifier")) 'a different project name writes its own effective session identifier'
+	Assert-True ($otherLockData.online_session_identifier -ceq $otherSessionIdentifier -and $otherSessionIdentifier -cne $expectedSessionIdentifier) 'different project names produce different lock identifiers'
 	Write-Output 'PASS: game+capture recipe, official template copy, online plugin, and deterministic lock'
 
 	Invoke-Generator 'vertical-loop' $loopProjectName "$testId-a" @('capture: 1080x1920')
