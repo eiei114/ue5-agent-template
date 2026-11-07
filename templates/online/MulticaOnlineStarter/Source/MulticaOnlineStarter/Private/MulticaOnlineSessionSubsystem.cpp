@@ -436,6 +436,12 @@ void UMulticaOnlineSessionSubsystem::HandleFindCompleted(const bool bWasSuccessf
 		FinishOperation(false, TEXT("LAN search failed or found no advertised session."));
 		return;
 	}
+	FString ProjectIdentifier;
+	if (!MulticaOnlineSessionIdentity::TryGetConfiguredProjectIdentifier(ProjectIdentifier))
+	{
+		FinishOperation(false, TEXT("The generated project has no valid MulticaOnlineStarter SessionProjectIdentifier; regenerate it with the scaffold tool."));
+		return;
+	}
 
 	const FOnlineSessionSearchResult* MatchingSession = SessionSearch->SearchResults.FindByPredicate(
 		[ProjectIdentifier](const FOnlineSessionSearchResult& SearchResult)
