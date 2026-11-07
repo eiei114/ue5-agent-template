@@ -290,7 +290,9 @@ function Get-ProductionResidue {
 	# suite. The repository ships exactly one file under Production/, so the directory is compared
 	# directly instead of trusting git to report what it ignores. This run's own fixture root is the
 	# single transient entry allowed here; it is created after the pre-flight check and removed before
-	# the post-flight one.
+	# the post-flight one. Only .render-artifacts-test-* names (this suite's own, for any run) are
+	# reported, so a developer's generated Production/<Name>_<runid>/ projects and another suite's
+	# transient entries do not block the run.
 	$violations = New-Object System.Collections.Generic.List[string]
 	$ownFixtureName = [System.IO.Path]::GetFileName($fixtureRoot)
 	if (-not (Test-Path -LiteralPath $productionRoot -PathType Container)) {
@@ -303,6 +305,7 @@ function Get-ProductionResidue {
 	foreach ($entry in @(Get-ChildItem -LiteralPath $productionRoot -Force)) {
 		if ($entry.Name -eq 'PLACEHOLDER.md') { continue }
 		if ($entry.PSIsContainer -and $entry.Name -eq $ownFixtureName) { continue }
+		if (-not $entry.Name.StartsWith('.render-artifacts-test-', [System.StringComparison]::Ordinal)) { continue }
 		$violations.Add("Production/$($entry.Name): unexpected entry (ignored by .gitignore, so git status does not report it)")
 	}
 	return $violations.ToArray()
@@ -824,8 +827,10 @@ try {
 		if (-not (Test-Path -LiteralPath (Join-Path $probeDir '000000.png'))) { Add-Frame -Directory $probeDir -Index 0 }
 		[System.IO.File]::WriteAllBytes($probeFile, $probeOriginal)
 	}
-	Assert-True (@(Get-FixtureInputDrift).Count -eq 0) 'the gate is silent again once the corrupted fixture is restored'
-	Assert-True (@(Get-FixtureRootDrift).Count -eq 0) 'the gate reports no unexpected fixture-root entry once it is removed'
+	$restoredDrift = @(Get-FixtureInputDrift)
+	Assert-True ($restoredDrift.Count -eq 0) ("the gate is silent again once the corrupted fixture is restored, got: " + ($restoredDrift -join '; '))
+	$restoredRootDrift = @(Get-FixtureRootDrift)
+	Assert-True ($restoredRootDrift.Count -eq 0) ("the gate reports no unexpected fixture-root entry once it is removed, got: " + ($restoredRootDrift -join '; '))
 	Assert-True (@(Get-ProductionResidue).Count -eq 0) 'the residue check is silent again once the ignored leftover is removed'
 	Write-Output 'PASS: the untouched-input gate names removed, rewritten and added files and the ignored Production/ leftover, and is silent when they are restored'
 

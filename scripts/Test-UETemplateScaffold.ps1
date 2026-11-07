@@ -32,9 +32,12 @@ function Get-ProductionResidue {
 	# suite. The repository ships exactly one file under Production/, so the directory is compared
 	# directly instead of trusting git to report what it ignores. This run's own fixture root and the
 	# generated project outputs are the transient entries allowed here; all of them are removed in the
-	# finally block.
+	# finally block. Only names this suite creates (its fixture root and its <prefix>_<id>_<id>-* and
+	# negative-case outputs, for any test id) are reported, so a developer's own generated
+	# Production/<Name>_<runid>/ projects do not block the suite.
 	$violations = New-Object System.Collections.Generic.List[string]
 	$allowed = @('PLACEHOLDER.md') + @([System.IO.Path]::GetFileName($fixtureRoot)) + @($outputNames)
+	$suiteOwnedPattern = '^(?:\.scaffold-test-[0-9a-f]{32}|[A-Za-z]+_([0-9a-f]{32})_\1-.+|Bad-Name_[0-9a-f]{32}-bad|escape_[0-9a-f]{32})$'
 	if (-not (Test-Path -LiteralPath $productionRoot -PathType Container)) {
 		$violations.Add('Production/: the directory is missing')
 		return $violations.ToArray()
@@ -44,6 +47,7 @@ function Get-ProductionResidue {
 	}
 	foreach ($entry in @(Get-ChildItem -LiteralPath $productionRoot -Force)) {
 		if ($allowed -contains $entry.Name) { continue }
+		if ($entry.Name -cnotmatch $suiteOwnedPattern) { continue }
 		$violations.Add("Production/$($entry.Name): unexpected entry (ignored by .gitignore, so git status does not report it)")
 	}
 	return $violations.ToArray()
@@ -84,6 +88,7 @@ function Assert-GeneratorFails([scriptblock]$Action, [string]$Message) {
 	Assert-True $failed $Message
 }
 
+$suiteError = $null
 try {
 	$initialProductionResidue = @(Get-ProductionResidue)
 	Assert-True ($initialProductionResidue.Count -eq 0) ("Production/ holds only the tracked placeholder before testing: " + ($initialProductionResidue -join '; '))
@@ -310,8 +315,11 @@ try {
 	Assert-GeneratorFails { Invoke-Generator 'spectator-explore' $existingProjectName "$testId-preserved" @() } 'existing output is rejected'
 	Assert-True ([System.IO.File]::ReadAllText($sentinel) -ceq 'untouched') 'existing output content is not overwritten'
 	Write-Output 'PASS: exclusive output-directory creation preserves existing content'
-} finally {
+} catch {
+	# `$_` is not the in-flight error inside a bare `finally`; capture it here so a cleanup failure
+	# cannot hide the original assertion.
 	$suiteError = $_
+} finally {
 	foreach ($path in $outputPaths) {
 		if (Test-Path -LiteralPath $path -PathType Container) {
 			Remove-Item -LiteralPath $path -Recurse -Force
