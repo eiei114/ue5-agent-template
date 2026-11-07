@@ -45,6 +45,33 @@ $ErrorActionPreference = 'Stop'
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 $ordinalIgnoreCase = [System.StringComparison]::OrdinalIgnoreCase
 
+function Assert-NoReparsePointInPath {
+	param(
+		[string]$Path,
+		[string]$PathRole
+	)
+
+	$currentPath = [System.IO.Path]::GetFullPath($Path)
+	while (-not [string]::IsNullOrWhiteSpace($currentPath)) {
+		try {
+			$attributes = [System.IO.File]::GetAttributes($currentPath)
+			if (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+				throw "Invalid input: $PathRole path contains a reparse point and cannot be verified safely: $currentPath"
+			}
+		} catch [System.IO.FileNotFoundException] {
+			# A report directory may not exist yet. Check its ancestors before creating any directories.
+		} catch [System.IO.DirectoryNotFoundException] {
+			# A report directory may not exist yet. Check its ancestors before creating any directories.
+		}
+
+		$parent = [System.IO.Directory]::GetParent($currentPath)
+		if ($null -eq $parent) { break }
+		$parentPath = [System.IO.Path]::GetFullPath($parent.FullName)
+		if ([string]::Equals($parentPath, $currentPath, [System.StringComparison]::OrdinalIgnoreCase)) { break }
+		$currentPath = $parentPath
+	}
+}
+
 function Quote-Argument([string]$Value) {
 	if ([string]::IsNullOrEmpty($Value)) { return '""' }
 	if ($Value -match '[\s"]') { return '"' + ($Value -replace '"', '\"') + '"' }
@@ -164,15 +191,19 @@ if ($null -eq $framesItem -or -not $framesItem.PSIsContainer) {
 }
 $framesFull = [System.IO.Path]::GetFullPath($framesItem.FullName).TrimEnd([char[]]@('\', '/'))
 $pathSeparator = [System.IO.Path]::DirectorySeparatorChar
+Assert-NoReparsePointInPath -Path $framesItem.FullName -PathRole 'FramesDirectory'
 
 $reportFull = [System.IO.Path]::GetFullPath($ReportPath)
 if (Test-Path -LiteralPath $reportFull) {
 	throw "Invalid input: report path already exists and will not be overwritten: $reportFull"
 }
+$reportParent = Split-Path -Parent $reportFull
+if (-not [string]::IsNullOrWhiteSpace($reportParent)) {
+	Assert-NoReparsePointInPath -Path $reportParent -PathRole 'ReportPath parent'
+}
 if ($reportFull.StartsWith($framesFull + $pathSeparator, $ordinalIgnoreCase)) {
 	throw 'Invalid input: the report must be written outside the inspected frame directory so the inspection cannot change its own input.'
 }
-$reportParent = Split-Path -Parent $reportFull
 if (-not [string]::IsNullOrWhiteSpace($reportParent) -and -not (Test-Path -LiteralPath $reportParent -PathType Container)) {
 	[System.IO.Directory]::CreateDirectory($reportParent) | Out-Null
 }

@@ -415,6 +415,29 @@ try {
 	Assert-True ($insideResult.Error.Contains('outside the inspected frame directory')) 'the refusal names the write-boundary rule'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $cleanDir 'report.json'))) 'the refused report wrote nothing into the inspected directory'
 	Assert-True ((Get-DirectorySnapshot $cleanDir) -ceq $cleanBefore) 'refused report attempts left the frame directory unchanged'
+
+	$junctionPath = Join-Path $fixtureRoot 'clean240-junction'
+	$junctionReport = Join-Path $junctionPath 'junction-report.json'
+	$junctionBefore = Get-DirectorySnapshot $cleanDir
+	try {
+		New-Item -ItemType Junction -Path $junctionPath -Target $cleanDir -ErrorAction Stop | Out-Null
+		$junctionResult = Invoke-Measure @{
+			FramesDirectory    = $cleanDir
+			StartNumber        = 0
+			EndNumberExclusive = 240
+			ReportPath         = $junctionReport
+		}
+		Assert-True ($junctionResult.Threw) 'a report parent junction into the inspected directory is refused'
+		Assert-True ($junctionResult.Error.Contains('reparse point')) 'the junction refusal identifies the unsafe path component'
+		Assert-True (-not (Test-Path -LiteralPath $junctionReport)) 'the refused junction report was not created through the alias'
+		Assert-True (-not (Test-Path -LiteralPath (Join-Path $cleanDir 'junction-report.json'))) 'the refused junction report did not appear in the inspected directory'
+		Assert-True ((Get-DirectorySnapshot $cleanDir) -ceq $junctionBefore) 'the junction refusal left every inspected frame name and hash unchanged'
+	} finally {
+		# Keep the test safe even when run against a regression that writes through this junction.
+		$escapedReport = Join-Path $cleanDir 'junction-report.json'
+		if (Test-Path -LiteralPath $escapedReport) { Remove-Item -LiteralPath $escapedReport -Force }
+		if (Test-Path -LiteralPath $junctionPath) { [System.IO.Directory]::Delete($junctionPath, $false) }
+	}
 	Write-Output 'PASS: report creation is exclusive and cannot write inside the inspected sequence'
 
 	# ============================================================ group 3: baseline blind spot
