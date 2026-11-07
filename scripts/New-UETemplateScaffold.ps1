@@ -392,6 +392,9 @@ try {
 	}
 	if ($Recipe -eq 'spectator-explore') {
 		Copy-Item -LiteralPath (Join-Path (Join-Path $recipeRoot $Recipe) 'Play.md') -Destination (Join-Path $recipeOutput 'Play.md')
+		$onlineGuideTarget = Join-Path $destinationPath 'docs'
+		[System.IO.Directory]::CreateDirectory($onlineGuideTarget) | Out-Null
+		Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\08-online-foundations.md') -Destination (Join-Path $onlineGuideTarget '08-online-foundations.md')
 		$onlinePluginTarget = Join-Path $destinationPath 'Plugins\MulticaOnlineStarter'
 		[System.IO.Directory]::CreateDirectory($onlinePluginTarget) | Out-Null
 		Get-ChildItem -LiteralPath (Join-Path $repoRoot 'templates\online\MulticaOnlineStarter') -Force | ForEach-Object {

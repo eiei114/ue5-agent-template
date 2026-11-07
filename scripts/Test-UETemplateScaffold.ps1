@@ -186,7 +186,13 @@ try {
 	$pluginConfig = [System.IO.File]::ReadAllText((Join-Path $firstOutput 'Plugins\MulticaOnlineStarter\Config\DefaultEngine.ini'))
 	Assert-True ($pluginConfig.Contains('DefaultPlatformService=Null')) 'online plugin selects the Null provider'
 	Assert-True (-not $pluginConfig.Contains('GlobalDefaultGameMode')) 'online plugin does not override a template-specific GameMode/Pawn'
-	Assert-True (Test-Path -LiteralPath (Join-Path $firstOutput 'Recipe\Play.md')) 'game recipe has a play delta'
+	$generatedPlayPath = Join-Path $firstOutput 'Recipe\Play.md'
+	Assert-True (Test-Path -LiteralPath $generatedPlayPath) 'game recipe has a play delta'
+	$generatedPlay = [System.IO.File]::ReadAllText($generatedPlayPath)
+	Assert-True ($generatedPlay.Contains('docs/08-online-foundations.md')) 'generated play delta points to the packaged online foundations guide'
+	$onlineGuidePath = Join-Path $firstOutput 'docs\08-online-foundations.md'
+	Assert-True (Test-Path -LiteralPath $onlineGuidePath) 'game recipe includes the online foundations guide referenced by its play delta'
+	Assert-True ([System.IO.File]::ReadAllText($onlineGuidePath) -ceq [System.IO.File]::ReadAllText((Join-Path $repoRoot 'docs\08-online-foundations.md'))) 'generated online foundations guide matches the repository source'
 	Assert-True (Test-Path -LiteralPath (Join-Path $firstOutput 'Recipe\Capture.md')) 'game recipe has a capture delta'
 	Assert-True (Test-Path -LiteralPath (Join-Path $firstOutput 'Recipe\SET.md')) 'game recipe has exactly one shared set contract'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $firstOutput 'SyntheticAsset.uasset'))) 'generator does not fabricate Unreal assets'
