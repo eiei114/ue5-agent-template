@@ -23,16 +23,25 @@ FDelegateHandle RegisterDeferredDestroySessionCleanup(
 					return;
 				}
 
-				Operations->ClearOnDestroyComplete(*CompletionHandle);
+				// Removing this delegate from the provider's multicast list while it broadcasts unbinds
+				// and destroys this lambda, captures included. Copy everything needed afterwards into
+				// locals first and touch no capture after the clear.
+				const TSharedRef<FDeferredDestroySessionCleanupOperations> LocalOperations = Operations;
+				const FName LocalSessionName = SessionName;
+				const int32 LocalRecoveryAttemptsRemaining = RecoveryAttemptsRemaining;
+				const FDelegateHandle LocalCompletionHandle = *CompletionHandle;
 				CompletionHandle->Reset();
-				if (!Operations->HasNamedSession(SessionName))
+				LocalOperations->ClearOnDestroyComplete(LocalCompletionHandle);
+				if (!LocalOperations->HasNamedSession(LocalSessionName))
 				{
 					return;
 				}
 
-				if (RecoveryAttemptsRemaining <= 0)
+				// A reported success with the session still present is not retried: only a failed
+				// completion earns the recovery attempt.
+				if (bWasSuccessful || LocalRecoveryAttemptsRemaining <= 0)
 				{
-					Operations->ReportUnresolved(SessionName, bWasSuccessful);
+					LocalOperations->ReportUnresolved(LocalSessionName, bWasSuccessful);
 					return;
 				}
 
@@ -40,11 +49,11 @@ FDelegateHandle RegisterDeferredDestroySessionCleanup(
 				// attempt. The recovery delegate is registered before the request to avoid losing a
 				// fast completion from a provider.
 				const FDelegateHandle RecoveryHandle = RegisterDeferredDestroySessionCleanup(
-					Operations, SessionName, FDelegateHandle(), RecoveryAttemptsRemaining - 1);
-				if (!Operations->DestroySession(SessionName))
+					LocalOperations, LocalSessionName, FDelegateHandle(), LocalRecoveryAttemptsRemaining - 1);
+				if (!LocalOperations->DestroySession(LocalSessionName))
 				{
-					Operations->ClearOnDestroyComplete(RecoveryHandle);
-					Operations->ReportUnresolved(SessionName, false);
+					LocalOperations->ClearOnDestroyComplete(RecoveryHandle);
+					LocalOperations->ReportUnresolved(LocalSessionName, false);
 				}
 			}));
 

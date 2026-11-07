@@ -17,6 +17,7 @@ namespace
 		TArray<FTestDestroyDelegateEntry> Delegates;
 		bool bHasNamedSession = true;
 		bool bAcceptDestroyRequests = true;
+		bool bSuccessRemovesSession = true;
 		bool bUnresolvedReported = false;
 		int32 DestroyRequests = 0;
 	};
@@ -71,7 +72,7 @@ namespace
 				return;
 			}
 			const FTestDestroyDelegateEntry Pending = State->Delegates[0];
-			if (bSucceeded)
+			if (bSucceeded && State->bSuccessRemovesSession)
 			{
 				State->bHasNamedSession = false;
 			}
@@ -127,6 +128,18 @@ bool FMulticaOnlineDeferredDestroyCleanupTest::RunTest(const FString& Parameters
 		TestFalse(TEXT("successful recovery removes the stale session"), FakeSession.State->bHasNamedSession);
 		TestFalse(TEXT("successful recovery does not report unresolved cleanup"), FakeSession.State->bUnresolvedReported);
 		TestEqual(TEXT("recovery completion leaves no delegate"), FakeSession.State->Delegates.Num(), 0);
+	}
+
+	// A reported success that still leaves the named session is reported, not retried.
+	{
+		FControllableSessionInterface FakeSession;
+		FakeSession.State->bSuccessRemovesSession = false;
+		const TSharedRef<FDeferredDestroySessionCleanupOperations> Operations = FakeSession.MakeOperations();
+		RegisterDeferredDestroySessionCleanup(Operations, GameSessionName);
+		FakeSession.CompleteNext(GameSessionName, true);
+		TestEqual(TEXT("a reported success is not retried"), FakeSession.State->DestroyRequests, 0);
+		TestTrue(TEXT("a success that leaves the session is reported as unresolved"), FakeSession.State->bUnresolvedReported);
+		TestEqual(TEXT("a success that leaves the session leaves no delegate"), FakeSession.State->Delegates.Num(), 0);
 	}
 
 	// A rejected recovery request is reported explicitly instead of silently leaving a stale session.
