@@ -8,15 +8,41 @@ Windows offlineなら新規buildをqueueして成功扱いしない。MacBookは
 
 ## 新規UE projectを作る（許可Windowsのみ）
 
-project identityの契約は[AGENTS.md](../AGENTS.md)の「フォルダ」節にある1つだけ。`.uproject`名と`Modules[].Name`はtemplate名のまま、`EngineAssociation`は非空。読み先は`template-lock.json`の`identity`。
+通常はrecipeを選び、既存の`scripts/New-UETemplateScaffold.ps1`で生成する。Project Browserの手動作成は、scriptが使えない場合のfallbackであり、scaffoldと同じ生成物・identity規則になるとは限らない。First Person C++を全recipe共通の前提にしない。
 
-1. 正規既存UEのversion/pathとFirst Person C++テンプレートの存在、C++ toolchainを確認。過去実績はUE5.8.4の `Templates/TP_FirstPerson` 系、Variant_Horror系譜。
-2. 一意なproject parentを原子的作成する。例 `Production/Smoke_<full-runid>/`。UEウィザードが非空dirを拒否する場合は、その配下の新規project dirへ生成し、実際の構造を記録（上書きしない）。
-3. UE Project BrowserでGames → First Person → C++、当該版で利用できるvariantを選び、Starter Contentは不要なら無効。project名は空白・記号なしにする。
-4. 既存UE同梱templateを**生コピーして名前だけそのまま使う**のは、generatorを使わない手作業の場合だけ許可する。本リポジトリの`scripts/New-UETemplateScaffold.ps1`はウィザードではないが、生コピー放置ではない: コピー前に`.uproject`の`Modules[].Name`と`Source/**/[Module].Build.cs`を照合し、一致しなければ停止する。`EngineAssociation`も`Build.version`から導いて必ず埋める。手作業でrenameする場合はこの契約から外れるため、`template-lock.json`の`identity`と一致しないことを明記する。RoomSevenをコピー元にしない。
-5. Editor targetをbuildし、新規projectだけを開く。必要な場合にPython Editor Script Plugin / Editor Scripting Utilities / Movie Render Queueを有効にし、自分のEditorだけ再起動する。
-6. `/Game/<Name>/Maps/L_<Name>` を保存。Project SettingsでEditor Startup MapとGame Default Mapを指定。Package対象mapに含める。GameModeとPawn、camera、collision、入力設定をPlayで照合。
-7. 映像smokeなら原作の床・cube・point light・camera・2秒sequenceのみ。実行版なら歩ける小mapのみ。Fab/Splice不要で成立させる。
+### 通常経路：recipeを選んでscaffoldする
+
+| Recipe | Engine template | 用途 | scaffoldのidentity | 必須plugin |
+|---|---|---|---|---|
+| `spectator-explore` | `TP_FirstPerson` | ゲーム＋撮影（探索・鑑賞） | `materialize_project`指定なし（false）。templateをコピーし、`.uproject`名とmodule名は`TP_FirstPerson`のまま | `MovieRenderPipeline`、`OnlineSubsystem`、`OnlineSubsystemNull`、`OnlineSubsystemUtils`、`MulticaOnlineStarter` |
+| `vertical-loop` | `TP_BlankBP` | 撮影専用（capture-only）。gameplayを必須にしない | `materialize_project`指定なし（false）。templateをコピーし、`.uproject`名とmodule名は`TP_BlankBP`のまま | `MovieRenderPipeline` |
+| `third-person-game` | `TP_ThirdPerson` | ゲーム＋撮影（三人称） | `materialize_project: true`。template規則を適用し、`.uproject`名・`Source`・moduleを`ProjectName`へ置換 | `MovieRenderPipeline` |
+
+recipeの正本は各 [`recipe.json`](../templates/recipes/)、選択可能な値はgeneratorの`ValidateSet`。`third-person-game`は`ProjectName`をC++識別子（英字始まり、英数字と`_`のみ）にする。scaffoldの引数例：
+
+```powershell
+.\scripts\New-UETemplateScaffold.ps1 `
+  -Recipe vertical-loop `
+  -ProjectName AuraLoop `
+  -RunId 11111111-1111-4111-8111-111111111111 `
+  -EngineRoot 'C:\Program Files\Epic Games\UE_5.8'
+```
+
+例の`RunId`は形式を示す値なので、実行時には新しい一意のrun IDへ置き換える。
+
+`-Recipe`には上表のいずれかを指定する。実行前に既存UEのversion/path、当該templateと必要なtoolchainを確認し、`Production/<ProjectName>_<runid>/`が未使用であることを確かめる。生成後は`template-lock.json`の`identity`と`.uproject`のplugin設定を照合してからEditorで開く。generatorはidentityの照合に失敗したら停止し、既存projectを上書きしない。実際のmap/Sequence/作品Contentは生成しない。
+
+### 手動fallback：Project Browserを使う場合
+
+scaffold scriptが使えない場合に限り、recipe表のEngine templateを選ぶ（`spectator-explore`=`TP_FirstPerson`、`vertical-loop`=`TP_BlankBP`、`third-person-game`=`TP_ThirdPerson`）。Recipeの用途に合わせた選択であり、First Person C++やgameplayは一律必須ではない。Starter Contentは不要なら無効にする。
+
+Project BrowserはUE側のtemplate materialize規則でprojectを作るため、特に`vertical-loop`/`spectator-explore`では、scaffoldの`materialize_project: false`（template名を維持）と同じ出力にならない。手動生成物をscaffold生成物と同等と見なしたり、`.uproject`だけをrenameしたりしない。`.uproject`・`Modules[].Name`・`Source/**/[Module].Build.cs`が一致すること、`EngineAssociation`が非空であることを確認する。generatorが付与するrecipe文書・plugin payload・`template-lock.json`はProject Browserでは生成されないため、手動でlockを捏造・編集せず、選択recipe/template・UE版・確認したidentityを`QA.md`に記録する。必須pluginが利用可能でない、またはrecipeの記録物が必要な場合はscaffold生成物と同等と扱わず、通常経路が使えるまで停止する。RoomSevenをコピー元にしない。
+
+### 生成後の制作確認
+
+1. Editor targetをbuildし、新規projectだけを開く。必要な場合にPython Editor Script Plugin / Editor Scripting Utilities / Movie Render Queueを有効にし、自分のEditorだけ再起動する。
+2. `/Game/<Name>/Maps/L_<Name>`を保存。Project SettingsでEditor Startup MapとGame Default Mapを指定し、package対象mapに含める。GameModeとPawn、camera、collision、入力設定は、Playが用途に含まれるrecipeで照合する。
+3. 撮影smokeなら原作の床・cube・point light・camera・2秒sequenceのみ。ゲームsmokeなら歩ける小mapのみ。Fab/Splice不要で成立させる。
 
 ## leaseプロトコル（実装要件。スクリプト未同梱）
 
