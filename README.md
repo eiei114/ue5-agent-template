@@ -6,7 +6,7 @@ AIが短い映像または小さな鑑賞シーンを安全に作るための**�
 ## 現在の範囲
 
 - UE5.8系の既存制作から手順を抽出。UE本体、Room Seven、Fab、Splice、Mixamo、NCSの素材実物は含まない。
-- 生成器はインストール済みUE公式`TP_FirstPerson` / `TP_BlankBP` project templateから新規`.uproject`を排他的に作成する。projectファイル名と`Modules[].Name`はtemplate名のまま、`EngineAssociation`は必ず非空で、identityは`template-lock.json`の`identity`に記録する（詳細は[構造と更新](docs/07-architecture.md)）。ソースrepoにはEngine由来Contentや`.uasset`を含めない。
+- 生成器はインストール済みUE公式`TP_FirstPerson` / `TP_BlankBP` / `TP_ThirdPerson` project templateから新規`.uproject`を排他的に作成する。`spectator-explore` / `vertical-loop`は生コピーでtemplateのprojectファイル名と`Modules[].Name`を維持し、`third-person-game`は`TemplateDefs.ini`によるmaterialize経路で`<ProjectName>.uproject`と同名moduleへ置換する。`EngineAssociation`は必ず非空で、生成後のprojectファイル名・module名・`EngineAssociation`は`template-lock.json`の`identity`に記録する（詳細は[構造と更新](docs/07-architecture.md)）。ソースrepoにはEngine由来Contentや`.uasset`を含めない。
 - `scripts/New-UETemplateScaffold.ps1`は共通set契約・recipe・`template-lock.json`を加える。実際のmap/Sequence/作品Contentは出力しない。
 - Null/LAN用の小さなC++ plugin scaffoldを同梱する。UE版ごとのbuild/PIE/MRQ結果はQAに記録し、未検証範囲を実装済み/検証済みと混同しない。
 - 追加インストール・課金・公開・Git pushは自動化しない。
