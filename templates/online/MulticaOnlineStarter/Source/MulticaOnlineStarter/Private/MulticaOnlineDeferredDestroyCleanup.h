@@ -8,7 +8,10 @@
 struct FDeferredDestroySessionCleanupOperations
 {
 	TFunction<FDelegateHandle(FOnDestroySessionCompleteDelegate)> AddOnDestroyComplete;
-	TFunction<void(const FDelegateHandle&)> ClearOnDestroyComplete;
+	// IOnlineSession::ClearOnDestroySessionCompleteDelegate_Handle takes a non-const
+	// FDelegateHandle&, so the surface passes the handle by value and hands the provider a
+	// mutable copy instead of a const reference.
+	TFunction<void(FDelegateHandle)> ClearOnDestroyComplete;
 	TFunction<bool(FName)> DestroySession;
 	TFunction<bool(FName)> HasNamedSession;
 	TFunction<void(FName, bool)> ReportUnresolved;

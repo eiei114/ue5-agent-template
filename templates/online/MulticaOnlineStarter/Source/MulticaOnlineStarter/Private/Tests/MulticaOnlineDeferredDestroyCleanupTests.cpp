@@ -2,6 +2,7 @@
 
 #include "Misc/AutomationTest.h"
 #include "MulticaOnlineDeferredDestroyCleanup.h"
+#include "MulticaOnlineTestLifetimeMarker.h"
 #include "UObject/UObjectGlobals.h"
 
 namespace
@@ -44,7 +45,7 @@ namespace
 				SharedState->Delegates.Add(MoveTemp(Entry));
 				return Handle;
 			};
-			Operations->ClearOnDestroyComplete = [SharedState](const FDelegateHandle& Handle)
+			Operations->ClearOnDestroyComplete = [SharedState](FDelegateHandle Handle)
 			{
 				SharedState->Delegates.RemoveAll(
 					[&Handle](const FTestDestroyDelegateEntry& Entry) { return Entry.Handle == Handle; });
@@ -98,7 +99,7 @@ bool FMulticaOnlineDeferredDestroyCleanupTest::RunTest(const FString& Parameters
 		FControllableSessionInterface FakeSession;
 		const TSharedRef<FDeferredDestroySessionCleanupOperations> Operations = FakeSession.MakeOperations();
 		int32 DeadSubsystemCallbackCount = 0;
-		UObject* SubsystemLifetimeMarker = NewObject<UObject>(GetTransientPackage());
+		UObject* SubsystemLifetimeMarker = NewObject<UMulticaOnlineTestLifetimeMarker>(GetTransientPackage());
 		const FDelegateHandle UObjectBoundHandle = Operations->AddOnDestroyComplete(
 			FOnDestroySessionCompleteDelegate::CreateWeakLambda(
 				SubsystemLifetimeMarker,

@@ -77,7 +77,7 @@ namespace
 		{
 			return SessionForCleanup->AddOnDestroySessionCompleteDelegate_Handle(MoveTemp(Delegate));
 		};
-		Operations->ClearOnDestroyComplete = [SessionForCleanup](const FDelegateHandle& Handle)
+		Operations->ClearOnDestroyComplete = [SessionForCleanup](FDelegateHandle Handle)
 		{
 			SessionForCleanup->ClearOnDestroySessionCompleteDelegate_Handle(Handle);
 		};
