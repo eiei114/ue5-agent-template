@@ -55,6 +55,35 @@ function Copy-TextWithReplacement([string]$From, [string]$To, [string]$TemplateN
 	[System.IO.File]::WriteAllText($To, (Convert-TemplateName -Text $text -TemplateName $TemplateName -Name $Name), $encoding)
 }
 
+function Set-OnlineSessionProjectIdentifier([string]$ProjectConfigPath, [string]$Identifier) {
+	# The switch has to live in the project's Config/DefaultEngine.ini: a plugin's own
+	# Config/DefaultEngine.ini is never merged, because engine and project branches take
+	# precedence over plugin layers, so the setting would never reach GEngineIni.
+	$configText = ''
+	if (Test-Path -LiteralPath $ProjectConfigPath -PathType Leaf) {
+		$configText = [System.IO.File]::ReadAllText($ProjectConfigPath)
+	} elseif (-not (Test-Path -LiteralPath (Split-Path -Parent $ProjectConfigPath) -PathType Container)) {
+		throw "The generated project has no Config directory: $ProjectConfigPath"
+	}
+	if ([regex]::IsMatch($configText, '(?m)^\[MulticaOnlineStarter\][ \t]*\r?$') -or
+		[regex]::IsMatch($configText, '(?m)^SessionProjectIdentifier=')) {
+		throw 'The generated project engine config already defines the online session identifier.'
+	}
+	if ([regex]::IsMatch($configText, '(?m)^\[OnlineSubsystem\][ \t]*\r?$')) {
+		# Keep one owner for the provider selection: append only our own section.
+		$configText = $configText.TrimEnd("`r", "`n") + [Environment]::NewLine +
+			'[MulticaOnlineStarter]' + [Environment]::NewLine +
+			('SessionProjectIdentifier={0}' -f $Identifier) + [Environment]::NewLine
+	} else {
+		$configText = $configText.TrimEnd("`r", "`n") + [Environment]::NewLine +
+			'[OnlineSubsystem]' + [Environment]::NewLine +
+			'DefaultPlatformService=Null' + [Environment]::NewLine + [Environment]::NewLine +
+			'[MulticaOnlineStarter]' + [Environment]::NewLine +
+			('SessionProjectIdentifier={0}' -f $Identifier) + [Environment]::NewLine
+	}
+	[System.IO.File]::WriteAllText($ProjectConfigPath, $configText, [System.Text.UTF8Encoding]::new($false))
+}
+
 function Copy-MaterializedTemplate([string]$SourceTemplate, [string]$Destination, [string]$TemplateName, [string]$Name, [string]$EngineTemplateRoot) {
 	$defsPath = Join-Path $SourceTemplate 'Config\TemplateDefs.ini'
 	if (-not (Test-Path -LiteralPath $defsPath -PathType Leaf)) { throw "The template has no Config/TemplateDefs.ini to materialize from: $defsPath" }
@@ -378,6 +407,7 @@ try {
 		recipe = [string]$recipeData.recipe
 		purpose = [string]$recipeData.purpose
 		plugins = $pluginVersions
+		online_session_identifier = if (@($recipeData.required_plugins) -contains 'MulticaOnlineStarter') { 'eiei114.ue5-agent-template:{0}' -f $ProjectName } else { $null }
 		project_differences = $projectDifferences
 	}
 	$lockJson = ConvertTo-Json -InputObject $lock -Depth 12
@@ -400,6 +430,9 @@ try {
 		Get-ChildItem -LiteralPath (Join-Path $repoRoot 'templates\online\MulticaOnlineStarter') -Force | ForEach-Object {
 			Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $onlinePluginTarget $_.Name) -Recurse
 		}
+		Set-OnlineSessionProjectIdentifier `
+			-ProjectConfigPath (Join-Path $destinationPath 'Config\DefaultEngine.ini') `
+			-Identifier ('eiei114.ue5-agent-template:{0}' -f $ProjectName)
 	}
 
 	$lockPath = Join-Path $destinationPath 'template-lock.json'
