@@ -36,7 +36,7 @@ cleanなtemplate checkoutと既存UE installを指定し、同じName/RunIdの�
 .\scripts\New-UETemplateScaffold.ps1 `
   -Recipe spectator-explore `
   -ProjectName EmberWatch `
-  -RunId 01a19290-18dc-7bcc-ba2d-f647ec88dcf3 `
+  -RunId ([guid]::NewGuid().ToString()) `
   -EngineRoot 'C:\Program Files\Epic Games\UE_5.8' `
   -ProjectDiff 'Shared map: /Game/EmberWatch/Maps/L_Environment'
 ```
