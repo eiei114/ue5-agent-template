@@ -55,30 +55,33 @@ function Copy-TextWithReplacement([string]$From, [string]$To, [string]$TemplateN
 	[System.IO.File]::WriteAllText($To, (Convert-TemplateName -Text $text -TemplateName $TemplateName -Name $Name), $encoding)
 }
 
-function Set-OnlineSessionProjectIdentifier([string]$PluginConfigPath, [string]$Identifier) {
-	if (-not (Test-Path -LiteralPath $PluginConfigPath -PathType Leaf)) {
-		throw "The online starter config is missing: $PluginConfigPath"
+function Set-OnlineSessionProjectIdentifier([string]$ProjectConfigPath, [string]$Identifier) {
+	# The switch has to live in the project's Config/DefaultEngine.ini: a plugin's own
+	# Config/DefaultEngine.ini is never merged, because engine and project branches take
+	# precedence over plugin layers, so the setting would never reach GEngineIni.
+	$configText = ''
+	if (Test-Path -LiteralPath $ProjectConfigPath -PathType Leaf) {
+		$configText = [System.IO.File]::ReadAllText($ProjectConfigPath)
+	} elseif (-not (Test-Path -LiteralPath (Split-Path -Parent $ProjectConfigPath) -PathType Container)) {
+		throw "The generated project has no Config directory: $ProjectConfigPath"
 	}
-	$configText = [System.IO.File]::ReadAllText($PluginConfigPath)
-	$sectionMatches = [regex]::Matches($configText, '(?m)^\[MulticaOnlineStarter\][ \t]*\r?$')
-	$keyPattern = '(?m)^SessionProjectIdentifier=[ \t]*\r?$'
-	$keyMatches = [regex]::Matches($configText, $keyPattern)
-	$nextSectionIndex = [int]::MaxValue
-	if ($sectionMatches.Count -eq 1) {
-		foreach ($sectionHeading in [regex]::Matches($configText, '(?m)^\[')) {
-			if ($sectionHeading.Index -gt $sectionMatches[0].Index) {
-				$nextSectionIndex = $sectionHeading.Index
-				break
-			}
-		}
+	if ([regex]::IsMatch($configText, '(?m)^\[MulticaOnlineStarter\][ \t]*\r?$') -or
+		[regex]::IsMatch($configText, '(?m)^SessionProjectIdentifier=')) {
+		throw 'The generated project engine config already defines the online session identifier.'
 	}
-	if ($sectionMatches.Count -ne 1 -or $keyMatches.Count -ne 1 -or
-		$keyMatches[0].Index -le $sectionMatches[0].Index -or
-		$keyMatches[0].Index -ge $nextSectionIndex) {
-		throw 'The online starter config must contain exactly one empty SessionProjectIdentifier under [MulticaOnlineStarter].'
+	if ([regex]::IsMatch($configText, '(?m)^\[OnlineSubsystem\][ \t]*\r?$')) {
+		# Keep one owner for the provider selection: append only our own section.
+		$configText = $configText.TrimEnd("`r", "`n") + [Environment]::NewLine +
+			'[MulticaOnlineStarter]' + [Environment]::NewLine +
+			('SessionProjectIdentifier={0}' -f $Identifier) + [Environment]::NewLine
+	} else {
+		$configText = $configText.TrimEnd("`r", "`n") + [Environment]::NewLine +
+			'[OnlineSubsystem]' + [Environment]::NewLine +
+			'DefaultPlatformService=Null' + [Environment]::NewLine + [Environment]::NewLine +
+			'[MulticaOnlineStarter]' + [Environment]::NewLine +
+			('SessionProjectIdentifier={0}' -f $Identifier) + [Environment]::NewLine
 	}
-	$configText = [regex]::Replace($configText, $keyPattern, ('SessionProjectIdentifier={0}' -f $Identifier), 1)
-	[System.IO.File]::WriteAllText($PluginConfigPath, $configText, [System.Text.UTF8Encoding]::new($false))
+	[System.IO.File]::WriteAllText($ProjectConfigPath, $configText, [System.Text.UTF8Encoding]::new($false))
 }
 
 function Copy-MaterializedTemplate([string]$SourceTemplate, [string]$Destination, [string]$TemplateName, [string]$Name, [string]$EngineTemplateRoot) {
@@ -419,13 +422,16 @@ try {
 	}
 	if ($Recipe -eq 'spectator-explore') {
 		Copy-Item -LiteralPath (Join-Path (Join-Path $recipeRoot $Recipe) 'Play.md') -Destination (Join-Path $recipeOutput 'Play.md')
+		$onlineGuideTarget = Join-Path $destinationPath 'docs'
+		[System.IO.Directory]::CreateDirectory($onlineGuideTarget) | Out-Null
+		Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\08-online-foundations.md') -Destination (Join-Path $onlineGuideTarget '08-online-foundations.md')
 		$onlinePluginTarget = Join-Path $destinationPath 'Plugins\MulticaOnlineStarter'
 		[System.IO.Directory]::CreateDirectory($onlinePluginTarget) | Out-Null
 		Get-ChildItem -LiteralPath (Join-Path $repoRoot 'templates\online\MulticaOnlineStarter') -Force | ForEach-Object {
 			Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $onlinePluginTarget $_.Name) -Recurse
 		}
 		Set-OnlineSessionProjectIdentifier `
-			-PluginConfigPath (Join-Path $onlinePluginTarget 'Config\DefaultEngine.ini') `
+			-ProjectConfigPath (Join-Path $destinationPath 'Config\DefaultEngine.ini') `
 			-Identifier ('eiei114.ue5-agent-template:{0}' -f $ProjectName)
 	}
 

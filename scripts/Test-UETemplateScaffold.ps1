@@ -28,6 +28,33 @@ function Assert-True([bool]$Condition, [string]$Message) {
 	if (-not $Condition) { throw "ASSERT FAILED: $Message" }
 }
 
+function Get-ProductionResidue {
+	# .gitignore excludes Production/* from `git status --untracked-files=all`, so an ignored leftover
+	# from a crashed or interrupted run is invisible to the checkout comparison at the end of the
+	# suite. The repository ships exactly one file under Production/, so the directory is compared
+	# directly instead of trusting git to report what it ignores. This run's own fixture root and the
+	# generated project outputs are the transient entries allowed here; all of them are removed in the
+	# finally block. Only names this suite creates (its fixture root and its <prefix>_<id>_<id>-* and
+	# negative-case outputs, for any test id) are reported, so a developer's own generated
+	# Production/<Name>_<runid>/ projects do not block the suite.
+	$violations = New-Object System.Collections.Generic.List[string]
+	$allowed = @('PLACEHOLDER.md') + @([System.IO.Path]::GetFileName($fixtureRoot)) + @($outputNames)
+	$suiteOwnedPattern = '^(?:\.scaffold-test-[0-9a-f]{32}|[A-Za-z]+_([0-9a-f]{32})_\1-.+|Bad-Name_[0-9a-f]{32}-bad|escape_[0-9a-f]{32})$'
+	if (-not (Test-Path -LiteralPath $productionRoot -PathType Container)) {
+		$violations.Add('Production/: the directory is missing')
+		return $violations.ToArray()
+	}
+	if (-not (Test-Path -LiteralPath (Join-Path $productionRoot 'PLACEHOLDER.md') -PathType Leaf)) {
+		$violations.Add('Production/PLACEHOLDER.md: the tracked placeholder is missing')
+	}
+	foreach ($entry in @(Get-ChildItem -LiteralPath $productionRoot -Force)) {
+		if ($allowed -contains $entry.Name) { continue }
+		if ($entry.Name -cnotmatch $suiteOwnedPattern) { continue }
+		$violations.Add("Production/$($entry.Name): unexpected entry (ignored by .gitignore, so git status does not report it)")
+	}
+	return $violations.ToArray()
+}
+
 function Write-FixtureJson([string]$Path, [string]$Json) {
 	$parent = Split-Path -Parent $Path
 	[System.IO.Directory]::CreateDirectory($parent) | Out-Null
@@ -48,6 +75,9 @@ function Write-FixtureTemplate([string]$TemplateRoot, [string]$TemplateName, [st
 	Write-FixtureJson (Join-Path $sourceModule ($TemplateName + '.Build.cs')) ("using UnrealBuildTool;`n`npublic class {0} : ModuleRules`n{{`n}}`n" -f $TemplateName)
 	Write-FixtureJson (Join-Path $sourceModule ('Private\' + $TemplateName + 'Module.cpp')) ("#include `"CoreMinimal.h`"`n#include `"Modules/ModuleManager.h`"`n`nIMPLEMENT_PRIMARY_GAME_MODULE(FDefaultGameModuleImpl, {0}, `"{0}`");`n" -f $TemplateName)
 	Write-FixtureJson (Join-Path $TemplateRoot ('Source\' + $TemplateName + 'Target.cs')) ("using UnrealBuildTool;`n`npublic class {0}Target : TargetRules`n{{`n}}`n" -f $TemplateName)
+	# The installed New Project templates ship Config/DefaultEngine.ini; the online recipe appends
+	# its provider/session section to that copied project file.
+	Write-FixtureJson (Join-Path $TemplateRoot 'Config\DefaultEngine.ini') "[/Script/EngineSettings.GameMapsSettings]`r`nGameDefaultMap=/Game/ThirdPerson/Lvl_ThirdPerson.Lvl_ThirdPerson`r`n"
 }
 
 function Set-FixtureRecipeTemplate([string]$RepositoryRoot, [string]$RecipeName, [string]$TemplateName) {
@@ -63,7 +93,11 @@ function Assert-GeneratorFails([scriptblock]$Action, [string]$Message) {
 	Assert-True $failed $Message
 }
 
+$suiteError = $null
 try {
+	$initialProductionResidue = @(Get-ProductionResidue)
+	Assert-True ($initialProductionResidue.Count -eq 0) ("Production/ holds only the tracked placeholder before testing: " + ($initialProductionResidue -join '; '))
+
 	[System.IO.Directory]::CreateDirectory($fixtureEngine) | Out-Null
 	Write-FixtureJson (Join-Path $fixtureEngine 'Engine\Build\Build.version') '{"MajorVersion":5,"MinorVersion":8,"PatchVersion":4,"Changelist":58902052}'
 
@@ -156,13 +190,20 @@ try {
 	$starterDescriptor = [System.IO.File]::ReadAllText((Join-Path $firstOutput 'Plugins\MulticaOnlineStarter\MulticaOnlineStarter.uplugin')) | ConvertFrom-Json
 	$nullPluginEntries = @($starterDescriptor.Plugins | Where-Object { $_.Name -eq 'OnlineSubsystemNull' })
 	Assert-True ($nullPluginEntries.Count -eq 1 -and $nullPluginEntries[0].Enabled -eq $true) 'online starter plugin enables OnlineSubsystemNull'
-	$pluginConfig = [System.IO.File]::ReadAllText((Join-Path $firstOutput 'Plugins\MulticaOnlineStarter\Config\DefaultEngine.ini'))
-	Assert-True ($pluginConfig.Contains('DefaultPlatformService=Null')) 'online plugin selects the Null provider'
+	$pluginConfig = [System.IO.File]::ReadAllText((Join-Path $firstOutput 'Config\DefaultEngine.ini'))
+	Assert-True ($pluginConfig.Contains('DefaultPlatformService=Null')) 'generated project config selects the Null provider'
 	$expectedSessionIdentifier = "eiei114.ue5-agent-template:$projectName"
 	$otherSessionIdentifier = "eiei114.ue5-agent-template:$otherProjectName"
-	Assert-True ($pluginConfig.Contains("SessionProjectIdentifier=$expectedSessionIdentifier")) 'online plugin config uses the requested stable project key'
-	Assert-True (-not $pluginConfig.Contains('GlobalDefaultGameMode')) 'online plugin does not override a template-specific GameMode/Pawn'
-	Assert-True (Test-Path -LiteralPath (Join-Path $firstOutput 'Recipe\Play.md')) 'game recipe has a play delta'
+	Assert-True ($pluginConfig.Contains("SessionProjectIdentifier=$expectedSessionIdentifier")) 'generated project config carries the requested stable project key'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $firstOutput 'Plugins\MulticaOnlineStarter\Config\DefaultEngine.ini'))) 'online plugin does not ship a config the engine would ignore for its own section'
+	Assert-True ($pluginConfig.Contains('GlobalDefaultGameMode') -eq $false) 'generated project config does not add a template-specific GameMode override'
+	$generatedPlayPath = Join-Path $firstOutput 'Recipe\Play.md'
+	Assert-True (Test-Path -LiteralPath $generatedPlayPath) 'game recipe has a play delta'
+	$generatedPlay = [System.IO.File]::ReadAllText($generatedPlayPath)
+	Assert-True ($generatedPlay.Contains('docs/08-online-foundations.md')) 'generated play delta points to the packaged online foundations guide'
+	$onlineGuidePath = Join-Path $firstOutput 'docs\08-online-foundations.md'
+	Assert-True (Test-Path -LiteralPath $onlineGuidePath) 'game recipe includes the online foundations guide referenced by its play delta'
+	Assert-True ([System.IO.File]::ReadAllText($onlineGuidePath) -ceq [System.IO.File]::ReadAllText((Join-Path $repoRoot 'docs\08-online-foundations.md'))) 'generated online foundations guide matches the repository source'
 	Assert-True (Test-Path -LiteralPath (Join-Path $firstOutput 'Recipe\Capture.md')) 'game recipe has a capture delta'
 	Assert-True (Test-Path -LiteralPath (Join-Path $firstOutput 'Recipe\SET.md')) 'game recipe has exactly one shared set contract'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $firstOutput 'SyntheticAsset.uasset'))) 'generator does not fabricate Unreal assets'
@@ -181,10 +222,9 @@ try {
 	Assert-True ($lockData.online_session_identifier -ceq $expectedSessionIdentifier) 'lock records the same session identifier as the effective plugin config'
 	$secondLockData = $secondLock | ConvertFrom-Json
 	Assert-True ($secondLockData.online_session_identifier -ceq $expectedSessionIdentifier) 'copies of the same project keep a stable session identifier across run IDs'
-	$otherPluginConfig = [System.IO.File]::ReadAllText((Join-Path $otherOutput 'Plugins\MulticaOnlineStarter\Config\DefaultEngine.ini'))
+	$otherPluginConfig = [System.IO.File]::ReadAllText((Join-Path $otherOutput 'Config\DefaultEngine.ini'))
 	$otherLockData = [System.IO.File]::ReadAllText((Join-Path $otherOutput 'template-lock.json')) | ConvertFrom-Json
-	Assert-True ($otherPluginConfig.Contains("SessionProjectIdentifier=$otherSessionIdentifier")) 'a different project name writes its own effective session identifier'
-	Assert-True ($otherLockData.online_session_identifier -ceq $otherSessionIdentifier -and $otherSessionIdentifier -cne $expectedSessionIdentifier) 'different project names produce different lock identifiers'
+	Assert-True ($otherPluginConfig.Contains("SessionProjectIdentifier=$otherSessionIdentifier")) 'a different project name writes its own effective session identifier'	Assert-True ($otherLockData.online_session_identifier -ceq $otherSessionIdentifier -and $otherSessionIdentifier -cne $expectedSessionIdentifier) 'different project names produce different lock identifiers'
 	Write-Output 'PASS: game+capture recipe, official template copy, online plugin, and deterministic lock'
 
 	Invoke-Generator 'vertical-loop' $loopProjectName "$testId-a" @('capture: 1080x1920')
@@ -298,6 +338,10 @@ try {
 	Assert-GeneratorFails { Invoke-Generator 'spectator-explore' $existingProjectName "$testId-preserved" @() } 'existing output is rejected'
 	Assert-True ([System.IO.File]::ReadAllText($sentinel) -ceq 'untouched') 'existing output content is not overwritten'
 	Write-Output 'PASS: exclusive output-directory creation preserves existing content'
+} catch {
+	# `$_` is not the in-flight error inside a bare `finally`; capture it here so a cleanup failure
+	# cannot hide the original assertion.
+	$suiteError = $_
 } finally {
 	foreach ($path in $outputPaths) {
 		if (Test-Path -LiteralPath $path -PathType Container) {
@@ -307,7 +351,18 @@ try {
 	if (Test-Path -LiteralPath $fixtureRoot -PathType Container) {
 		Remove-Item -LiteralPath $fixtureRoot -Recurse -Force
 	}
+	$cleanupProblems = @(Get-ProductionResidue | ForEach-Object { "Production/ residual entry after cleanup: $_" })
+	if (Test-Path -LiteralPath $fixtureRoot) { $cleanupProblems += "fixture root still exists: $fixtureRoot" }
 	$finalCheckoutStatus = @(& git -C $repoRoot status --porcelain --untracked-files=all)
 	if ($LASTEXITCODE -ne 0) { throw 'Could not verify the developer checkout status after testing.' }
-	Assert-True (($finalCheckoutStatus -join "`n") -ceq ($initialCheckoutStatus -join "`n")) 'test suite leaves the developer checkout unchanged'
+	if (($finalCheckoutStatus -join "`n") -cne ($initialCheckoutStatus -join "`n")) {
+		$cleanupProblems += 'test suite leaves the developer checkout unchanged'
+		$cleanupProblems += ('before: ' + ($initialCheckoutStatus -join ' | '))
+		$cleanupProblems += ('after: ' + ($finalCheckoutStatus -join ' | '))
+	}
+	if ($cleanupProblems.Count -gt 0) {
+		if ($null -ne $suiteError) { Write-Output "ASSERT FAILED: $($suiteError.Exception.Message)" }
+		Assert-True $false ('test suite did not leave a clean tree: ' + ($cleanupProblems -join '; '))
+	}
+	if ($null -ne $suiteError) { throw $suiteError }
 }

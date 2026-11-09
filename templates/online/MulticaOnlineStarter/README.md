@@ -44,8 +44,8 @@ matches the `identity.project_file` its own lock recorded.
 server-side `PostLogin`/`Logout` update the replicated player count. Bind the
 GameState delegates to observe replicated changes. Configure the mode and its
 project-specific Pawn, then add a map with actual `PlayerStart` actors before
-claiming a spawn test. The plugin config selects Null as the session provider;
-it does not impose a global GameMode on the project.
+claiming a spawn test. The generated project config selects Null as the session
+provider; the plugin does not impose a global GameMode on the project.
 
 The session API is asynchronous. The helper caps its watchdog at 60 seconds.
 For a create/join that completes after the watchdog, the helper reports timeout,
@@ -55,17 +55,24 @@ the test project through its own verified cleanup path; do not infer success or
 delete another run's lease.
 
 LAN sessions advertise the project-scoped identifier written by the scaffold;
-search results with a different identifier are not joined. The scaffold writes
-`MulticaOnlineStarter.SessionProjectIdentifier` into the plugin's generated
-`Config/DefaultEngine.ini` using the requested `-ProjectName` (not the engine
-template name or run ID), and records the same value in
-`template-lock.json` as `online_session_identifier`. All clients for one project
-must be generated with the same `-ProjectName`; distinct project names produce
-distinct session identifiers. A missing or malformed identifier causes host and
-search/join operations to fail explicitly rather than using a shared fallback.
-Do not hand-edit the setting to bypass the scaffold contract.
+search results with a different identifier are not joined. The scaffold appends
+`[OnlineSubsystem] DefaultPlatformService=Null` and
+`[MulticaOnlineStarter] SessionProjectIdentifier=<value>` to the generated
+project's `Config/DefaultEngine.ini` (the project's own config wins over plugin
+layers, so the switch cannot live in the plugin directory) using the requested
+`-ProjectName` (not the engine template name or run ID), and records the same
+value in `template-lock.json` as `online_session_identifier`. All clients for one
+project must be generated with the same `-ProjectName`; distinct project names
+produce distinct session identifiers. A missing or malformed identifier causes
+host and search/join operations to fail explicitly rather than using a shared
+fallback. Do not hand-edit the setting to bypass the scaffold contract.
 
-The plugin's default config is Null/LAN. Do not switch it to EOS or Steam and
+The plugin ships no `Config/` directory of its own for these switch values.
+Engine and project config branches take precedence over plugin layers, so the
+same keys under `Plugins/MulticaOnlineStarter/Config/DefaultEngine.ini` are
+accepted by the engine loader and then never observed by `GConfig`.
+
+The plugin has no EOS/Steam switch. Do not point it at EOS or Steam and
 call this helper a working adapter: their login, product/AppID, invitation,
 presence, NAT, and non-LAN session settings need provider-specific work and
 tests. Never commit live EOS keys, Steam credentials, cookies, or client secrets.
