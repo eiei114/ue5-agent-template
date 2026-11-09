@@ -3,22 +3,17 @@
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
-#include "Misc/App.h"
+#include "MulticaOnlineSessionIdentity.h"
 #include "OnlineSessionSettings.h"
 #include "OnlineSubsystem.h"
 #include "OnlineSubsystemUtils.h"
 #include "TimerManager.h"
+#include "MulticaOnlineDeferredDestroyCleanup.h"
 
 namespace
 {
 	const FName GameSessionName(TEXT("GameSession"));
-	const FName ProjectIdentifierSetting(TEXT("MulticaProjectIdentifier"));
-
-	FString GetProjectIdentifier()
-	{
-		const FString ProjectName(FApp::GetProjectName());
-		return FString::Printf(TEXT("eiei114.ue5-agent-template:%s"), *ProjectName);
-	}
+	const FName ProjectIdentifierSetting(MulticaOnlineSessionIdentity::SessionSettingName);
 
 	IOnlineSubsystem* GetOnlineSubsystemForWorld(UWorld* World)
 	{
@@ -65,6 +60,37 @@ namespace
 					}
 				}));
 	}
+
+	TSharedRef<FDeferredDestroySessionCleanupOperations> MakeDestroyCleanupOperations(
+		const IOnlineSessionPtr& SessionInterface)
+	{
+		const IOnlineSessionPtr SessionForCleanup = SessionInterface;
+		TSharedRef<FDeferredDestroySessionCleanupOperations> Operations =
+			MakeShared<FDeferredDestroySessionCleanupOperations>();
+		Operations->AddOnDestroyComplete = [SessionForCleanup](FOnDestroySessionCompleteDelegate Delegate)
+		{
+			return SessionForCleanup->AddOnDestroySessionCompleteDelegate_Handle(MoveTemp(Delegate));
+		};
+		Operations->ClearOnDestroyComplete = [SessionForCleanup](FDelegateHandle Handle)
+		{
+			SessionForCleanup->ClearOnDestroySessionCompleteDelegate_Handle(Handle);
+		};
+		Operations->DestroySession = [SessionForCleanup](const FName SessionName)
+		{
+			return SessionForCleanup->DestroySession(SessionName);
+		};
+		Operations->HasNamedSession = [SessionForCleanup](const FName SessionName)
+		{
+			return SessionForCleanup->GetNamedSession(SessionName) != nullptr;
+		};
+		Operations->ReportUnresolved = [](const FName SessionName, const bool bLastDestroyReportedSuccess)
+		{
+			UE_LOG(LogTemp, Error,
+				TEXT("Deferred teardown cleanup could not remove session '%s' (provider reported success: %s); a later host attempt will report the unresolved session."),
+				*SessionName.ToString(), bLastDestroyReportedSuccess ? TEXT("true") : TEXT("false"));
+		};
+		return Operations;
+	}
 }
 
 void UMulticaOnlineSessionSubsystem::Deinitialize()
@@ -95,7 +121,19 @@ void UMulticaOnlineSessionSubsystem::Deinitialize()
 		if (CreateHandle.IsValid()) SessionInterface->ClearOnCreateSessionCompleteDelegate_Handle(CreateHandle);
 		if (FindHandle.IsValid()) SessionInterface->ClearOnFindSessionsCompleteDelegate_Handle(FindHandle);
 		if (JoinHandle.IsValid()) SessionInterface->ClearOnJoinSessionCompleteDelegate_Handle(JoinHandle);
-		if (DestroyHandle.IsValid()) SessionInterface->ClearOnDestroySessionCompleteDelegate_Handle(DestroyHandle);
+		if (ActiveOperation == EOperation::Destroy && DestroyHandle.IsValid())
+		{
+			// Register the provider-owned callback before clearing the UObject-bound one so the
+			// in-flight operation always has a completion observer.
+			RegisterDeferredDestroySessionCleanup(
+				MakeDestroyCleanupOperations(SessionInterface), GameSessionName, DestroyHandle);
+			DestroyHandle.Reset();
+		}
+		else if (DestroyHandle.IsValid())
+		{
+			SessionInterface->ClearOnDestroySessionCompleteDelegate_Handle(DestroyHandle);
+			DestroyHandle.Reset();
+		}
 		if (ActiveOperation != EOperation::Create && ActiveOperation != EOperation::Join && ActiveOperation != EOperation::Destroy &&
 			SessionInterface->GetNamedSession(GameSessionName) != nullptr)
 		{
@@ -120,6 +158,12 @@ void UMulticaOnlineSessionSubsystem::HostListenServer(const FString& MapPackageP
 		BroadcastImmediateFailure(TEXT("Use a valid project map path beginning with /Game/."));
 		return;
 	}
+	FString ProjectIdentifier;
+	if (!MulticaOnlineSessionIdentity::TryGetConfiguredProjectIdentifier(ProjectIdentifier))
+	{
+		BroadcastImmediateFailure(TEXT("The generated project has no valid MulticaOnlineStarter SessionProjectIdentifier; regenerate it with the scaffold tool."));
+		return;
+	}
 
 	IOnlineSubsystem* OnlineSubsystem = GetOnlineSubsystemForWorld(GetWorld());
 	SessionInterface = OnlineSubsystem ? OnlineSubsystem->GetSessionInterface() : nullptr;
@@ -130,7 +174,7 @@ void UMulticaOnlineSessionSubsystem::HostListenServer(const FString& MapPackageP
 	}
 	if (SessionInterface->GetNamedSession(GameSessionName) != nullptr)
 	{
-		BroadcastImmediateFailure(TEXT("A local session already exists; leave it before hosting again."));
+		BroadcastImmediateFailure(TEXT("A local session already exists; it may be unresolved teardown cleanup. Leave it before hosting again."));
 		return;
 	}
 
@@ -147,7 +191,7 @@ void UMulticaOnlineSessionSubsystem::HostListenServer(const FString& MapPackageP
 	Settings.bAllowJoinInProgress = true;
 	Settings.bUsesPresence = false;
 	Settings.NumPublicConnections = FMath::Clamp(MaxPlayers, 1, 16);
-	Settings.Set(ProjectIdentifierSetting, GetProjectIdentifier(), EOnlineDataAdvertisementType::ViaOnlineServiceAndPing);
+	Settings.Set(ProjectIdentifierSetting, ProjectIdentifier, EOnlineDataAdvertisementType::ViaOnlineServiceAndPing);
 
 	CreateHandle = SessionInterface->AddOnCreateSessionCompleteDelegate_Handle(
 		FOnCreateSessionCompleteDelegate::CreateUObject(this, &ThisClass::HandleCreateCompleted));
@@ -164,6 +208,12 @@ void UMulticaOnlineSessionSubsystem::FindAndJoinFirstLanSession(const float Time
 	if (bOperationPending || bOperationTimedOut)
 	{
 		BroadcastImmediateFailure(TEXT("Another session operation is running or still cleaning up after a timeout."));
+		return;
+	}
+	FString ProjectIdentifier;
+	if (!MulticaOnlineSessionIdentity::TryGetConfiguredProjectIdentifier(ProjectIdentifier))
+	{
+		BroadcastImmediateFailure(TEXT("The generated project has no valid MulticaOnlineStarter SessionProjectIdentifier; regenerate it with the scaffold tool."));
 		return;
 	}
 
@@ -430,13 +480,17 @@ void UMulticaOnlineSessionSubsystem::HandleFindCompleted(const bool bWasSuccessf
 		FinishOperation(false, TEXT("LAN search failed or found no advertised session."));
 		return;
 	}
+	FString ProjectIdentifier;
+	if (!MulticaOnlineSessionIdentity::TryGetConfiguredProjectIdentifier(ProjectIdentifier))
+	{
+		FinishOperation(false, TEXT("The generated project has no valid MulticaOnlineStarter SessionProjectIdentifier; regenerate it with the scaffold tool."));
+		return;
+	}
 
 	const FOnlineSessionSearchResult* MatchingSession = SessionSearch->SearchResults.FindByPredicate(
-		[](const FOnlineSessionSearchResult& SearchResult)
+		[ProjectIdentifier](const FOnlineSessionSearchResult& SearchResult)
 		{
-			FString ResultProjectIdentifier;
-			return SearchResult.Session.SessionSettings.Get(ProjectIdentifierSetting, ResultProjectIdentifier) &&
-				ResultProjectIdentifier == GetProjectIdentifier();
+			return MulticaOnlineSessionIdentity::MatchesProjectIdentifier(SearchResult, ProjectIdentifier);
 		});
 	if (!MatchingSession)
 	{
