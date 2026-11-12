@@ -14,18 +14,35 @@ $projectPrefix = "Ex_$testId"
 $loopProjectName = "Lp_$testId"
 $existingProjectName = "No_$testId"
 $otherProjectName = "Alt_$testId"
+$midFailName = "Mid_$testId"
+$lateFailName = "Late_$testId"
 $outputNames = @(
 	"${projectPrefix}_$testId-a",
 	"${projectPrefix}_$testId-b",
 	"${loopProjectName}_$testId-a",
 	"${existingProjectName}_$testId-preserved",
 	"Tp_${testId}_$testId-a",
-	"${otherProjectName}_$testId-c"
+	"${otherProjectName}_$testId-c",
+	"${midFailName}_$testId-retry"
 )
 $outputPaths = @($outputNames | ForEach-Object { Join-Path $productionRoot $_ })
 
 function Assert-True([bool]$Condition, [string]$Message) {
 	if (-not $Condition) { throw "ASSERT FAILED: $Message" }
+}
+
+function Get-StagingResidue([string]$Root, [string]$Run) {
+	# Staging names carry the run id, so a leftover is attributable to the run that failed to clean up.
+	return @(Get-ChildItem -LiteralPath $Root -Force -Filter ('.stage-{0}-*' -f $Run) | ForEach-Object { $_.Name })
+}
+
+function Assert-NoStagingResidue([string]$Root, [string]$Run) {
+	$residue = @(Get-StagingResidue -Root $Root -Run $Run)
+	Assert-True ($residue.Count -eq 0) "a stopped run removes its own staging directory (found: $($residue -join ', '))"
+}
+
+function Invoke-GeneratorAt([string]$GeneratorPath, [string]$EngineRootPath, [string]$RecipeName, [string]$Name, [string]$Run, [string[]]$Diff) {
+	& $GeneratorPath -Recipe $RecipeName -ProjectName $Name -RunId $Run -EngineRoot $EngineRootPath -ProjectDiff $Diff -AllowDirtyTemplate | Out-Null
 }
 
 function Get-ProductionResidue {
@@ -40,6 +57,9 @@ function Get-ProductionResidue {
 	$violations = New-Object System.Collections.Generic.List[string]
 	$allowed = @('PLACEHOLDER.md') + @([System.IO.Path]::GetFileName($fixtureRoot)) + @($outputNames)
 	$suiteOwnedPattern = '^(?:\.scaffold-test-[0-9a-f]{32}|[A-Za-z]+_([0-9a-f]{32})_\1-.+|Bad-Name_[0-9a-f]{32}-bad|escape_[0-9a-f]{32})$'
+	# A crashed run can also leave its own staging directory behind. That is not a published project,
+	# but it is still residue this suite must not tolerate, and `git status` cannot see it either.
+	$stagingPattern = '^\.stage-[A-Za-z0-9_-]*' + [regex]::Escape($testId) + '[A-Za-z0-9_-]*-[0-9a-f]{32}$'
 	if (-not (Test-Path -LiteralPath $productionRoot -PathType Container)) {
 		$violations.Add('Production/: the directory is missing')
 		return $violations.ToArray()
@@ -49,7 +69,7 @@ function Get-ProductionResidue {
 	}
 	foreach ($entry in @(Get-ChildItem -LiteralPath $productionRoot -Force)) {
 		if ($allowed -contains $entry.Name) { continue }
-		if ($entry.Name -cnotmatch $suiteOwnedPattern) { continue }
+		if ($entry.Name -cnotmatch $suiteOwnedPattern -and $entry.Name -cnotmatch $stagingPattern) { continue }
 		$violations.Add("Production/$($entry.Name): unexpected entry (ignored by .gitignore, so git status does not report it)")
 	}
 	return $violations.ToArray()
@@ -336,9 +356,69 @@ try {
 	[System.IO.Directory]::CreateDirectory($existingOutput) | Out-Null
 	$sentinel = Join-Path $existingOutput 'KEEP.txt'
 	[System.IO.File]::WriteAllText($sentinel, 'untouched', [System.Text.UTF8Encoding]::new($false))
-	Assert-GeneratorFails { Invoke-Generator 'spectator-explore' $existingProjectName "$testId-preserved" @() } 'existing output is rejected'
+	$existingRun = "$testId-preserved"
+	$existingFailure = ''
+	try { Invoke-Generator 'spectator-explore' $existingProjectName $existingRun @() } catch { $existingFailure = $_.Exception.Message }
+	Assert-True ($existingFailure.Contains('Output already exists; it was not modified')) 'existing output is rejected with the unchanged-output wording'
 	Assert-True ([System.IO.File]::ReadAllText($sentinel) -ceq 'untouched') 'existing output content is not overwritten'
-	Write-Output 'PASS: exclusive output-directory creation preserves existing content'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $existingOutput 'template-lock.json'))) 'a rejected run adds no completion marker to the existing output'
+	Assert-NoStagingResidue $productionRoot $existingRun
+	Write-Output 'PASS: an existing output is rejected before any copy and its content is preserved'
+
+	# A run that stops after it has already copied parts of the template must publish nothing. Before
+	# the staging rewrite these three cases each left a partial Production/<Name>_<runid>/ that later
+	# blocked the same Name/RunId forever (the repository rule is "stop when the output exists").
+
+	# Case A: a required plugin descriptor is missing, so the run stops after the .uproject copy.
+	$partialEngine = Join-Path $fixtureRoot 'PartialPluginEngineRoot'
+	Write-FixtureTemplate (Join-Path $partialEngine 'Templates\TP_FirstPerson') 'TP_FirstPerson' 'TP_FirstPerson'
+	Write-FixtureJson (Join-Path $partialEngine 'Engine\Build\Build.version') '{"MajorVersion":5,"MinorVersion":8,"PatchVersion":4,"Changelist":58902052}'
+	foreach ($pluginFixture in @(
+		@{ RelativePath = 'Engine\Plugins\Online\OnlineSubsystem\OnlineSubsystem.uplugin' },
+		@{ RelativePath = 'Engine\Plugins\Online\OnlineSubsystemUtils\OnlineSubsystemUtils.uplugin' },
+		@{ RelativePath = 'Engine\Plugins\MovieScene\MovieRenderPipeline\MovieRenderPipeline.uplugin' }
+	)) {
+		Write-FixtureJson (Join-Path $partialEngine $pluginFixture.RelativePath) '{"FileVersion":3,"Version":1,"VersionName":"1.0"}'
+	}
+	$midFailRun = "$testId-retry"
+	$midFailOutput = $outputPaths[6]
+	$midFailFailure = ''
+	try { Invoke-GeneratorAt $generator $partialEngine 'spectator-explore' $midFailName $midFailRun @() } catch { $midFailFailure = $_.Exception.Message }
+	Assert-True ($midFailFailure.Contains('Required plugin metadata is missing')) 'a missing plugin descriptor stops the run mid-copy'
+	Assert-True (-not (Test-Path -LiteralPath $midFailOutput)) 'a mid-copy failure publishes no Production/<Name>_<runid> directory'
+	Assert-NoStagingResidue $productionRoot $midFailRun
+	Write-Output 'PASS: a failure after the .uproject copy leaves no partial output project and no staging directory'
+
+	# Case B: the recipe copy stage stops part-way (a recipe file is missing). The clone lives under a
+	# short directory name and the run id is short because the staging name adds the run id and a
+	# nonce: the fixture already sits inside the developer checkout, and a deep path would stop the run
+	# on the Win32 path limit instead of on the missing file.
+	$recipeRepoRoot = Join-Path $fixtureRoot 'RF'
+	& git -C $repoRoot clone --quiet --local --no-hardlinks --no-tags --no-checkout $repoRoot $recipeRepoRoot
+	if ($LASTEXITCODE -ne 0) { throw 'Could not create the isolated recipe-copy repository fixture.' }
+	& git -C $recipeRepoRoot checkout --quiet --detach $templateRevision
+	if ($LASTEXITCODE -ne 0) { throw "Could not check out revision $templateRevision in the isolated recipe-copy repository fixture." }
+	[System.IO.Directory]::CreateDirectory((Join-Path $recipeRepoRoot 'Production')) | Out-Null
+	$recipeFailGenerator = Join-Path $recipeRepoRoot 'scripts\New-UETemplateScaffold.ps1'
+	Copy-Item -LiteralPath $generator -Destination $recipeFailGenerator -Force
+	Remove-Item -LiteralPath (Join-Path $recipeRepoRoot 'templates\recipes\vertical-loop\Capture.md') -Force
+	$lateFailRun = 'late'
+	$lateFailOutput = Join-Path (Join-Path $recipeRepoRoot 'Production') "${lateFailName}_$lateFailRun"
+	$lateFailFailure = ''
+	try { Invoke-GeneratorAt $recipeFailGenerator $fixtureEngine 'vertical-loop' $lateFailName $lateFailRun @() } catch { $lateFailFailure = $_.Exception.Message }
+	Assert-True ($lateFailFailure.Contains('Capture.md')) 'a missing recipe file stops the run at the recipe copy stage'
+	Assert-True (-not (Test-Path -LiteralPath $lateFailOutput)) 'the recipe-copy failure publishes no Production/<Name>_<runid> directory'
+	Assert-NoStagingResidue (Join-Path $recipeRepoRoot 'Production') $lateFailRun
+	Write-Output 'PASS: a failure at the recipe copy stage leaves no partial output project and no staging directory'
+
+	# Case C: the same Name/RunId succeeds once the engine is sound again, so a stopped run never
+	# blocks its own retry.
+	Invoke-Generator 'spectator-explore' $midFailName $midFailRun @('Map: /Game/Test/Maps/L_Retry')
+	Assert-True (Test-Path -LiteralPath (Join-Path $midFailOutput 'template-lock.json')) 'the same Name/RunId generates successfully after the failure'
+	Assert-True (Test-Path -LiteralPath (Join-Path $midFailOutput 'TP_FirstPerson.uproject')) 'the retried run publishes the complete project'
+	$retryLock = [System.IO.File]::ReadAllText((Join-Path $midFailOutput 'template-lock.json')) | ConvertFrom-Json
+	Assert-True ($retryLock.identity.project_file -eq 'TP_FirstPerson.uproject') 'the retried run records the same project identity as a first run'
+	Write-Output 'PASS: a stopped run does not block regeneration of the same Name/RunId'
 } catch {
 	# `$_` is not the in-flight error inside a bare `finally`; capture it here so a cleanup failure
 	# cannot hide the original assertion.

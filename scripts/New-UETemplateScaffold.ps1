@@ -273,6 +273,22 @@ if (-not $destinationPath.StartsWith($productionPrefix, [System.StringComparison
 	throw 'The computed output directory escapes Production.'
 }
 
+# Nothing is written under Production/<Name>_<runid>/ directly. The whole set is built in a sibling
+# staging directory and published with a single rename, so a run that stops halfway cannot leave a
+# partial project that the "existing output stops" rule would then treat as a real one. The staging
+# name carries this run's id plus a fresh nonce, so two runs never share a staging directory and
+# cleanup can only ever remove the one this run created.
+$stagingName = '.stage-{0}-{1}' -f $RunId, [Guid]::NewGuid().ToString('N')
+$stagingPath = [System.IO.Path]::GetFullPath((Join-Path $productionRoot $stagingName))
+if (-not $stagingPath.StartsWith($productionPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+	throw 'The computed staging directory escapes Production.'
+}
+# Fail fast with the wording the rename would produce. The rename below stays the authoritative
+# exclusivity decision; this check only avoids copying for an output that already exists.
+if (Test-Path -LiteralPath $destinationPath) {
+	throw "Output already exists; it was not modified: $destinationPath"
+}
+
 if (-not ('MulticaTemplateDirectory' -as [type])) {
 	Add-Type -TypeDefinition @'
 using System;
@@ -283,25 +299,22 @@ public static class MulticaTemplateDirectory {
 }
 '@
 }
-if (-not [MulticaTemplateDirectory]::CreateDirectory($destinationPath, [IntPtr]::Zero)) {
+if (-not [MulticaTemplateDirectory]::CreateDirectory($stagingPath, [IntPtr]::Zero)) {
 	$win32Error = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-	if ($win32Error -eq 183) {
-		throw "Output already exists; it was not modified: $destinationPath"
-	}
-	throw "Could not exclusively create the output directory (Win32 $win32Error): $destinationPath"
+	throw "Could not exclusively create the staging directory (Win32 $win32Error): $stagingPath"
 }
 
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 try {
 	if ($materialize) {
-		Copy-MaterializedTemplate -SourceTemplate $sourceTemplate -Destination $destinationPath -TemplateName $templateName -Name $ProjectName -EngineTemplateRoot $engineTemplateRoot
+		Copy-MaterializedTemplate -SourceTemplate $sourceTemplate -Destination $stagingPath -TemplateName $templateName -Name $ProjectName -EngineTemplateRoot $engineTemplateRoot
 	} else {
 		Get-ChildItem -LiteralPath $sourceTemplate -Force | ForEach-Object {
-			Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $destinationPath $_.Name) -Recurse
+			Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $stagingPath $_.Name) -Recurse
 		}
 	}
 
-	$projectFile = Join-Path $destinationPath $projectFileName
+	$projectFile = Join-Path $stagingPath $projectFileName
 	if (-not (Test-Path -LiteralPath $projectFile -PathType Leaf)) {
 		throw "The installed template project file was not copied to $projectFileName."
 	}
@@ -316,7 +329,7 @@ try {
 			$module.Name = Convert-TemplateName -Text ([string]$module.Name) -TemplateName $templateName -Name $ProjectName
 		}
 	}
-	$copiedIdentity = Get-ScaffoldIdentityReport -Descriptor $projectDescriptor -SourceRoot (Join-Path $destinationPath 'Source') -ProjectFileName $projectFileName
+	$copiedIdentity = Get-ScaffoldIdentityReport -Descriptor $projectDescriptor -SourceRoot (Join-Path $stagingPath 'Source') -ProjectFileName $projectFileName
 	if ($copiedIdentity.Problems.Count -gt 0) {
 		throw ('Project identity check stopped: the copied project/module identity does not match the copied Source/ tree, so the project descriptor was not rewritten. Unmatched paths: ' + ($copiedIdentity.Problems -join '; '))
 	}
@@ -412,7 +425,7 @@ try {
 	}
 	$lockJson = ConvertTo-Json -InputObject $lock -Depth 12
 
-	$recipeOutput = Join-Path $destinationPath 'Recipe'
+	$recipeOutput = Join-Path $stagingPath 'Recipe'
 	[System.IO.Directory]::CreateDirectory($recipeOutput) | Out-Null
 	Copy-Item -LiteralPath (Join-Path $recipeRoot 'common\SET.md') -Destination (Join-Path $recipeOutput 'SET.md')
 	Copy-Item -LiteralPath (Join-Path (Join-Path $recipeRoot $Recipe) 'recipe.json') -Destination (Join-Path $recipeOutput 'recipe.json')
@@ -422,20 +435,22 @@ try {
 	}
 	if ($Recipe -eq 'spectator-explore') {
 		Copy-Item -LiteralPath (Join-Path (Join-Path $recipeRoot $Recipe) 'Play.md') -Destination (Join-Path $recipeOutput 'Play.md')
-		$onlineGuideTarget = Join-Path $destinationPath 'docs'
+		$onlineGuideTarget = Join-Path $stagingPath 'docs'
 		[System.IO.Directory]::CreateDirectory($onlineGuideTarget) | Out-Null
 		Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\08-online-foundations.md') -Destination (Join-Path $onlineGuideTarget '08-online-foundations.md')
-		$onlinePluginTarget = Join-Path $destinationPath 'Plugins\MulticaOnlineStarter'
+		$onlinePluginTarget = Join-Path $stagingPath 'Plugins\MulticaOnlineStarter'
 		[System.IO.Directory]::CreateDirectory($onlinePluginTarget) | Out-Null
 		Get-ChildItem -LiteralPath (Join-Path $repoRoot 'templates\online\MulticaOnlineStarter') -Force | ForEach-Object {
 			Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $onlinePluginTarget $_.Name) -Recurse
 		}
 		Set-OnlineSessionProjectIdentifier `
-			-ProjectConfigPath (Join-Path $destinationPath 'Config\DefaultEngine.ini') `
+			-ProjectConfigPath (Join-Path $stagingPath 'Config\DefaultEngine.ini') `
 			-Identifier ('eiei114.ue5-agent-template:{0}' -f $ProjectName)
 	}
 
-	$lockPath = Join-Path $destinationPath 'template-lock.json'
+	$lockPath = Join-Path $stagingPath 'template-lock.json'
+	# template-lock.json is written last and is the completion marker: a published directory that
+	# lacks it is not a finished project, whatever else it contains.
 	[System.IO.File]::WriteAllText($lockPath, $lockJson + [Environment]::NewLine, $utf8NoBom)
 
 	if (-not (Test-Path -LiteralPath $projectFile -PathType Leaf)) {
@@ -445,7 +460,34 @@ try {
 	if ([string]$writtenDescriptor.EngineAssociation -ne $engineAssociationValue) {
 		throw "Project identity check stopped: $projectFileName was written without the expected EngineAssociation '$engineAssociationValue'."
 	}
+	if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
+		throw "The completion marker was not written, so the staged project is incomplete: $lockPath"
+	}
+
+	# Publish: a single rename of the fully built staging directory. Directory.Move refuses an
+	# existing target, so this is both the atomic publication and the final exclusivity decision.
+	try {
+		[System.IO.Directory]::Move($stagingPath, $destinationPath)
+	} catch {
+		if (Test-Path -LiteralPath $destinationPath) {
+			throw "Output already exists; it was not modified: $destinationPath"
+		}
+		throw "The staged project could not be published and $destinationPath was not created: $($_.Exception.Message)"
+	}
+	$stagingPath = $null
 	Write-Output "Created $destinationName from the installed $templateName template ($projectFileName, EngineAssociation '$engineAssociationValue', UE $engineVersion, recipe $Recipe)."
 } catch {
-	throw "Scaffold generation stopped. The exclusive output directory was left untouched by cleanup to avoid deleting work: $destinationPath. $($_.Exception.Message)"
+	# Only this run's staging directory may be removed. The published path and any other run's
+	# output are never touched: a failed run must not delete somebody else's project.
+	$generationError = $_
+	$cleanupNote = ''
+	if ($null -ne $stagingPath -and (Test-Path -LiteralPath $stagingPath)) {
+		try {
+			[System.IO.Directory]::Delete($stagingPath, $true)
+			$cleanupNote = " Its own staging directory was removed: $stagingPath."
+		} catch {
+			$cleanupNote = " Warning: its own staging directory could not be removed and remains incomplete: $stagingPath ($($_.Exception.Message))."
+		}
+	}
+	throw "Scaffold generation stopped. Nothing was published, so no output directory exists at $destinationPath.$cleanupNote $($generationError.Exception.Message)"
 }

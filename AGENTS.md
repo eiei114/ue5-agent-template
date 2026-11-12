@@ -8,7 +8,7 @@ README → docs/01-start → 対象工程のdocs。現行Issue・owner指示・�
 
 1. Issueの納品種別（映像/実行版/ソース）と非目標、既存writerを確認。
 2. online Windows Pi優先。OS/GPU/空き容量/既存UE/SDK/モデル・effort/利用枠/active runsを現地照合。Mac miniでbuild/render/downloadしない。
-3. 新規 `Production/<Name>_<runid>/` を排他的作成。既存なら停止。既存project再開は所有権照合後、LEASE.jsonをCreateNew相当で取得。
+3. 新規 `Production/<Name>_<runid>/` を排他的に作成。既存なら停止。既存project再開は所有権照合後、LEASE.jsonをCreateNew相当で取得。生成器は`Production/.stage-<runid>-<nonce>/`に全成果物を書き、最後に単一renameで公開するため、途中で失敗したrunの`Production/<Name>_<runid>/`は存在しない。
 4. 最初は追加素材なしの立方体・床・光・カメラ。小さいpreview→目視→調整→本番。UEテンプレートは当該hostの正規既存インストールから生成。
 5. 映像はフレーム・全編・継ぎ目・音を検査。実行版はShipping梱包後、別フォルダ展開から起動・操作・5分測定。
 6. CREDITS / QA / manifest / SHAを**同じ最終版**へ固定して納品。見た目未検品や旧版ZIPは完成でない。
@@ -52,5 +52,12 @@ project identityの契約は1つだけ。`scripts/New-UETemplateScaffold.ps1`は
 - それ以外のrecipe（`spectator-explore` / `vertical-loop`）は生コピーするため、template名（`TP_FirstPerson` / `TP_BlankBP`）がそのまま残る。ここで`.uproject`だけrenameすると`Source/**/*.Build.cs`と食い違う。
 
 generatorはコピー前にdescriptorと`Source/`を照合し、既知パターンに一致しなければ**推測で続行せず停止**して未一致pathを列挙する。コピー後にもコピー物同士で同じ照合を行い、食い違えばdescriptorを書き換えずに停止する。生成後に`.uproject`を手でrenameしない。identityは`template-lock.json`の`identity`（`project_file` / `project_modules` / `engine_association`、`schema_version: 2`）に記録され、そこで確認できる。
+
+## 生成の公開と残骸の扱い
+
+- 生成物は`Production/.stage-<runid>-<nonce>/`に作り、**全部できた後に単一renameで`Production/<Name>_<runid>/`へ公開する**。`template-lock.json`は最後に書く完成マーカーであり、これが無い`Production/<Name>_<runid>/`は未完成として扱う。
+- 失敗したrunは**自分のstagingだけ**を削除して停止する。既存の公開済projectには触れない。失敗は`Production/<Name>_<runid>/`を作らないので、同じ`Name`/`RunId`での再実行を恒久的にブロックしない。
+- 公開済パスに`template-lock.json`が無い残骸は、**そのrunの生成が失敗終端していることを確認できた場合に限り**削除候補になる。他のrunの出力・他人のstagingは消さない。判断できない場合は`AGENTS.md:11`の「既存なら停止」を優先して停止し、確認した内容をQAへ記録する。
+- 削除を自動化しない。残骸の判断はwriter/人間に残す。
 
 旧版は上書きしない。Out/_v1のような旧運用よりrun別の分離を推奨。Outに置いただけで納品とは呼ばない。

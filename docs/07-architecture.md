@@ -28,6 +28,12 @@
 
 lockは`schema_version: 2`で、上記3項目を`identity`に持つ。単位は作品（`Production/<Name>_<runid>/template-lock.json`）であり、identityを手で書き換えない。
 
+### 公開と完成マーカー
+
+generatorは`Production/.stage-<runid>-<nonce>/`に全成果物を作り、最後に単一renameで`Production/<Name>_<runid>/`へ公開する。renameは既存パスを拒否するので、これが最終的な排他判定でもある。途中で失敗したrunは自分のstagingだけを削除して停止するため、`Production/<Name>_<runid>/`は部分出力を残さない。
+
+`template-lock.json`は**完成マーカー**であり、最後に書かれる。生成直後に`template-lock.json`が無いディレクトリは未完成として扱い、完成projectと区別する。残骸（lockの無い公開済パス）の削除は、そのrunの失敗終端を確認できた場合に限る。他runの出力・他人のstagingを消さない。判断できない場合は停止し、観測したpathをQAへ記録する。
+
 ## lockと更新手順
 
 lockはtemplate commit SHA、clean/dirty状態、UE version/changelist、Engine/plugin version、recipe/use、作品差分、project identityを固定する。実作はcommit済み・cleanなtemplateから生成する。dirty時の生成は拒否し、テストだけ明示的な`-AllowDirtyTemplate`を使う。

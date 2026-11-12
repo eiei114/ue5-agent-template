@@ -1,5 +1,15 @@
 # 変更履歴
 
+## Unreleased — DOT-3076
+
+- `scripts/New-UETemplateScaffold.ps1` は `Production/.stage-<runid>-<nonce>/` に全成果物を書き、最後に単一renameで`Production/<Name>_<runid>/`へ公開するようになった。`Directory.Move`は既存パスを拒否するので、これが生成のatomicな公開と最終的な排他判定を兼ねる。
+- 失敗時はcatchが**そのrun自身のstagingだけ**を削除する。公開済の既存projectや他runのstagingには触れない。従来の「失敗時は出力ディレクトリをそのまま残す」は廃止した。
+- 途中で失敗したrunの`Production/<Name>_<runid>/`は存在しないため、同じ`Name`/`RunId`での再生成を残骸が恒久的にブロックしなかった（従来は`Output already exists; it was not modified`で拒否され、`AGENTS.md`の削除禁止規則と衝突して解消不能だった）。
+- `template-lock.json`を完成マーカーとして明文規定した（最後に書き、公開前に存在を確認する）。`docs/01-start.md`、`AGENTS.md`、`docs/07-architecture.md`に「lockの無い生成ディレクトリは未完成」「残骸の削除は自runの失敗終端を確認できた場合だけ、他runには触れない、判断できない場合は停止」を書いた。
+- `scripts/Test-UETemplateScaffold.ps1`に途中失敗のassert群を追加した（既存8群は維持）: plugin metadata欠落（`.uproject`コピー後）とrecipeコピー段階の失敗で出力ディレクトリとstagingが残らないこと、失敗後に同じ`Name`/`RunId`で正しく再生成できること、既存出力は従来どおり拒否され内容が保持されること。`Production/`の残骸gateは`.stage-*`も検出する。
+- 実測（本host Windows、`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Test-UETemplateScaffold.ps1`）: 変更前のgeneratorでは`ASSERT FAILED: a mid-copy failure publishes no Production/<Name>_<runid> directory`でexit 1。変更後は11 group PASS・`EXIT=0`。
+- Unverified: UE実機（Editor/build/PIE/MRQ/Shipping）は実行していない。本変更はPowerShell層のみで、`Production/`の既存生成物には触れていない。
+
 ## Unreleased — 動画モーキャプ
 
 - `docs/09-video-mocap.md` を追加した。単眼のダンス動画から MediaPipe で体・手・顔の点を取り、VRM の骨の回転 → VRMA → UE（VRM4U）→ MV にする工程、単眼で取れない量の補い方、確認方法、1 本での実測、残る限界、権利の gate をまとめた。
