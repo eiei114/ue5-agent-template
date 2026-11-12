@@ -13,7 +13,7 @@ writer/lease nonce・取得/解放receipt（`scripts/Lease-UETemplateProject.ps1
 | 視点/移動/zoom/collision/reset/help/終了 | unverified | 項目別に記録 |
 | 最新版5分Play・性能 | unverified | 解像度/品質/平均/スパイク/測定時間 |
 | ゲーム実音の聴取 | unverified | |
-| エンコード前の画像列検査 | unverified | `evidence/frames-check.json`。start/end(exclusive)/命名/期待解像度、欠番・範囲外・曖昧名・0 byte・decode・解像度の各判定 |
+| エンコード前の画像列検査 | unverified | `evidence/frames-check.json`。start/end(exclusive)/命名/期待解像度（EXR列は`-Extension .exr`）、欠番・範囲外・曖昧名・0 byte・decode・解像度の各判定。経路B（`mrq-native-mp4`）は元PNG列が無いので本欄を`non-goal`とし、[QA-ENC-01]〜[QA-ENC-03]の記録で代替する（空欄のままpassにしない） |
 | MRQ完了通知・exit code | unverified | 通知本文/exit。画像列検査とは別欄に記録 |
 | [QA-ENC-01] `encode_path`（書き出し経路） | unverified | `mrq-image-sequence+external-ffmpeg` / `mrq-native-mp4`（他は自由記述）。`docs/05-qa.md`の経路A/Bに対応 |
 | [QA-ENC-02] `mrq_output_setting`（MRQの出力設定名） | unverified | 実際に選んだ表示名（例 `H.264 MP4 [8bit]`、`PNG image sequence`） |
