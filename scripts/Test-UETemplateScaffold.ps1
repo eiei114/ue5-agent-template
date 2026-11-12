@@ -166,6 +166,16 @@ function Assert-GeneratorFails([scriptblock]$Action, [string]$Message) {
 	Assert-True $failed $Message
 }
 
+function Get-CppCodeOnly([string]$Text) {
+	# A comment or a string literal that mentions IMPLEMENT_MODULE is not an entry point: commenting
+	# the macro out is one of the ways a module silently loses its entry point, so the scan reads
+	# only the code. One pass with alternation keeps the remaining text in order.
+	# Limits (deliberate): `#if 0` regions and raw string literals are not parsed, so a module whose
+	# only entry point sits inside a disabled block is still accepted.
+	$pattern = '(?s)(?<block>/\*.*?\*/)|(?<line>//[^\r\n]*)|(?<string>"(?:\\.|[^"\\\r\n])*")|(?<char>''(?:\\.|[^''\\\r\n])*'')'
+	return [regex]::Replace($Text, $pattern, '')
+}
+
 function Get-PluginModuleEntryPointViolations([string]$PluginRoot) {
 	# A `.uplugin` declares the modules UE creates, and each of them needs the entry point that
 	# IMPLEMENT_MODULE generates (Engine/Source/Runtime/Core/.../ModuleManager.h/.cpp); a module
@@ -191,7 +201,7 @@ function Get-PluginModuleEntryPointViolations([string]$PluginRoot) {
 	}
 	$entryPoints = New-Object System.Collections.Generic.List[object]
 	foreach ($sourceFile in $sourceFiles) {
-		$text = [System.IO.File]::ReadAllText($sourceFile.FullName)
+		$text = Get-CppCodeOnly ([System.IO.File]::ReadAllText($sourceFile.FullName))
 		foreach ($match in [regex]::Matches($text, 'IMPLEMENT_MODULE\s*\(\s*(?<implementation>[A-Za-z_][A-Za-z0-9_:]*)\s*,\s*(?<module>[A-Za-z_][A-Za-z0-9_]*)\s*\)')) {
 			$entryPoints.Add([pscustomobject]@{
 				Module = $match.Groups['module'].Value
@@ -375,7 +385,7 @@ try {
 	Assert-True ($templateEntryPointViolations.Count -eq 0) ('repository plugin declares every module with a matching IMPLEMENT_MODULE entry point: ' + ($templateEntryPointViolations -join '; '))
 	$generatedEntryPointViolations = @(Get-PluginModuleEntryPointViolations (Join-Path $firstOutput 'Plugins\MulticaOnlineStarter'))
 	Assert-True ($generatedEntryPointViolations.Count -eq 0) ('the generated plugin copy carries a matching IMPLEMENT_MODULE entry point for every declared module: ' + ($generatedEntryPointViolations -join '; '))
-	$generatedModuleCpp = @(Get-ChildItem -LiteralPath (Join-Path $pluginDirectory 'Source') -Filter '*.cpp' -File -Recurse | Where-Object { [System.IO.File]::ReadAllText($_.FullName) -match 'IMPLEMENT_MODULE\s*\(\s*[A-Za-z_][A-Za-z0-9_:]*\s*,\s*MulticaOnlineStarter\s*\)' })
+	$generatedModuleCpp = @(Get-ChildItem -LiteralPath (Join-Path $pluginDirectory 'Source') -Filter '*.cpp' -File -Recurse | Where-Object { (Get-CppCodeOnly ([System.IO.File]::ReadAllText($_.FullName))) -match 'IMPLEMENT_MODULE\s*\(\s*[A-Za-z_][A-Za-z0-9_:]*\s*,\s*MulticaOnlineStarter\s*\)' })
 	Assert-True ($generatedModuleCpp.Count -eq 1) 'the generated project ships exactly one IMPLEMENT_MODULE entry point for MulticaOnlineStarter'
 	# Repository-wide inventory: every .uplugin this repository ships must back its declared
 	# module with an entry point, so a second plugin cannot reintroduce the same gap unnoticed.
@@ -630,7 +640,7 @@ try {
 	Get-ChildItem -LiteralPath (Join-Path $repoRoot 'templates\online\MulticaOnlineStarter') -Force | ForEach-Object {
 		Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $baselinePluginRoot $_.Name) -Recurse
 	}
-	$entryPointCppFiles = @(Get-ChildItem -LiteralPath (Join-Path $baselinePluginRoot 'Source') -Filter '*.cpp' -File -Recurse | Where-Object { [System.IO.File]::ReadAllText($_.FullName) -match 'IMPLEMENT_MODULE' })
+	$entryPointCppFiles = @(Get-ChildItem -LiteralPath (Join-Path $baselinePluginRoot 'Source') -Filter '*.cpp' -File -Recurse | Where-Object { (Get-CppCodeOnly ([System.IO.File]::ReadAllText($_.FullName))) -match 'IMPLEMENT_MODULE' })
 	Assert-True ($entryPointCppFiles.Count -ge 1) 'the repository plugin ships an IMPLEMENT_MODULE holder the baseline fixture can strip'
 	foreach ($entryPointFile in $entryPointCppFiles) { Remove-Item -LiteralPath $entryPointFile.FullName -Force }
 	$baselineViolations = @(Get-PluginModuleEntryPointViolations $baselinePluginRoot)
@@ -639,6 +649,27 @@ try {
 	$declaredModuleOnly = [System.IO.File]::ReadAllText((Join-Path $baselinePluginRoot 'MulticaOnlineStarter.uplugin')) | ConvertFrom-Json
 	Assert-True (@($declaredModuleOnly.Modules).Count -eq 1 -and $declaredModuleOnly.Modules[0].Name -eq 'MulticaOnlineStarter') 'the negative fixture keeps the declaration that the detector must contradict'
 	Write-Output 'PASS: a plugin that declares a module without IMPLEMENT_MODULE fails the module entry-point check'
+
+	# Negative case: the entry point is still in the file but commented out. A bare regex over the
+	# file text accepts it while UBT sees no IMPLEMENT_MODULE_<Name> symbol at all, so the commented
+	# shape must be treated as missing and reported by the declared module name.
+	$commentedPluginRoot = Join-Path $fixtureRoot 'CommentedPlugin\MulticaOnlineStarter'
+	[System.IO.Directory]::CreateDirectory($commentedPluginRoot) | Out-Null
+	Get-ChildItem -LiteralPath (Join-Path $repoRoot 'templates\online\MulticaOnlineStarter') -Force | ForEach-Object {
+		Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $commentedPluginRoot $_.Name) -Recurse
+	}
+	$commentedEntryPointFiles = @(Get-ChildItem -LiteralPath (Join-Path $commentedPluginRoot 'Source') -Filter '*.cpp' -File -Recurse | Where-Object { (Get-CppCodeOnly ([System.IO.File]::ReadAllText($_.FullName))) -match 'IMPLEMENT_MODULE' })
+	Assert-True ($commentedEntryPointFiles.Count -ge 1) 'the repository plugin ships an IMPLEMENT_MODULE holder the commented fixture can disable'
+	foreach ($commentedFile in $commentedEntryPointFiles) {
+		$holderText = [System.IO.File]::ReadAllText($commentedFile.FullName)
+		$commentedText = [regex]::Replace($holderText, 'IMPLEMENT_MODULE\s*\(\s*[A-Za-z_][A-Za-z0-9_:]*\s*,\s*MulticaOnlineStarter\s*\)', '/* IMPLEMENT_MODULE(FDefaultGameModuleImpl, MulticaOnlineStarter) */')
+		Assert-True ($commentedText -cne $holderText) "the commented fixture comments out the entry point in $($commentedFile.Name)"
+		[System.IO.File]::WriteAllText($commentedFile.FullName, $commentedText, [System.Text.UTF8Encoding]::new($false))
+	}
+	$commentedViolations = @(Get-PluginModuleEntryPointViolations $commentedPluginRoot)
+	Assert-True ($commentedViolations.Count -eq 1) ('the commented-out entry point is reported exactly once: ' + ($commentedViolations -join '; '))
+	Assert-True ($commentedViolations[0].Contains("no .cpp under") -and $commentedViolations[0].Contains("'MulticaOnlineStarter'")) 'the commented-out entry point is reported as a missing entry point for the declared module'
+	Write-Output 'PASS: a commented-out IMPLEMENT_MODULE does not count as a module entry point'
 
 	# Negative case: the entry point names a different module than the descriptor declares. UBT
 	# forces a reference to `IMPLEMENT_MODULE_<declared name>`, so a mismatched argument links
@@ -651,7 +682,7 @@ try {
 	$mismatchedName = 'MulticaOnlineStarterRenamed'
 	foreach ($sourceFile in @(Get-ChildItem -LiteralPath (Join-Path $mismatchPluginRoot 'Source') -Filter '*.cpp' -File -Recurse)) {
 		$sourceText = [System.IO.File]::ReadAllText($sourceFile.FullName)
-		if ($sourceText -notmatch 'IMPLEMENT_MODULE') { continue }
+		if ((Get-CppCodeOnly $sourceText) -notmatch 'IMPLEMENT_MODULE') { continue }
 		$rewritten = [regex]::Replace($sourceText, 'IMPLEMENT_MODULE\s*\(\s*([A-Za-z_][A-Za-z0-9_:]*)\s*,\s*MulticaOnlineStarter\s*\)', ('IMPLEMENT_MODULE($1, ' + $mismatchedName + ')'))
 		Assert-True ($rewritten -cne $sourceText) "the mismatch fixture rewrites the entry point in $($sourceFile.Name)"
 		[System.IO.File]::WriteAllText($sourceFile.FullName, $rewritten, [System.Text.UTF8Encoding]::new($false))

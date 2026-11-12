@@ -33,12 +33,13 @@
 
 - `scripts/Test-UETemplateScaffold.ps1` に **plugin モジュールのエントリポイント検査**を追加した。`.uplugin` が宣言する各モジュールについて、`Source/` 配下の `.cpp` に同名の `IMPLEMENT_MODULE(<class>, <module>)` があることを内容走査で確認する。ファイル名では判定しない（engine の慣例では `[ModuleName]Module.cpp` に限らない）。宣言はあるのに entry point が無い場合は宣言名を名指しして FAIL、モジュール名と第2引数が一致しない場合は不一致として FAIL する。
 - 検査対象は repository の template plugin、生成物 `Plugins/MulticaOnlineStarter`、そして repository 全体の `.uplugin`（同種の欠落を別 plugin が持ち込めないようにする棚卸し）の3つ。
-- 落ちる側の test を2件追加した。`a9e31bc` と同じ形（宣言はあるが `IMPLEMENT_MODULE` 保持 `.cpp` が無い）の fixture が FAIL すること、`IMPLEMENT_MODULE` の第2引数だけを別名に書き換えた fixture が「宣言に対応する entry point が無い」＋「宣言に無い entry point がある」の2件で FAIL すること。
+- 落ちる側の test を3件追加した。`a9e31bc` と同じ形（宣言はあるが `IMPLEMENT_MODULE` 保持 `.cpp` が無い）の fixture が FAIL すること、`IMPLEMENT_MODULE` の第2引数だけを別名に書き換えた fixture が「宣言に対応する entry point が無い」＋「宣言に無い entry point がある」の2件で FAIL すること、そして **`IMPLEMENT_MODULE` がコメントアウトされている fixture** が FAIL すること（CodeRabbit指摘の追加修復。走査は `.cpp` の本文ではなく、コメントと文字列リテラルを除いたコード部分を読む）。
+- 走査の限界は意図的に明記している: `#if 0` で囲んだブロックと raw string literal は解釈しないため、その中だけに entry point がある module は PASS のままになる（今回の修正はコメント/文字列リテラルまで）。
 - `templates/online/MulticaOnlineStarter/README.md` に、生成 project を開く前に module エントリポイントが同梱されている前提を1行明記した。`docs/08-online-foundations.md` の検証履歴に本変更の行を追加した（既存行は履歴として残す）。
 
 `IMPLEMENT_MODULE` を持つ `Private/MulticaOnlineStarter.cpp` 自体は DOT-3295 で追加済み。本変更が足すのは「欠落を検出できなかった」側の修復で、生成物と test の検出力の話である。
 
-実測（本host、Windows 11、`pwsh 7.6.9` と Windows PowerShell 5.1 の両方、repo `8f58615` ベース）: `scripts/Test-UETemplateScaffold.ps1` は 10 group PASS / exit 0（追加前は 8 group PASS）。`a9e31bc` の plugin に対して同じ検査だけを当てると `declares module 'MulticaOnlineStarter' but no .cpp under ... holds IMPLEMENT_MODULE(<class>, MulticaOnlineStarter)` で FAIL、現行 plugin は PASS。UE の install/compile/link/Editor 起動は実行していない。
+実測（本host、Windows 11、`pwsh 7.6.9` と Windows PowerShell 5.1.26100.9711 の両方、`origin/main` = `3ed94b6` に rebase 済みの HEAD）: `scripts/Test-UETemplateScaffold.ps1` は 15 PASS / exit 0（rebase 前の base `3ed94b6` は 12 PASS / exit 0）。追加分の3本は「宣言だけで entry point が無い」「コメントアウトした entry point」「第2引数のモジュール名不一致」。`a9e31bc` の plugin に対して同じ検査だけを当てると `declares module 'MulticaOnlineStarter' but no .cpp under ... holds IMPLEMENT_MODULE(<class>, MulticaOnlineStarter)` で FAIL、現行 plugin は PASS。コメントアウトした `IMPLEMENT_MODULE` も同じ文言で FAIL（`violations=1`）、文字列リテラルの中だけにある場合も FAIL、複数行に分けた実マクロ（`IMPLEMENT_MODULE` の後に改行して引数）は PASS のまま。UE の install/compile/link/Editor 起動は実行していない。
 
 移行: **既存の生成 project は再生成が必要**（上書きはしない）。旧 generator が出した `Production/<Name>_<runid>/` は `IMPLEMENT_MODULE` を含まない plugin を同梱している可能性があり、新しい RunId で生成し直すか、`Plugins/MulticaOnlineStarter` を現行 template の内容へ置き換えてから Editor で開く。どちらを取ったかを案件の QA に記録する。本変更は plugin の同梱物・test・docs に閉じ、recipe、`New-UETemplateScaffold.ps1` のコピー処理、UE Content、他 plugin を変えていない。
 
