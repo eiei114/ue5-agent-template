@@ -7,7 +7,7 @@
 | 共通基盤 | host・lease・環境構築・素材権利・検品・納品 | 既存docsと記録書式 |
 | ジャンルrecipe | 鑑賞・探索等の固有設定、受入条件 | `spectator-explore` recipeを追加 |
 | 用途部品 | プレイ／撮影。ジャンル別は両対応が基本 | `Play.md` / `Capture.md`に差分を分離 |
-| 三人称ゲーム | 公式TP_ThirdPersonをウィザード同等に実体化（名前置換・共有pack・redirect） | `third-person-game` recipe（`materialize_project`） |
+| 三人称ゲーム | 公式TP_ThirdPersonを、`TemplateDefs.ini`の置換規則で`<Name>`へ実体化（名前置換・共有pack・redirect）。規則の適用範囲と封じ込めは下記「TemplateDefs.ini契約」 | `third-person-game` recipe（`materialize_project`） |
 | 映像専用 | 縦動画・ループ等、操作不要の入口 | `vertical-loop` capture-only recipeを追加 |
 | オンライン | 小人数listen server、session、replication | Null/LAN starter pluginと方式比較を追加。実測範囲はQA参照 |
 | project generator | installed Engineの公式templateから新規project生成 | `scripts/New-UETemplateScaffold.ps1`。排他的作成/上書き禁止、`TemplateDefs.ini`適用、project identity照合、既定map照合あり |
@@ -15,17 +15,24 @@
 
 作品のセットは正本1つをプレイと撮影から参照し、撮影のためにマップ全体を複製しない。用途別の画質・カメラ・照明・UIの差分は明示する。
 
-`spectator-explore`は公式`TP_FirstPerson`を起点にし、プレイと撮影を同じsetへ向ける。`vertical-loop`は公式`TP_BlankBP`を起点にしてゲーム操作を要求しない。この2つはtemplateのprojectファイル名と`Source/<EngineTemplate>`をそのまま残す（生コピー経路）。`third-person-game`だけが`materialize_project: true`で、`Config/TemplateDefs.ini`をウィザードと同じ規則で適用し`<Name>.uproject`へ実体化する。
+`spectator-explore`は公式`TP_FirstPerson`を起点にし、プレイと撮影を同じsetへ向ける。`vertical-loop`は公式`TP_BlankBP`を起点にしてゲーム操作を要求しない。この2つはtemplateのprojectファイル名と`Source/<EngineTemplate>`をそのまま残す（生コピー経路）。`third-person-game`だけが`materialize_project: true`で、`Config/TemplateDefs.ini`の規則を適用し`<Name>.uproject`へ実体化する。
 
 generatorはEngineの既存templateをコピーし、recipe文書・online plugin・`template-lock.json`を加える。**3 recipeともtemplate自身の`Config/TemplateDefs.ini`を1つの実装（`scripts/New-UETemplateScaffold.ps1`の`Copy-TemplateTree`）で読む**。違いはrenameを適用するかどうかだけで、copy範囲の規則は共通である。
 
-| TemplateDefs.iniのキー | 生コピー経路 | materialize経路 |
+### TemplateDefs.ini契約（実装しているキーと検査している範囲）
+
+`third-person-game`は「UE New Projectウィザードと同じ規則」ではなく、**このgeneratorが実装した範囲**を適用する。Epic公式docsには`TemplateDefs.ini`の`FolderRenames` / `SharedContentPacks` / `ReplacementsInFiles` / `FilenameReplacements` / `EditDetailLevelPreference`のschemaが無い（2026-11-03取得、0ヒット）。したがって規則の正しさは公式仕様ではなくrepoの実測で担保する。
+
+| キー / 範囲 | 生コピー経路 | materialize経路（`third-person-game`） |
 |---|---|---|
-| `FoldersToIgnore` / `FilesToIgnore` | 適用（`Config/TemplateDefs.ini`自身と`Config/config.ini`、`Media/`が出力に残らない） | 適用 |
-| `SharedContentPacks` | 適用（`Templates/TemplateResources/<DetailLevel>/<Mount>/Content` → `Content/<Mount>`） | 適用 |
+| `FoldersToIgnore` / `FilesToIgnore` | 相対pathで除外（`Config/TemplateDefs.ini`自身・`Config/config.ini`・`Media/`が出力に残らない） | 同左 |
+| `FolderRenames` | 適用しない（project名/module名がtemplate名のまま残るため） | `From`一致時に`To`（`%PROJECTNAME%`置換）へ改名。改名後の各ファイル書き込み先を`$Destination`配下に封じ込め、外れたら**書き込み前に**停止 |
+| `ReplacementsInFiles` | 適用しない | `Extensions`のテキストfileで`%TEMPLATENAME%`→`<Name>`置換。置換後のfile名・pathも同じ封じ込めを通す |
+| `SharedContentPacks` | `Templates/TemplateResources/<DetailLevel>/<Mount>/Content` → `Content/<Mount>`へコピー。mount先を`$Destination`配下に封じ込め、既存fileは上書きせず停止 | 同左 |
 | `EditDetailLevelPreference` | 展開先のdetail level解決に使う。そのlevelに実体が無いmount（`TP_FirstPerson`の`Weapons`は`Standard`のみ）は、`High` → `Standard` の順で実在するlevelを選ぶ | 同左 |
-| `FolderRenames` / `ReplacementsInFiles` / `FilenameReplacements` | 適用しない（project名/module名がtemplate名のまま残るため） | 適用 |
-| `SharedContentPacks`の`DetailLevels` tuple | 個別には解釈しない（per-mount detail resolutionはDOT-3135の担当） | 同左 |
+| その他のキー（`FilenameReplacements` / per-mount `DetailLevels` 等） | 未実装（無声で無視）。規則解釈の忠実性は`DOT-3135`の担当 | 同左 |
+
+封じ込め判定は`Resolve-ContainedPath`1つに集約し、`GetFullPath`で正規化したpathが出力ディレクトリ+区切り文字で始まるか（`OrdinalIgnoreCase`）で判定する。出力ディレクトリ自体の`Production/`内判定も同じ関数を使う。
 
 generator自身がmap/Sequence/`.uasset`を捏造しない。
 
@@ -37,6 +44,7 @@ generator自身がmap/Sequence/`.uasset`を捏造しない。
 | module名 | `.uproject`の`Modules[].Name`は`Source/<Module>/<Module>.Build.cs`と一致する。`materialize_project`なら`<Name>`、生コピーならtemplate名のまま | `identity.project_modules`、`Source/` |
 | `EngineAssociation` | 空にしない。templateが値を持たない場合は`Engine/Build/Build.version`の`MajorVersion.MinorVersion`から導く | `identity.engine_association` |
 | 置換不能時 | コピー前に照合し、既知パターンに一致しない場合は停止して未一致pathを列挙する。生コピーを黙って出力しない | generatorのstderr/例外、`scripts/Test-UETemplateScaffold.ps1`の負例 |
+| 規約外の書き込み先 | `FolderRenames` / `SharedContentPacks` が出力ディレクトリの外を指す場合は書き込み前に停止し、外に残骸を残さない | generatorの例外メッセージ（`Container escape stopped the scaffold`）、`scripts/Test-UETemplateScaffold.ps1`の負例 |
 
 lockは`schema_version: 2`で、上記3項目を`identity`に持つ。単位は作品（`Production/<Name>_<runid>/template-lock.json`）であり、identityを手で書き換えない。
 

@@ -166,6 +166,19 @@ function Assert-GeneratorFails([scriptblock]$Action, [string]$Message) {
 	Assert-True $failed $Message
 }
 
+function Get-GeneratorFailure([scriptblock]$Action) {
+	# Returns the exact stop message, so a negative case can prove *which* guard fired instead of
+	# only that something failed.
+	try { & $Action; return '' } catch { return $_.Exception.Message }
+}
+
+function Get-DirectoryFileSet([string]$Path) {
+	# path=sha256 pairs, sorted: proves a directory a failed run must not touch kept its exact file set.
+	@(Get-ChildItem -LiteralPath $Path -Recurse -File -Force | ForEach-Object {
+		$_.FullName.Substring($Path.Length + 1).Replace('\', '/') + '=' + (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+	} | Sort-Object)
+}
+
 $suiteError = $null
 try {
 	$initialProductionResidue = @(Get-ProductionResidue)
@@ -437,7 +450,7 @@ try {
 	Assert-True ((([System.IO.File]::ReadAllText((Join-Path $tpOutput 'template-lock.json'))) | ConvertFrom-Json).engine_template -eq 'TP_ThirdPerson') 'lock records the third-person engine template'
 	Assert-GeneratorFails { Invoke-Generator 'third-person-game' 'Bad-Name' "$testId-bad" @() } 'materialized recipe rejects non-identifier project names'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $productionRoot "Bad-Name_$testId-bad"))) 'invalid materialized project name creates no output'
-	Write-Output 'PASS: third-person recipe materializes the official template like the New Project wizard'
+	Write-Output 'PASS: third-person recipe materializes the official template with the implemented TemplateDefs.ini keys'
 
 	Assert-GeneratorFails { Invoke-Generator 'spectator-explore' "..\escape_$testId" 'path-test' @() } 'path traversal project name is rejected'
 	Assert-GeneratorFails { Invoke-Generator 'spectator-explore' "TestExplore_$testId" '..\escape' @() } 'path traversal run ID is rejected'
@@ -499,7 +512,7 @@ try {
 	Assert-True (-not (Test-Path -LiteralPath $driftOutput)) 'identity stop writes no raw-copied project'
 	Write-Output 'PASS: unresolvable project identity stops generation instead of emitting a raw copy'
 
-	# The generated project's own Config declares the map it opens. If that map is only available
+	# Negative case: the generated project's own Config declares the map it opens. If that map is only available
 	# through a declared shared content pack, the pack copy has to happen before the check; if it is
 	# missing altogether the generator must stop instead of printing `Created ...` over a project
 	# whose first documented step (open, press Play) lands on an unresolved map.
@@ -552,6 +565,113 @@ try {
 	Assert-True ($missingMapFailure.Contains('Content/LevelPrototyping/Lvl_Prototype.umap')) 'the stop names the missing asset path instead of guessing'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $missingMapOutput 'template-lock.json'))) 'the default map stop happens before the lock is written, so success is never recorded'
 	Write-Output 'PASS: a missing default map stops generation instead of reporting success'
+
+	# Negative case: the *file* write targets chosen by Config/TemplateDefs.ini. Only the output
+	# directory was ever contained; FolderRenames / SharedContentPacks decided the rest, so a value
+	# with `..` could write into a sibling directory, outside Production, into another run's
+	# working directory, or overwrite a template file with a shared pack. Each case must stop *before*
+	# writing, so the escape target and any victim directory stay byte-identical.
+	$wsTemplateName = 'TP_WriteScope'
+	$wsShort = $testId.Substring(0, 8)
+	$wsTemplateRoot = Join-Path $fixtureEngine ('Templates\' + $wsTemplateName)
+	Write-FixtureTemplate $wsTemplateRoot $wsTemplateName $wsTemplateName
+	Write-FixtureJson (Join-Path $wsTemplateRoot 'Content\WriteScope\Notes.md') 'write-scope template content'
+	Write-FixtureJson (Join-Path $wsTemplateRoot 'Config\DefaultGame.ini') "[/Script/EngineSettings.GeneralProjectSettings]`r`nProjectID=(A=1,B=2,C=3,D=4)`r`nProjectName=Write Scope`r`n"
+	Write-FixtureJson (Join-Path $wsTemplateRoot 'Content\Characters\SK.uasset') 'TEMPLATE-OWNED-BYTES'
+	Write-FixtureJson (Join-Path $fixtureEngine 'Templates\TemplateResources\High\Characters\Content\SK.uasset') 'PACK-ASSET'
+	Write-FixtureJson (Join-Path $fixtureEngine ('Esc_' + $wsShort + '\Content\SK.uasset')) 'escaped pack payload'
+
+	$wsRepoRoot = Join-Path $fixtureRoot 'WriteScopeTemplate'
+	& git -C $repoRoot clone --quiet --local --no-hardlinks --no-tags --no-checkout $repoRoot $wsRepoRoot
+	if ($LASTEXITCODE -ne 0) { throw 'Could not create the isolated write-scope repository fixture.' }
+	& git -C $wsRepoRoot checkout --quiet --detach $templateRevision
+	if ($LASTEXITCODE -ne 0) { throw "Could not check out revision $templateRevision in the isolated write-scope repository fixture." }
+	[System.IO.Directory]::CreateDirectory((Join-Path $wsRepoRoot 'Production')) | Out-Null
+	$wsGenerator = Join-Path $wsRepoRoot 'scripts\New-UETemplateScaffold.ps1'
+	Copy-Item -LiteralPath $generator -Destination $wsGenerator -Force
+	Set-FixtureRecipeTemplate $wsRepoRoot 'third-person-game' $wsTemplateName
+	$wsProduction = Join-Path $wsRepoRoot 'Production'
+	$wsProjectName = "Ws_$wsShort"
+	$wsInvoke = {
+		param([string]$RunId)
+		& $wsGenerator -Recipe 'third-person-game' -ProjectName $wsProjectName -RunId $RunId -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate | Out-Null
+	}
+	# Case A (control): the rename stays inside the output directory and still succeeds.
+	Write-FixtureJson (Join-Path $wsTemplateRoot 'Config\TemplateDefs.ini') (@(
+		'[/Script/GameProjectGeneration.TemplateProjectDefs]',
+		'FolderRenames=(From="Source/%TEMPLATENAME%",To="Source/%PROJECTNAME%")',
+		'ReplacementsInFiles=(Extensions=("cs"),From="%TEMPLATENAME%",To="%PROJECTNAME%",bCaseSensitive=false)',
+		'FolderRenames=(From="Content/WriteScope",To="Content2/%PROJECTNAME%")'
+	) -join "`r`n")
+	& $wsInvoke 'ws-a'
+	$wsControlOutput = Join-Path $wsProduction "${wsProjectName}_ws-a"
+	Assert-True (Test-Path -LiteralPath (Join-Path $wsControlOutput "Content2\$wsProjectName\Notes.md")) 'a contained FolderRenames target still materializes normally'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $wsProduction "Sib_$wsShort"))) 'the control run creates no sibling directory'
+	Write-Output 'PASS: contained FolderRenames target still materializes the template'
+
+	# Case B: FolderRenames To escapes into a sibling directory under Production.
+	Write-FixtureJson (Join-Path $wsTemplateRoot 'Config\TemplateDefs.ini') (@(
+		'[/Script/GameProjectGeneration.TemplateProjectDefs]',
+		("FolderRenames=(From=`"Content/WriteScope`",To=`"../Sib_{0}`")" -f $wsShort)
+	) -join "`r`n")
+	$wsSibling = Join-Path $wsProduction "Sib_$wsShort"
+	$wsSiblingFailure = Get-GeneratorFailure { & $wsInvoke 'ws-b' }
+	Assert-True ($wsSiblingFailure.Contains('Container escape stopped the scaffold')) 'a FolderRenames target escaping the output directory stops the generator'
+	Assert-True ($wsSiblingFailure.Contains('FolderRenames')) 'the stop names FolderRenames as the escaping rule'
+	Assert-True (-not (Test-Path -LiteralPath $wsSibling)) 'an escaping FolderRenames target writes no sibling directory'
+	Write-Output 'PASS: FolderRenames target outside the output directory is rejected before writing'
+
+	# Case C: FolderRenames To escapes Production entirely (repo root).
+	Write-FixtureJson (Join-Path $wsTemplateRoot 'Config\TemplateDefs.ini') (@(
+		'[/Script/GameProjectGeneration.TemplateProjectDefs]',
+		("FolderRenames=(From=`"Content/WriteScope`",To=`"../../InRepo_{0}`")" -f $wsShort)
+	) -join "`r`n")
+	$wsInRepo = Join-Path $wsRepoRoot "InRepo_$wsShort"
+	$wsOutOfProductionFailure = Get-GeneratorFailure { & $wsInvoke 'ws-c' }
+	Assert-True ($wsOutOfProductionFailure.Contains('Container escape stopped the scaffold')) 'a FolderRenames target escaping Production stops the generator'
+	Assert-True ($wsOutOfProductionFailure.Contains('outside the allowed root')) 'the stop reports the resolved outside path instead of only failing silently'
+	Assert-True (-not (Test-Path -LiteralPath $wsInRepo)) 'an escaping FolderRenames target writes nothing outside Production'
+	Assert-True (-not (Test-Path -LiteralPath "$wsInRepo\Notes.md")) 'the repo root receives no materialized file from an escaping rename'
+	Write-Output 'PASS: FolderRenames target outside Production is rejected and leaves the repo root untouched'
+
+	# Case D: FolderRenames To points into another run's existing working directory.
+	$wsVictim = Join-Path $wsProduction "Other_${wsShort}_run"
+	[System.IO.Directory]::CreateDirectory((Join-Path $wsVictim 'Content')) | Out-Null
+	Write-FixtureJson (Join-Path $wsVictim 'LEASE.json') '{"run":"other-writer","nonce":"abc","phase":"editor-build"}'
+	Write-FixtureJson (Join-Path $wsVictim 'Content\Mine.uasset') 'other-writer asset'
+	$wsVictimBefore = @(Get-DirectoryFileSet $wsVictim)
+	Write-FixtureJson (Join-Path $wsTemplateRoot 'Config\TemplateDefs.ini') (@(
+		'[/Script/GameProjectGeneration.TemplateProjectDefs]',
+		("FolderRenames=(From=`"Content/WriteScope`",To=`"../Other_{0}_run/Content`")" -f $wsShort)
+	) -join "`r`n")
+	$wsVictimFailure = Get-GeneratorFailure { & $wsInvoke 'ws-d' }
+	Assert-True ($wsVictimFailure.Contains('Container escape stopped the scaffold')) 'a FolderRenames target pointing into another run stops the generator'
+	$wsVictimAfter = @(Get-DirectoryFileSet $wsVictim)
+	Assert-True (($wsVictimBefore -join "`n") -ceq ($wsVictimAfter -join "`n")) 'another run working directory keeps its exact file set and contents'
+	Write-Output 'PASS: FolderRenames target inside another run working directory is rejected and leaves it unchanged'
+
+	# Case E: SharedContentPacks MountName escapes the output directory.
+	Write-FixtureJson (Join-Path $wsTemplateRoot 'Config\TemplateDefs.ini') (@(
+		'[/Script/GameProjectGeneration.TemplateProjectDefs]',
+		("SharedContentPacks=(MountName=`"../../../Esc_{0}`",DetailLevels=(`"High`"))" -f $wsShort)
+	) -join "`r`n")
+	$wsEscapedPack = Join-Path $wsRepoRoot "Esc_$wsShort"
+	$wsPackFailure = Get-GeneratorFailure { & $wsInvoke 'ws-e' }
+	Assert-True ($wsPackFailure.Contains('Container escape stopped the scaffold')) 'an escaping SharedContentPacks MountName stops the generator'
+	Assert-True ($wsPackFailure.Contains('SharedContentPacks')) 'the stop names SharedContentPacks as the escaping rule'
+	Assert-True (-not (Test-Path -LiteralPath $wsEscapedPack)) 'an escaping MountName copies no pack content outside the output directory'
+	Write-Output 'PASS: SharedContentPacks MountName outside the output directory is rejected before copying'
+
+	# Case F: a shared pack file collides with a template-owned file and must not overwrite it.
+	Write-FixtureJson (Join-Path $wsTemplateRoot 'Config\TemplateDefs.ini') (@(
+		'[/Script/GameProjectGeneration.TemplateProjectDefs]',
+		'SharedContentPacks=(MountName="Characters",DetailLevels=("High"))'
+	) -join "`r`n")
+	$wsCollisionFailure = Get-GeneratorFailure { & $wsInvoke 'ws-f' }
+	Assert-True ($wsCollisionFailure.Contains('Materialized template paths collide: Content/Characters/SK.uasset')) 'a shared pack file colliding with a template file stops the generator instead of overwriting'
+	$wsCollisionOutput = Join-Path $wsProduction "${wsProjectName}_ws-f"
+	Assert-True ([System.IO.File]::ReadAllText((Join-Path $wsCollisionOutput 'Content\Characters\SK.uasset')) -ceq 'TEMPLATE-OWNED-BYTES') 'the template-owned file keeps its own bytes after a pack collision'
+	Write-Output 'PASS: shared content pack colliding with a template file is rejected instead of overwriting it'
 
 	$existingOutput = $outputPaths[3]
 	[System.IO.Directory]::CreateDirectory($existingOutput) | Out-Null
