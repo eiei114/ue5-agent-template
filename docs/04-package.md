@@ -21,10 +21,45 @@ if ($LASTEXITCODE -ne 0) { throw 'BuildCookRun failed' }
 
 DOT-2936方針はWindows主導。Windowsでソース整理・依存調査・manifest・Mac手順の準備を先行する。Windows単独でC++/Apple SDK/Metalを含む.appの生成成功は未実証。
 許可済みMac実行先・UE/Xcode/Metal/空き容量/所有権を照合できて初めて、remote/現地の実build/cook/stage/packageを進める。MacBook online化だけで能力合格にしない。miniへの代行・有料Mac CI・新認証は行わない。
-
-Epic UE5.8公式表（2026-10-31参照）：Xcode最小26.0、推奨26.1.1、26.4は非互換。利用時に当該UE版の公式表を再確認する。
 Mac用sourceは保存・lease解放済みcheckpointだけを使い、Config/Content/Source/必要Plugins/uproject/README/CREDITSを権利範囲内でZIP化。Binaries/Intermediate/DDC/Saved出力は除外。**source ZIPはMac実行版ではない**。
 実.app完成後はarchitecture/OS/署名・公証状態、Metal上の見た目・操作・5分・音を実測。`ditto`等でsymlink/実行属性を保持し、別フォルダ展開から再起動。新証明書取得・Gatekeeper全体無効化なし。
+
+### UE 5.8 の Mac host 要件（独自要約）
+
+Epicの[macOS開発要件](https://dev.epicgames.com/documentation/en-us/unreal-engine/macos-development-requirements-for-unreal-engine)のUE 5.8表から、hostの適格判定に必要な行だけを独自に要約する（表の転載ではない）。参照日は2026-11-05。
+
+| 区分 | 最低 | 推奨 | 出典・参照日 |
+|---|---|---|---|
+| OS（Engine実行） | macOS Sonoma 14.5 | macOS Sequoia 15 | Epic 同ページ Version History 5.8行（2026-11-05） |
+| プロセッサ | Apple Silicon M1/M2（描画機能により異なる） | Apple Silicon M3 | Epic 同ページ（2026-11-05） |
+| メモリ | 16 GB | 32 GB | Epic 同ページ（2026-11-05） |
+| GPU | Metal 1.2 互換 | — | Epic 同ページ（2026-11-05） |
+| Xcode | 26.0 | 26.1.1 | Epic 同ページ（2026-11-05） |
+| Xcode（非互換） | 26.4 | — | Epic 同ページ（2026-11-05） |
+
+Epicの同ページは"Recommended Operating System"で`Latest macOS Sequoia 14`、Version Historyで`Sequoia 15`と書き、名前と数字が一致しない。どちらが正本かは決めない。本テンプレートは数字（15）を判定に使い、名前と数字の対応はAppleの対応表で確認する。
+
+Epicの`Xcode 26.4 は Unreal Engine と互換でない`が単一buildを指すのか26.4系全体を指すのかは、公開文から確定できない。本テンプレートは26.4系（26.4.x）を範囲として非互換に扱い、確定できない旨をここに残す。
+
+### Epicの2要件はAppleの対応表で両立しない
+
+Appleの[Xcode 対応表](https://developer.apple.com/support/xcode/)（SDK and system requirements、参照日2026-11-05）では、Xcode 26 / 26.0.1 / 26.1 / 26.1.1 / 26.2 / 26.3 の対応OSは macOS Sequoia 15.6〜macOS Tahoe 26.x、Xcode 26.4.1以降は macOS Tahoe 26.2〜macOS Tahoe 26.x、Xcode 16.x は macOS Sonoma 14.5〜macOS Sequoia 15.x である。
+
+この表とEpicの表を突き合わせると、Epicの「最低macOS = Sonoma 14.5」とEpicの「最低Xcode = 26.0」は同じhostでは成立しない（Xcode 26.0はAppleの表でmacOS 15.6以上を要求する）。どちらの表が誤記かは本テンプレートでは判定しない。
+
+そのためhostの適格判定は**両表の交差**で行う。Epicの最低OS・プロセッサ・メモリ・Metalと、Appleの表が当該Xcodeに要求するOSの両方を満たすhostだけを`pass`とする。片方の表だけで`pass`にしない。判定は次の3値で、`pass`に丸めない。
+
+- `fail`：観測値がいずれかの条件を下回る（例：macOS Ventura 13.5、Xcode 26.4系、メモリ16 GB未満、Metal 1.2非対応）
+- `unverified`：判定に必要な観測値が無い、または公開表に当該版の記載が無い
+- `pass`：全条件を満たす
+
+判定toolは`scripts/Test-UEMacHostRequirements.ps1`（読み取り専用）。hostの事実は呼び出し側が渡し、toolは`sw_vers` / `xcodebuild`を自動実行しない。終了codeは`pass`=0、`fail`=1、`unverified`=2。
+
+```powershell
+.\scripts\Test-UEMacHostRequirements.ps1 -MacOSVersion '15.6' -XcodeVersion '26.1.1' -ProcessorFamily 'M3' -MemoryGB 32 -MetalSupported 'yes' -ReportPath 'Out/run_<runid>/evidence/mac-host.json'
+```
+
+判定結果は`templates/QA.md`のMac host行へ、観測値・判定・出典参照日とセットで記録する（`docs/05-qa.md`の記録契約）。Mac実機の`.app`生成・UAT・署名・公証は本節の判定とは別項目で、hostの`pass`をMac動作の証明に読み替えない。
 
 公式：
 - https://dev.epicgames.com/documentation/en-us/unreal-engine/packaging-your-project

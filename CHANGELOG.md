@@ -1,5 +1,17 @@
 # 変更履歴
 
+## Unreleased — DOT-3220
+
+- `docs/04-package.md` のMac節がEpicのUE 5.8表から引用していたのはXcodeの1行だけだった。同じ表にある最低/推奨のmacOS、プロセッサ、メモリ、Metal、Xcodeの行を独自要約の表として揃え、行ごとに出典URLと参照日（2026-11-05）を付けた。表・本文の転載ではなくリンクと要約のみ。
+- Epicの「最低macOS = Sonoma 14.5」と「最低Xcode = 26.0」は、Appleの[Xcode対応表](https://developer.apple.com/support/xcode/)（Xcode 26.0〜26.3はmacOS 15.6以上を要求）と両立しない。どちらの表が誤記かは決めず、host判定は**両表の交差**で行う規則として明記した。Epic内の「Sequoia 14（上部）/ Sequoia 15（Version History）」の不整合と、「Xcode 26.4は非互換」が単一buildか26.4系全体か確定できない点も、推定せず未確定として残した。
+- `scripts/Test-UEMacHostRequirements.ps1`（新規・読み取り専用）を追加。hostの観測値（`-MacOSVersion` / `-XcodeVersion` / `-ProcessorFamily` / `-MemoryGB` / `-MetalSupported`）を呼び出し側が渡し、判定は`pass` / `fail` / `unverified`の3値。終了codeはpass=0 / fail=1 / unverified=2。`sw_vers` / `xcodebuild`は自動実行せず、値の無い欄・公開表に記載の無い版は`unverified`に落としてpassへ丸めない。reportは`-ReportPath`の新規pathにのみ排他作成する。
+- `-SelfTest`で13のhost組とreport排他作成、`docs/04-package.md` / `templates/QA.md`の必要行・出典URL・参照日の静的検査を固定した。負例: Ventura 13.5（Epic最低OS未満）、Tahoe 26.2 + Xcode 26.4.1（非互換系）、Sonoma 14.5 + Xcode 26.0（Epicの2行は満たすがApple表で不成立）、Sonoma 14.5 + Xcode 15.4（UE 5.8のXcode最低未満）、Xcode未申告、Intel、8 GB、Metal非対応、無観測、解読不能な版表記。正例: Sequoia 15.6 + 26.1.1 + M3 + 32 GB + Metal。
+- `templates/QA.md`にMac host適格のpass/fail行を1行追加（macOS版/Xcode版/プロセッサ/Memory/Metal/判定/出典参照日、report path）。既存行は削除していない。判定の独立記録（片方の表だけでpassにしない、`unverified`をpassに丸めない、hostのpassをMac実機build/署名の合格に読み替えない）も追記した。
+
+実測（本host、`pwsh 7.6.9` と Windows PowerShell 5.1.26100.9711）: `scripts/Test-UEMacHostRequirements.ps1 -SelfTest` → 16 group PASS / exit 0（両shell同一）。負例として`docs/04-package.md`から`macOS Sonoma 14.5`を削った複製では exit 1 で落ちる。`scripts/Test-UETemplateScaffold.ps1`は回帰なし。
+
+移行: 既存作品のQA記録は書き換えない。Mac host行が無い旧記録は**Unverifiedのまま**残し、新規runから本行を埋める。Mac実機のbuild / UAT / `.app`生成 / 署名・公証、`sw_vers` / `xcodebuild`の実測は未検証（Unverified Scope）。fixtureと文書の検査成功はMac実行の証明ではない。
+
 ## Unreleased — 動画モーキャプ
 
 - `docs/09-video-mocap.md` を追加した。単眼のダンス動画から MediaPipe で体・手・顔の点を取り、VRM の骨の回転 → VRMA → UE（VRM4U）→ MV にする工程、単眼で取れない量の補い方、確認方法、1 本での実測、残る限界、権利の gate をまとめた。

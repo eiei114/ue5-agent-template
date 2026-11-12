@@ -13,6 +13,7 @@
 | DOT-2936本文 / DOT-2941記録 | Windows主導準備、Mac SDK・実行先不足、sourceと.app区別 | Windows単独.app成功なし。キット受入は実Mac完成でない |
 | 制作 repo `charakuru-dance-ue`（非公開）`docs/video-to-animation.md`・`docs/mediapipe-skeleton-workflow.md`、2026-11-11〜12 | 動画モーキャプの工程・補い方・実測（docs/09-video-mocap.md） | 1 本の動画・1 体のキャラ・UE 5.9 / VRM4U での実測。UE 5.8 系・別動画・別キャラは未検証 |
 | Epic公式docs（各工程のURL、2026-10-31参照） | packaging段階、MRQ前提、UE5.8 Xcode表 | 公式仕様は当該hostの実証でない |
+| Epic [macOS開発要件](https://dev.epicgames.com/documentation/en-us/unreal-engine/macos-development-requirements-for-unreal-engine) / Apple [Xcode対応表](https://developer.apple.com/support/xcode/)、2026-11-05参照 | UE5.8の最低/推奨macOS・プロセッサ・メモリ・Metal・Xcodeと、Xcode各版が要求するmacOS（docs/04-package.md、DOT-3220） | リンクと独自要約のみ。両表の不整合（Sonoma 14.5 対 Xcode 26.0）をどちらが誤記かは決めていない。Mac実機のbuild/署名は未検証 |
 
 ## このrepo自体
 

@@ -19,6 +19,7 @@ writer/lease nonce・取得/解放receipt：
 | 先頭/中間/末尾目視・全編再生 | unverified | |
 | 映像と音のloop継ぎ目 | unverified | |
 | Shipping成功・ZIP別展開起動/操作 | unverified | |
+| Mac host適格（UE5.8両表の交差） | unverified | macOS版/Xcode版/プロセッサ/Memory/Metal/判定/出典参照日。`scripts/Test-UEMacHostRequirements.ps1`のreport（`evidence/mac-host.json`） |
 | Mac.app/architecture/署名/公証 | unverified | 必要な場合のみ |
 | CREDITS/権利・同一版manifest・SHA | unverified | |
 
@@ -31,6 +32,8 @@ writer/lease nonce・取得/解放receipt：
 - MP4のframe数だけでは、元画像列の欠番・余分を排除できない。
 - 音声streamの存在は聴取ではない。
 - 解像度や範囲を入力しなかった項目は`unverified`と書き、空欄のままpassにしない。
+- Mac hostの判定は、EpicのUE5.8表とAppleのXcode対応表の**交差**で出す。片方の表だけでpassにしない。観測値が無い欄は`unverified`、公開表に記載の無い版も`unverified`とし、passに丸めない。
+- Mac hostの`pass`はhost適格の判定であり、Mac実機のbuild/UAT/`.app`生成/署名・公証の合格に読み替えない。
 
 検査対象の画像列・run専用出力先・実施SHA・tool版を記録する。旧runの同数frame混入はこの検査だけでは判定できないため、run所有権の照合結果を別途残す。
 
