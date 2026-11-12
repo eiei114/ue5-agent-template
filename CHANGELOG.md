@@ -1,5 +1,24 @@
 # 変更履歴
 
+## Unreleased — DOT-3217（UE-ENCODEPRESET-001）
+
+- **文書にあった唯一のエンコード例が landscape preset の尺を落としていた。** `docs/05-qa.md` は `vertical`（8秒）と `landscape`（10秒）の2 preset を定義していたが、encode 例は `-frames:v 240` 固定だった。`-frames:v` は出力フレーム数の**上限**なので、landscape の 300 frame に同じコマンドを当てると **240 frame / 8.0 秒で ffmpeg が exit 0** を返し、続く ffprobe も「240 frame / 8.0 秒」と正しく報告する。文書は期待値の出所を書いていなかったため、「240 を期待値にする」経路が残っていた。
+- **preset を1箇所のデータにした。** `templates/CAPTURE-PRESETS.json` が解像度・fps・秒数・開始番号・桁数・codec/crf の唯一の定義で、フレーム数は `fps × 秒数` から導出する（定義に `frame_count` を併記すると `preset_invalid` で落ちる）。`docs/05-qa.md` と `README.md` から同じ数値の再掲を外し、文書は定義から生成した行を使う形にした。`templates/recipes/vertical-loop/Capture.md` の開始案の数値（1080×1920/30fps/8秒）は変えていない（この recipe の差分ではないため）。
+- **`scripts/Get-UECaptureEncodePlan.ps1` を追加。** preset 名を引数に取り、画像列検査（`Measure-UERenderArtifacts.ps1`）・ffmpeg encode・ffprobe・尺検査の各コマンドを定義から生成して表示する。render/encode は実行しない。
+- **`scripts/Measure-UECaptureEncode.ps1` を追加。** エンコード済み MP4 を、preset 定義の期待 frame 数・秒数・解像度・fps と照合する読み取り専用の検査器。期待値をコマンド引数で受け取らない（手書き期待値の経路を作らない）。video stream 数が1本でない・ffprobe 不在・timeout・値不一致は pass にしない。新規 render / UE 起動 / process kill は行わない。
+- **`scripts/Test-UECaptureEncode.ps1` を追加。** 自作 fixture（ffmpeg `testsrc2`）で、旧コマンド相当の「300 frame preset を 240 frame で encode → ffmpeg は exit 0、検査は `fail`」、正しい 300 frame の `pass`、299 frame の `fail`、fps/尺だけ違う動画の `fail`、ffprobe 不在の `unverified`、video stream 2本の `fail`、未定義 preset と既存 report path の拒否、定義側の frame 数重複・非整数の拒否を固定した（11 group）。
+- `docs/05-qa.md` に「**`-frames:v` は上限であり尺の検証ではない**」「尺は preset 定義と ffprobe 実測の照合で判定する」を明記し、`templates/QA.md` に preset 名・期待 frame 数・秒数・解像度・fps・画像列範囲・転記元の記入欄と、`evidence/encode-check.json` の判定行を追加した。
+- `.github/workflows/verify.yml` に `capture-encode` job を追加し、`scripts/Test-UECaptureEncode.ps1` を CI で回す。ffmpeg/ffprobe が無い runner では suite は `SUITE_EXIT=2`（UNVERIFIED）で止まり、pass にはしない。
+- 定義ファイルは BOM なし UTF-8 なので、3 script とも `Get-Content -Raw` ではなく `[System.IO.File]::ReadAllText(..., UTF8Encoding)` で読む。Windows PowerShell 5.1 は BOM なし UTF-8 を ANSI code page で復号し、`templates/CAPTURE-PRESETS.json` の日本語 `use` 欄が `ConvertFrom-Json` の前に壊れるため（本 host の 5.1 で再現、`pwsh` では出ない）。
+
+実測（本 host、Windows 10.0.26300、`pwsh 7.6.9` と `Windows PowerShell 5.1.26100`、ffmpeg/ffprobe 8.1.2-full_build-www.gyan.dev を既存のまま使用・新規導入なし）: 300 枚の 1920×1080 PNG に旧文書のコマンドを逐語で当てると `ffmpeg` exit 0 / ffprobe `nb_read_frames=240` `duration=8.000000` / 1920×1080。同じ MP4 を `Measure-UECaptureEncode.ps1 -Preset landscape` に当てると `VERDICT: fail` / exit 1 / `frame_count_mismatch`（期待300・実測240・差 -60）と `duration_mismatch`（期待10秒・実測8秒）。`Test-UECaptureEncode.ps1` は 11 group PASS / `SUITE_EXIT=0`（`pwsh` 約27秒、`powershell.exe` 5.1 も `SUITE_EXIT=0`）。
+
+回帰: 変更前 HEAD `8f58615` の使い捨て clone に新規 3 script と `templates/CAPTURE-PRESETS.json` だけを置いて `Test-UECaptureEncode.ps1` を実行すると **`SUITE_EXIT=1` / `ASSERT FAILED: docs\05-qa.md does not repeat the vertical frame count as a literal encode limit`** で落ちる（検査器が盲目でないことの確認）。既存 `scripts/Test-UETemplateScaffold.ps1` 8 group と `scripts/Test-UERenderArtifacts.ps1` は本変更の前後で変化させていない。
+
+移行: 既存 project と `Production/`・`Out/` の生成物には触れない。新しい案件は `Get-UECaptureEncodePlan.ps1 -Preset <vertical|landscape>` の出力行を使い、encode 後に `Measure-UECaptureEncode.ps1` の report を `evidence/` へ残す。preset を変える案件は `templates/CAPTURE-PRESETS.json` を更新し、文書側の数値を手で直さない。
+
+未検証（Unverified Scope）: UE 5.8.4 の MRQ / compile / PIE / Editor / Shipping は本 host で実行していない。実 MRQ が landscape preset で 300 枚出力するかは観測していない。MRQ の既定命名（`ZeroPadFrameNumbers` などの engine 既定）と `docs/05-qa.md` が前提する `%06d`・0 開始の一致も未確認。本変更の根拠は、本 host の ffmpeg/ffprobe 実測と自作 PNG fixture に限る。
+
 ## Unreleased — 動画モーキャプ
 
 - `docs/09-video-mocap.md` を追加した。単眼のダンス動画から MediaPipe で体・手・顔の点を取り、VRM の骨の回転 → VRMA → UE（VRM4U）→ MV にする工程、単眼で取れない量の補い方、確認方法、1 本での実測、残る限界、権利の gate をまとめた。
