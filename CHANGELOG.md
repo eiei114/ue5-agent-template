@@ -1,5 +1,20 @@
 # 変更履歴
 
+## Unreleased — DOT-3404
+
+- `.github/workflows/verify.yml` の `render-artifacts` job は、runner image の `ffprobe` を無条件に受け入れ、無ければ version 未指定の `choco install ffmpeg` に落ちていた。同じ commit でも decode 判定が runner image / package 更新で変わり得るため、`scripts/ffprobe-pin.json`（配布元 URL・archive の SHA-256・`ffprobe.exe` の SHA-256・期待 version 行 prefix）で実体を固定し、`scripts/Install-PinnedFfprobe.ps1` が archive → binary → `-version` の 3 点を照合してから検査に使う形にした。固定 binary は checkout 外（`$env:RUNNER_TEMP`）に置き、repo へ同梱しない。
+- `scripts/Test-FfprobePin.ps1` を追加し、落ちる側を固定した。manifest の項目欠落（http URL・短い hash）、archive の 1 byte 改変、PATH の手前に別の `ffprobe` がある場合をすべて拒否し、固定版の bytes と version だけを受け入れる。suite は checkout 内に何も書かない。
+- `docs/05-qa.md` に CI decoder 固定の節を追加し、版を上げる時に 3 つの値を同時更新する契約を書いた。decode/timeout の判定ロジック、既存 assertion、CI 権限、他 job は変えていない。
+
+本 host（Windows、PowerShell 7.6.9）での実測:
+
+- `pwsh -File ./scripts/Test-FfprobePin.ps1`（archive は固定 URL から取得）→ 4 PASS、exit 0。archive は `db580001…`、binary は `b49ccc7c…`、`ffprobe version 8.1.2-essentials_build-www.gyan.dev`。109 MB の取得を含めて約 8 分。
+- workflow の `render-artifacts` step を同じ順序で再現（固定 install → pin suite → version 記録 → PATH 解決の照合 → `Test-UERenderArtifacts.ps1`）→ pin suite 4 PASS、`Test-UERenderArtifacts.ps1` 13 group PASS、`SIMULATION-EXIT=0`、checkout 差分 0。
+- PATH の手前に別 `ffprobe` を置いた負例では pin 違反 2 件（hash と version prefix）を報告。
+- 既存 job の回帰: `Test-UETemplateScaffold.ps1` 12 group PASS / exit 0、`Test-UETemplateLease.ps1` 11 PASS / exit 0。
+
+未検証: GitHub Actions `windows-latest` 実機での実行（この PR の CI で確認する）。UE 5.8.4 の MRQ・実映像・ffprobe 実測は Unverified Scope のまま。
+
 ## Unreleased — DOT-3157
 
 - 生コピー経路（`materialize_project`を持たない`spectator-explore` / `vertical-loop`）がtemplateの`Config/TemplateDefs.ini`を一度も読まず、templateフォルダを丸ごとコピーしていた。出力`Content/`に`TP_FirstPerson`の既定mapが参照する共有content pack（`Characters` / `LevelPrototyping` / `Input` / `Weapons`）が入らず、逆にignore対象の`Media/`と`Config/TemplateDefs.ini`・`Config/config.ini`が残っていた。generatorはexit 0で`Created ...`を表示し、testは6群PASSしていたため、"assetが足りない"を出力から判別できなかった。
