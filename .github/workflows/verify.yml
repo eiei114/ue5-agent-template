@@ -34,6 +34,28 @@ jobs:
           ./scripts/Test-UETemplateScaffold.ps1
           if ($LASTEXITCODE -ne 0) { throw "Test-UETemplateScaffold.ps1 exited $LASTEXITCODE" }
 
+  docs-route:
+    name: change log route and headings
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # The gate resolves a heading's 40-hex SHA with `git cat-file -e`, so a
+          # depth-1 clone would fail every section that names a commit. The gate
+          # therefore requires a date on every heading and checks a SHA only when
+          # one is written; depth stays 1 to keep the job cheap. The negative
+          # cases clone this checkout locally, which git refuses to hardlink from
+          # a shallow repository but still completes (verified locally).
+          fetch-depth: 1
+
+      - name: Test-UETemplateDocs.ps1
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./scripts/Test-UETemplateDocs.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Test-UETemplateDocs.ps1 exited $LASTEXITCODE" }
+
   render-artifacts:
     name: render artifact inspection
     runs-on: windows-latest

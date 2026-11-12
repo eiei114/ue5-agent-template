@@ -1,7 +1,7 @@
 # UE5 Agent Production Template
 
 AIが短い映像または小さな鑑賞シーンを安全に作るための**文書・運用テンプレート**。
-最初に [AGENTS.md](AGENTS.md)、次に [着手手順](docs/01-start.md) を読む。
+最初に [AGENTS.md](AGENTS.md)、次に [着手手順](docs/01-start.md) を読む。過去の変更と移行手順は [変更履歴](CHANGELOG.md)。
 
 ## 現在の範囲
 
@@ -25,6 +25,7 @@ AIが短い映像または小さな鑑賞シーンを安全に作るための**�
 | 構造・recipe・lock更新 | docs/07-architecture.md |
 | 少人数online方式・費用・制約 | docs/08-online-foundations.md |
 | 動画モーキャプ（MediaPipe → VRMA → UE） | docs/09-video-mocap.md |
+| 変更履歴・移行手順（過去の変更と移行の記録） | CHANGELOG.md |
 
 `templates/` の記録を新規制作の `Out/run_<runid>/` へ複製して記入する。
 `Production/` は生成先の空プレースホルダ。通常Gitには制作物を入れない。

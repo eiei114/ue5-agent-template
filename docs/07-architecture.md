@@ -34,16 +34,22 @@ lockはtemplate commit SHA、clean/dirty状態、UE version/changelist、Engine/
 
 共通更新は新RunIdの空Production directoryへ生成し、既存projectを上書きせず、lock・作品差分・移行手順・対象版の検品結果を比較する。UE/Plugin更新の自動伝播はしない。
 
+### 変更理由・移行手順の宛先（`CHANGELOG.md`）
+
+上の「移行手順を比較する」は、差分を読んだ人が後から追える形で残さなければ意味がない。置き場はリポジトリ直下の `CHANGELOG.md` 1 つだけ（作品ごとの記録は作品の `QA.md` / `DELIVERY.json`）。`## ` 見出しは `## Unreleased — <DOT番号 or 名前> — <YYYY-MM-DD or 40桁SHA>` の形にし、識別子は必須。各節の本文に (1) 何が変わったか、(2) 移行が必要か（不要なら「移行不要」）、(3) Unverified Scope を 1 項目ずつ書く。識別子は日付を必須、SHA は書かれたときだけ `git cat-file -e <sha>^{commit}` で解決を検査する（CI の checkout が shallow で古い SHA を解決できないため）。
+
+この宛先は読み取り経路からも名指す: `README.md` の「入口」表と `AGENTS.md` の「先に読む」の両方が `CHANGELOG.md` を指す。片方だけだと route が 2 系統になる。到達性と見出し書式は `scripts/Test-UETemplateDocs.ps1` が検査し、`.github/workflows/verify.yml` の `docs-route` job で回る。
+
 **変更理由:** 共通環境の二重管理を避けながら、同じsetのプレイ/撮影と映像専用入口を小さく始める。生成時のdependency driftをlockで可視化し、template更新で制作中作品を壊さない。
 
 方式比較とsource別の費用・制約は[docs/08-online-foundations.md](08-online-foundations.md)。Null/LANを初期動作とし、EOS/Steamは設定と実測を満たす独立adapter候補として扱う。
 
 初期は1repoで共通文書を参照し、再利用が実証された部品のみPlugin化する。深いBlueprint継承、ジャンルごとの全量fork、submoduleの大量追加は避ける。
-作品には共通commit SHA・UE/Plugin版・レシピ・ローカル差分を記録する。制作中の作品は固定版を使い、自動更新・上書きをしない。更新時は差分、移行方法、検品結果を残す。
+作品には共通commit SHA・UE/Plugin版・レシピ・ローカル差分を記録する。制作中の作品は固定版を使い、自動更新・上書きをしない。更新時は差分、移行方法、検品結果を残す（repo 側の変更理由と移行手順は `CHANGELOG.md`、作品固有の差分は作品の `QA.md` / `DELIVERY.json`）。
 
 ## 継続改善
 
-Multicaの既存ボードと管理機会で「出典調査→候補→小さな検証→採否→変更理由・移行手順」を記録。公式仕様・掲示板の事例・当該host実測を区別する。未検証情報を既定値へ昇格しない。
+Multicaの既存ボードと管理機会で「出典調査→候補→小さな検証→採否→変更理由・移行手順」を記録。公式仕様・掲示板の事例・当該host実測を区別する。未検証情報を既定値へ昇格しない。採否に至った repo の変更理由と移行手順は `CHANGELOG.md` に残す（ここに書いて終わりにしない）。
 Epic公式Custom TemplatesとPluginsを参考にするが、文書テンプレートはUE登録済みproject templateとは別物。
 
 - https://dev.epicgames.com/documentation/en-us/unreal-engine/converting-a-project-to-an-unreal-engine-template
