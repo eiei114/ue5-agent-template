@@ -1,5 +1,14 @@
 # 変更履歴
 
+## Unreleased — DOT-3463
+
+- `scripts/Test-UERenderArtifacts.ps1` に、`FramesDirectory`側のreparse-point guardだけを外したときに必ず落ちる回帰group（group 13）を追加した。既存のjunction fixtureはreport親だけをaliasしていて`FramesDirectory`は通常のdirectoryだったため、その検査対象が見ているのはreport親guardだけだった。報告（DOT-3395 comment 01a1bfb5-e80a）のとおり、`FramesDirectory` guardだけを外しても13群すべてPASSしていた。
+- 追加したfixtureは逆向きに隔離する。画像列の実体`guard-probe/real-frames`を通常のdirectoryとして作り、それを指すjunction `guard-probe/alias`を`FramesDirectory`に渡し、report先は実体側の通常path（`real-frames/escaped-report.json`）にする。report親guardは通常pathしか見ないので、拒否できるのは`FramesDirectory` guardだけになる。
+- assertは4点。(1) guard両方ありの通常path入力はexit 0とpass、(2) alias入力は検査前に拒否され、**拒否理由が`FramesDirectory path contains a reparse point`であること**（`ReportPath parent`が出たら、対象のguardではなくもう片方が答えている＝負例が空assert化している）、(3) 拒否時にreportが実体dirへ書かれていないこと、(4) 前後の全file名・SHA256が不変であること。
+- 実測（本host、Windows、`ffprobe 8.1.2`、`pwsh 7.6.9`とWindows PowerShell 5.1）：`scripts/Measure-UERenderArtifacts.ps1:194`の`Assert-NoReparsePointInPath -Path $framesItem.FullName -PathRole 'FramesDirectory'`を単独で無効化すると `ASSERT FAILED: a junction alias as FramesDirectory is refused before the sequence is inspected` / exit 1。同file:202のreport親guardだけを無効化すると既存group 2の `ASSERT FAILED: a report parent junction into the inspected directory is refused` / exit 1。両guard健全のclean treeでは PS7・PS5.1とも14 group PASS / exit 0（既存12群 + 新group + 入力不変gate）。
+- `docs/05-qa.md` の入力不変記載を18 fixtureへ合わせ、2つのguardを片方ずつ外す負例fixtureの存在を明記した。fixture総数は17→18。
+- 移行: helper（`Measure-UERenderArtifacts.ps1`）の判定ロジックは変更していない。本変更は回帰suiteと文書に閉じる。
+
 ## Unreleased — 動画モーキャプ
 
 - `docs/09-video-mocap.md` を追加した。単眼のダンス動画から MediaPipe で体・手・顔の点を取り、VRM の骨の回転 → VRMA → UE（VRM4U）→ MV にする工程、単眼で取れない量の補い方、確認方法、1 本での実測、残る限界、権利の gate をまとめた。
