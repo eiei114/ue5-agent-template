@@ -8,19 +8,36 @@ $generator = Join-Path $PSScriptRoot 'New-UETemplateScaffold.ps1'
 $initialCheckoutStatus = @(& git -C $repoRoot status --porcelain --untracked-files=all)
 if ($LASTEXITCODE -ne 0) { throw 'Could not record the developer checkout status before testing.' }
 $testId = [Guid]::NewGuid().ToString('N')
+# The regression groups reuse this suite's long fixture naming, which already produces paths far
+# beyond any portable budget. They are generator-behaviour tests, not path-budget tests, so they
+# declare an unbounded budget explicitly instead of having the new budget silently shorten what
+# they cover. The dedicated budget group below sets its own values.
+$unboundedPathBudget = 32767
 $fixtureRoot = Join-Path $productionRoot ('.scaffold-test-' + $testId)
 $fixtureEngine = Join-Path $fixtureRoot 'EngineRoot'
+$deepRepoRoot = Join-Path (Join-Path $fixtureRoot 'deepfixture') 'deepclone'
 $projectPrefix = "Ex_$testId"
 $loopProjectName = "Lp_$testId"
 $existingProjectName = "No_$testId"
 $otherProjectName = "Alt_$testId"
+# The longest names the generator's ValidatePattern accepts (ProjectName 40, RunId 64).
+$maxName = 'P' + ('x' * 39)
+$maxRun = 'a' * 64
+$maxNameOutputPath = Join-Path $productionRoot ('{0}_{1}' -f $maxName, $maxRun)
+$pathBudgetMaterializedName = 'PthM_' + ('m' * 35)
 $outputNames = @(
 	"${projectPrefix}_$testId-a",
 	"${projectPrefix}_$testId-b",
 	"${loopProjectName}_$testId-a",
 	"${existingProjectName}_$testId-preserved",
 	"Tp_${testId}_$testId-a",
-	"${otherProjectName}_$testId-c"
+	"${otherProjectName}_$testId-c",
+	'PthB_ok1_budget',
+	'PthB_eq1_budget',
+	'PthB_no1_budget',
+	('{0}_budget' -f ('PthM_' + ('m' * 35))),
+	('{0}_{1}' -f $maxName, $maxRun),
+	('{0}_{1}' -f $maxName, ('b' * 64))
 )
 $outputPaths = @($outputNames | ForEach-Object { Join-Path $productionRoot $_ })
 
@@ -61,7 +78,16 @@ function Write-FixtureJson([string]$Path, [string]$Json) {
 	[System.IO.File]::WriteAllText($Path, $Json, [System.Text.UTF8Encoding]::new($false))
 }
 
-function Invoke-Generator([string]$RecipeName, [string]$Name, [string]$Run, [string[]]$Diff) {
+function Invoke-Generator([string]$RecipeName, [string]$Name, [string]$Run, [string[]]$Diff, [int]$MaxPathLength = 32767) {
+	& $generator -Recipe $RecipeName -ProjectName $Name -RunId $Run -EngineRoot $fixtureEngine -ProjectDiff $Diff -AllowDirtyTemplate -MaxPathLength $MaxPathLength | Out-Null
+}
+
+function Invoke-GeneratorCaptured([string]$RecipeName, [string]$Name, [string]$Run, [string[]]$Diff, [int]$MaxPathLength) {
+	return (& $generator -Recipe $RecipeName -ProjectName $Name -RunId $Run -EngineRoot $fixtureEngine -ProjectDiff $Diff -AllowDirtyTemplate -MaxPathLength $MaxPathLength) -join "`n"
+}
+
+function Invoke-GeneratorNoBudget([string]$RecipeName, [string]$Name, [string]$Run, [string[]]$Diff) {
+	# No -MaxPathLength at all: this is the case an agent hits by following the documented example.
 	& $generator -Recipe $RecipeName -ProjectName $Name -RunId $Run -EngineRoot $fixtureEngine -ProjectDiff $Diff -AllowDirtyTemplate | Out-Null
 }
 
@@ -159,7 +185,7 @@ try {
 	$dirtyOutput = Join-Path (Join-Path $dirtyTemplateRoot 'Production') "${dirtyProjectName}_dirty-rejected"
 	$dirtyFailure = ''
 	try {
-		& $dirtyGenerator -Recipe 'spectator-explore' -ProjectName $dirtyProjectName -RunId 'dirty-rejected' -EngineRoot $fixtureEngine -ProjectDiff @() | Out-Null
+		& $dirtyGenerator -Recipe 'spectator-explore' -ProjectName $dirtyProjectName -RunId 'dirty-rejected' -EngineRoot $fixtureEngine -ProjectDiff @() -MaxPathLength $unboundedPathBudget | Out-Null
 	} catch {
 		$dirtyFailure = $_.Exception.Message
 	}
@@ -277,6 +303,106 @@ try {
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $productionRoot "escape_$testId"))) 'path traversal did not create an out-of-scope directory'
 	Write-Output 'PASS: path traversal rejected before output creation'
 
+	# Path-length budget group. The repository records 260 characters as a failure it already hit
+	# (docs/08-online-foundations.md:47), so the generator must stop before the exclusive mkdir when
+	# the planned tree exceeds the budget. The fixture lives under the developer's checkout, whose
+	# absolute root is far longer than a recorded working location, so the success cases declare the
+	# measured length instead of hard-coding a number, and the stop cases drive the length by
+	# cloning the repository one level deeper (clone-root depth) and by using the longest names the
+	# generator accepts.
+	foreach ($budgetPath in @($maxNameOutputPath)) {
+		if (Test-Path -LiteralPath $budgetPath -PathType Container) {
+			Remove-Item -LiteralPath $budgetPath -Recurse -Force
+		}
+	}
+	$budgetProbeOutput = Invoke-GeneratorCaptured 'spectator-explore' 'PthB_ok1' 'budget' @() $unboundedPathBudget
+	$measuredMatch = [regex]::Match($budgetProbeOutput, 'longest planned path (\d+) characters, (\d+) characters of headroom')
+	Assert-True ($measuredMatch.Success) 'the generator reports the longest planned path and its headroom on success'
+	$measuredLongest = [int]$measuredMatch.Groups[1].Value
+	$measuredHeadroom = [int]$measuredMatch.Groups[2].Value
+	Assert-True ($measuredHeadroom -eq ($unboundedPathBudget - $measuredLongest)) 'the reported headroom is the declared budget minus the measured longest path'
+	Assert-True (Test-Path -LiteralPath (Join-Path $outputPaths[6] 'template-lock.json')) 'an unbounded budget still generates the project'
+
+	Invoke-Generator 'spectator-explore' 'PthB_eq1' 'budget' @() $measuredLongest
+	$equalBudgetOutput = Join-Path $productionRoot 'PthB_eq1_budget'
+	Assert-True (Test-Path -LiteralPath (Join-Path $equalBudgetOutput 'template-lock.json')) 'a budget exactly equal to the longest planned path still generates the project'
+	Assert-True (Test-Path -LiteralPath (Join-Path $equalBudgetOutput 'Plugins\MulticaOnlineStarter\MulticaOnlineStarter.uplugin')) 'the budget check does not drop the online plugin payload'
+
+	$tightBudget = $measuredLongest - 1
+	$budgetFailure = ''
+	try { Invoke-Generator 'spectator-explore' 'PthB_no1' 'budget' @() $tightBudget } catch { $budgetFailure = $_.Exception.Message }
+	Assert-True ($budgetFailure.Contains([string]$measuredLongest)) 'the budget stop names the measured longest path length'
+	Assert-True ($budgetFailure.Contains("{0}-character budget" -f $tightBudget)) 'the budget stop names the budget it compared against'
+	Assert-True ($budgetFailure.Contains('over the')) 'the budget stop states how far the tree exceeds the budget'
+	Assert-True ($budgetFailure.Contains('shallower directory')) 'the budget stop suggests a concrete way to shorten the path'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $productionRoot 'PthB_no1_budget'))) 'a budget stop happens before the exclusive mkdir, so no output directory exists'
+
+	# Default budget (no -MaxPathLength), driven by the longest names the generator accepts. This is
+	# the case an agent hits by following the documented example with a full GUID run ID. Whether it
+	# stops depends on how deep this checkout is, so the expectation is derived from the measured
+	# length instead of assuming the developer's path.
+	$maxNameProbeRun = ('b' * 64)
+	$maxNameProbe = (& $generator -Recipe 'spectator-explore' -ProjectName $maxName -RunId $maxNameProbeRun -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -MaxPathLength $unboundedPathBudget) -join "`n"
+	$maxNameProbePath = Join-Path $productionRoot ('{0}_{1}' -f $maxName, $maxNameProbeRun)
+	if (Test-Path -LiteralPath $maxNameProbePath -PathType Container) { Remove-Item -LiteralPath $maxNameProbePath -Recurse -Force }
+	$maxNameMatch = [regex]::Match($maxNameProbe, 'longest planned path (\d+) characters')
+	Assert-True ($maxNameMatch.Success) 'the longest-name probe reports its measured longest path'
+	$maxNameLongest = [int]$maxNameMatch.Groups[1].Value
+	$maxNameFailure = ''
+	$maxNameCreated = $false
+	try {
+		Invoke-GeneratorNoBudget 'spectator-explore' $maxName $maxRun @()
+		$maxNameCreated = $true
+	} catch { $maxNameFailure = $_.Exception.Message }
+	if ($maxNameLongest -gt 260) {
+		Assert-True ($maxNameFailure.Contains('260-character budget')) 'the default budget is 260 characters and stops a full-length name in this checkout'
+		Assert-True ($maxNameFailure.Contains($maxNameOutputPath)) 'the default-budget stop names the output directory it refused to create'
+		Assert-True (-not (Test-Path -LiteralPath $maxNameOutputPath)) 'the default-budget stop creates no output directory'
+	} else {
+		Assert-True ($maxNameCreated) 'a checkout so short that even the longest names fit still generates with the default budget'
+	}
+
+	# Same default budget, but the depth comes from the clone root instead of the names. The extra
+	# depth is computed from the length the success case reported, so this fixture keeps working when
+	# the tree or the developer's checkout path changes. Only the directory depth differs between the
+	# stop below and the success right after it.
+	$relativeLongest = $measuredLongest - ($outputPaths[6].Length + 1)
+	$deepOutputName = 'PthB_dk1_dk'
+	$deepRootLengthNeeded = 259 - $relativeLongest - ($deepOutputName.Length + '\Production'.Length) + 1
+	$deepRootLengthNeeded = [Math]::Max($deepRootLengthNeeded, $fixtureRoot.Length + 120)
+	$deepSegment = 'd' * ($deepRootLengthNeeded - $fixtureRoot.Length - 1)
+	$deepParent = Join-Path $fixtureRoot $deepSegment
+	[System.IO.Directory]::CreateDirectory($deepParent) | Out-Null
+	& git -C $repoRoot clone --quiet --local --no-hardlinks --no-tags --no-checkout $repoRoot $deepRepoRoot
+	if ($LASTEXITCODE -ne 0) { throw 'Could not create the isolated deep-path repository fixture.' }
+	& git -C $deepRepoRoot checkout --quiet --detach $templateRevision
+	if ($LASTEXITCODE -ne 0) { throw "Could not check out revision $templateRevision in the isolated deep-path repository fixture." }
+	[System.IO.Directory]::CreateDirectory((Join-Path $deepRepoRoot 'Production')) | Out-Null
+	$deepGenerator = Join-Path $deepRepoRoot 'scripts\New-UETemplateScaffold.ps1'
+	Copy-Item -LiteralPath $generator -Destination $deepGenerator -Force
+	$deepStopFailure = ''
+	try {
+		& $deepGenerator -Recipe 'spectator-explore' -ProjectName 'PthB_dk1' -RunId 'dk' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate | Out-Null
+	} catch { $deepStopFailure = $_.Exception.Message }
+	Assert-True ($deepStopFailure.Contains('260-character budget')) 'a deeper clone root stops the default-budget run without changing the generated tree'
+	Assert-True ($deepStopFailure.Contains($deepRepoRoot)) 'the deep-root stop names the checkout root that made the tree too long'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path (Join-Path $deepRepoRoot 'Production') $deepOutputName))) 'the deep-root stop creates no output directory'
+	$deepSuccessOutput = (& $deepGenerator -Recipe 'spectator-explore' -ProjectName 'PthB_dk1' -RunId 'dk' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -MaxPathLength $unboundedPathBudget) -join "`n"
+	$deepMatch = [regex]::Match($deepSuccessOutput, 'longest planned path (\d+) characters')
+	Assert-True ($deepMatch.Success) 'the deep-root run reports its measured longest path when the budget allows it'
+	Assert-True ([int]$deepMatch.Groups[1].Value -gt 260) 'the deeper clone root really exceeds 260 characters for the same tree'
+	Assert-True (Test-Path -LiteralPath (Join-Path (Join-Path $deepRepoRoot 'Production') ($deepOutputName + '\template-lock.json'))) 'an explicitly raised budget still generates the project at the deeper root'
+
+	# The measured value must equal the tree that actually lands on disk, including the recipe that
+	# rewrites paths through TemplateDefs.ini (folder renames change the relative lengths).
+	$materializedOutput = (& $generator -Recipe 'third-person-game' -ProjectName $pathBudgetMaterializedName -RunId 'budget' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -MaxPathLength $unboundedPathBudget) -join "`n"
+	$materializedMatch = [regex]::Match($materializedOutput, 'longest planned path (\d+) characters')
+	Assert-True ($materializedMatch.Success) 'the materializing recipe reports its measured longest path too'
+	$materializedDir = Join-Path $productionRoot ('{0}_budget' -f $pathBudgetMaterializedName)
+	$actualLongest = (Get-ChildItem -LiteralPath $materializedDir -Recurse -File -Force | ForEach-Object { $_.FullName.Length } | Measure-Object -Maximum).Maximum
+	Assert-True ([int]$materializedMatch.Groups[1].Value -eq $actualLongest) 'the measured longest path equals the longest file actually written for a materializing recipe'
+	Write-Output 'PASS: path-length budget stops before output creation and reports the measured longest path'
+
 	# Negative case: Build.version carries a non-numeric version field. Deriving 5.8 from it would
 	# write a fragment such as '.8' into the descriptor and the lock and then report success, so the
 	# generator must stop before copying and leave no output behind.
@@ -297,7 +423,7 @@ try {
 	$badVersionOutput = Join-Path (Join-Path $badVersionRepoRoot 'Production') "${badVersionProjectName}_badver"
 	$badVersionFailure = ''
 	try {
-		& $badVersionGenerator -Recipe 'vertical-loop' -ProjectName $badVersionProjectName -RunId 'badver' -EngineRoot $badVersionEngine -ProjectDiff @() -AllowDirtyTemplate | Out-Null
+		& $badVersionGenerator -Recipe 'vertical-loop' -ProjectName $badVersionProjectName -RunId 'badver' -EngineRoot $badVersionEngine -ProjectDiff @() -AllowDirtyTemplate -MaxPathLength $unboundedPathBudget | Out-Null
 	} catch {
 		$badVersionFailure = $_.Exception.Message
 	}
@@ -323,7 +449,7 @@ try {
 	$driftOutput = Join-Path (Join-Path $driftRepoRoot 'Production') "${driftProjectName}_drift"
 	$driftFailure = ''
 	try {
-		& $driftGenerator -Recipe 'vertical-loop' -ProjectName $driftProjectName -RunId 'drift' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate | Out-Null
+		& $driftGenerator -Recipe 'vertical-loop' -ProjectName $driftProjectName -RunId 'drift' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -MaxPathLength $unboundedPathBudget | Out-Null
 	} catch {
 		$driftFailure = $_.Exception.Message
 	}
