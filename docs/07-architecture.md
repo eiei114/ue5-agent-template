@@ -26,9 +26,9 @@
 | `EngineAssociation` | 空にしない。templateが値を持たない場合は`Engine/Build/Build.version`の`MajorVersion.MinorVersion`から導く | `identity.engine_association` |
 | 置換不能時 | コピー前に照合し、既知パターンに一致しない場合は停止して未一致pathを列挙する。生コピーを黙って出力しない | generatorのstderr/例外、`scripts/Test-UETemplateScaffold.ps1`の負例 |
 
-lockは`schema_version: 3`で、上記3項目を`identity`に持つ。単位は作品（`Production/<Name>_<runid>/template-lock.json`）であり、identityを手で書き換えない。
+lockは`schema_version: 4`で、上記3項目を`identity`に、template provenanceを`template_*`に持つ。単位は作品（`Production/<Name>_<runid>/template-lock.json`）であり、identityを手で書き換えない。
 
-### lockが固定するengine build identity（`schema_version: 3`）
+### lockが固定するengine build identity（`schema_version: 4`）
 
 | field | 由来 | 契約 |
 |---|---|---|
@@ -53,6 +53,23 @@ lockを比べるときはJSONをparseしてfield単位で比較する。byte比�
 - したがってhostを跨いだlockの同一性判定にsha256や`diff`を使うと偽の不一致が出る。canonical serializerは未実装で、この差は意図的に残している。
 - 実装済みの範囲: `scripts/Test-UETemplateScaffold.ps1`は同一shell・同一入力のlock byte一致（`-ceq`）をassertionで固定する。cross-shellのbyte一致は主張しない（本hostの実測で差があるため）。
 
+### lockが固定するtemplate provenance（`schema_version: 4`）
+
+| field | 意味 | 値を読むときの約束 |
+|---|---|---|
+| `template_repository` | 生成に使ったcheckoutの**実測**clone元（`git remote get-url origin`）。定数ではない | `null`は「clone元が不明」。公開repoを名乗らない。値がbundleのpathなら、そのbundleが正本であって公開repoではない |
+| `template_source_kind` | `remote` / `local-path` / `bundle` / `no-remote` / `no-origin` のいずれか | `remote`以外は「第三者が同じものを取りに来られる場所」ではない。`no-origin`はremoteはあるが`origin`が無い（clone元不明）状態 |
+| `template_commit` | 実際に生成したtemplate checkoutのHEAD SHA | **形式がSHAであることは到達性の証明ではない。**下記`template_commit_published`と組みで読む |
+| `template_commit_published` | そのSHAを`template_repository`が配信できるかを`git fetch --depth 1 <repo> <sha>`で実測した結果 | `true`=取得できた。`false`=「not our ref」を実測（未push等）。`null`=**未検査**（bundle、probe不能、`-SkipTemplatePublishCheck`）。`null`を`true`と読まない・合格扱いしない |
+| `template_worktree_dirty` | 生成時の作業ツリーがdirtyだったか | `true`は再現性なし。既定ではdirty自体が生成停止 |
+
+生成の既定は「`template_commit_published`が`true`でなければ停止」である。停止するのは、未push commit、originの無いcheckout、`origin`がbundle、probeが答えを出せないoffline相当のいずれか。理由は毎回メッセージに出す。
+
+この検査を通すための明示switchが2つあり、**どちらも「合格」を作らない。**
+
+- `-AllowUnpublishedTemplate`: 停止せず生成し、lockに`template_commit_published`の**実測値**（`false`または`null`）を残す。生成物を第三者へ渡す前に、記録されたSHAを配信できる場所へpushし、新しいRunIdで再生成する。
+- `-SkipTemplatePublishCheck`: probeを実行しない。lockは`null`（未検査）になる。repoに到達できないhostでの作業用で、未pushを隠すためのものではない。
+
 ## lockと更新手順
 
 lockはtemplate commit SHA、clean/dirty状態、engine template、UE version、engine build identity（`engine_changelist` / `engine_changelist_raw` / `engine_compatible_changelist` / `engine_is_licensee_version` / `engine_is_promoted_build` / `engine_branch_name`）、Engine/plugin version、recipe/use、作品差分、project identityを固定する。実作はcommit済み・cleanなtemplateから生成する。dirty時の生成は拒否し、テストだけ明示的な`-AllowDirtyTemplate`を使う。
@@ -64,7 +81,7 @@ lockはtemplate commit SHA、clean/dirty状態、engine template、UE version、
 方式比較とsource別の費用・制約は[docs/08-online-foundations.md](08-online-foundations.md)。Null/LANを初期動作とし、EOS/Steamは設定と実測を満たす独立adapter候補として扱う。
 
 初期は1repoで共通文書を参照し、再利用が実証された部品のみPlugin化する。深いBlueprint継承、ジャンルごとの全量fork、submoduleの大量追加は避ける。
-作品には共通commit SHA・UE/Plugin版・レシピ・ローカル差分を記録する。制作中の作品は固定版を使い、自動更新・上書きをしない。更新時は差分、移行方法、検品結果を残す。
+作品には共通commit SHA・UE/Plugin版・レシピ・ローカル差分を記録する。lockの`template_commit`は「その値をlockが名指しするrepoから取得できると確認済み」の意味でしか使わない。確認できていないlockを配布しない。制作中の作品は固定版を使い、自動更新・上書きをしない。更新時は差分、移行方法、検品結果を残す。
 
 ## 継続改善
 

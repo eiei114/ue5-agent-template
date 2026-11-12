@@ -10,6 +10,12 @@ if ($LASTEXITCODE -ne 0) { throw 'Could not record the developer checkout status
 $testId = [Guid]::NewGuid().ToString('N')
 $fixtureRoot = Join-Path $productionRoot ('.scaffold-test-' + $testId)
 $fixtureEngine = Join-Path $fixtureRoot 'EngineRoot'
+# The provenance fixtures need their own git repositories with nested repositories, so they are
+# placed outside Production/ (which the residue gate requires to hold only its placeholder) and
+# outside the long developer path: the generator creates its output directory through the Win32
+# API, which fails past MAX_PATH, so a nested fixture under this checkout's Production would both
+# hide its own residue and hit the path budget.
+$provenanceRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('.ue-scaffold-provenance-' + $testId)
 $projectPrefix = "Ex_$testId"
 $loopProjectName = "Lp_$testId"
 $existingProjectName = "No_$testId"
@@ -72,11 +78,68 @@ function Write-FixtureJson([string]$Path, [string]$Json) {
 }
 
 function Invoke-Generator([string]$RecipeName, [string]$Name, [string]$Run, [string[]]$Diff) {
-	& $generator -Recipe $RecipeName -ProjectName $Name -RunId $Run -EngineRoot $fixtureEngine -ProjectDiff $Diff -AllowDirtyTemplate | Out-Null
+	# The regression groups below test the recipe/lock content, not provenance, and the suite's own
+	# checkout may be a detached CI merge commit the recorded repository cannot serve. The
+	# publication probe is therefore skipped here so the lock records a measured null instead of a
+	# claim; the dedicated provenance group below drives the probe and the strict default.
+	$generatorArguments = @{
+		Recipe = $RecipeName
+		ProjectName = $Name
+		RunId = $Run
+		EngineRoot = $fixtureEngine
+		ProjectDiff = $Diff
+		AllowDirtyTemplate = $true
+		SkipTemplatePublishCheck = $true
+	}
+	& $generator @generatorArguments | Out-Null
 }
 
 function Invoke-EngineGenerator([string]$RecipeName, [string]$Name, [string]$Run, [string[]]$Diff, [string]$EngineRoot) {
-	& $generator -Recipe $RecipeName -ProjectName $Name -RunId $Run -EngineRoot $EngineRoot -ProjectDiff $Diff -AllowDirtyTemplate | Out-Null
+	# Same reason as Invoke-Generator: these groups assert recipe/engine behaviour, and the suite's
+	# checkout origin is not what they measure.
+	$generatorArguments = @{
+		Recipe = $RecipeName
+		ProjectName = $Name
+		RunId = $Run
+		EngineRoot = $EngineRoot
+		ProjectDiff = $Diff
+		AllowDirtyTemplate = $true
+		SkipTemplatePublishCheck = $true
+	}
+	& $generator @generatorArguments | Out-Null
+}
+
+function New-FixtureRepository([string]$SourceRoot, [string]$DestinationRoot) {
+	# A self-contained copy of this checkout's tracked sources as a fresh repository, so a provenance
+	# fixture owns all of its own history and can push it to a fixture remote. Cloning the developer
+	# checkout instead would depend on that checkout's depth (CI fetches a single merge commit) and
+	# could not be pushed to an empty remote. The file list comes from git rather than the filesystem,
+	# so the fixture cannot copy its own temp directories (Production/ holds this suite's fixtures) or
+	# the `.git` file that points outside the worktree, and what is measured is the working-tree content
+	# of the tracked files (i.e. the scripts under test).
+	[System.IO.Directory]::CreateDirectory($DestinationRoot) | Out-Null
+	$trackedOutput = @(& git -C $SourceRoot ls-files)
+	if ($LASTEXITCODE -ne 0) { throw 'Could not list the tracked files of the template checkout.' }
+	foreach ($trackedPath in $trackedOutput) {
+		$relative = ([string]$trackedPath).Trim()
+		if ([string]::IsNullOrWhiteSpace($relative)) { continue }
+		$source = Join-Path $SourceRoot ($relative.Replace('/', '\'))
+		if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { continue }
+		$target = Join-Path $DestinationRoot ($relative.Replace('/', '\'))
+		[System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($target)) | Out-Null
+		Copy-Item -LiteralPath $source -Destination $target -Force
+	}
+	& git -C $DestinationRoot init --quiet
+	if ($LASTEXITCODE -ne 0) { throw 'Could not initialize the provenance fixture repository.' }
+	return $DestinationRoot
+}
+
+function Update-FixtureRepository([string]$RepositoryRoot, [string]$Message) {
+	& git -C $RepositoryRoot -c user.name='Scaffold Fixture' -c user.email='scaffold-fixture@example.invalid' add --all
+	if ($LASTEXITCODE -ne 0) { throw "Could not stage the provenance fixture change: $Message" }
+	& git -C $RepositoryRoot -c user.name='Scaffold Fixture' -c user.email='scaffold-fixture@example.invalid' commit --quiet -m $Message
+	if ($LASTEXITCODE -ne 0) { throw "Could not commit the provenance fixture change: $Message" }
+	return (& git -C $RepositoryRoot rev-parse HEAD).Trim()
 }
 
 function New-FixtureEngineRoot([string]$Path, [string]$BuildVersionJson, [switch]$PluginWithoutVersion) {
@@ -190,7 +253,7 @@ try {
 	$dirtyOutput = Join-Path (Join-Path $dirtyTemplateRoot 'Production') "${dirtyProjectName}_dirty-rejected"
 	$dirtyFailure = ''
 	try {
-		& $dirtyGenerator -Recipe 'spectator-explore' -ProjectName $dirtyProjectName -RunId 'dirty-rejected' -EngineRoot $fixtureEngine -ProjectDiff @() | Out-Null
+		& $dirtyGenerator -Recipe 'spectator-explore' -ProjectName $dirtyProjectName -RunId 'dirty-rejected' -EngineRoot $fixtureEngine -ProjectDiff @() -SkipTemplatePublishCheck | Out-Null
 	} catch {
 		$dirtyFailure = $_.Exception.Message
 	}
@@ -198,6 +261,150 @@ try {
 	Assert-True (-not (Test-Path -LiteralPath $dirtyOutput)) 'dirty-template rejection creates no output project'
 	Assert-True ([System.IO.File]::ReadAllText($dirtyMarker) -ceq 'fixture only') 'dirty-template rejection leaves the isolated fixture marker unchanged'
 	Write-Output 'PASS: dirty template is rejected using an isolated fixture without touching the developer checkout'
+
+	# Provenance group: the lock must name the template actually used and must only claim a published
+	# commit when the recorded repository can serve it. Four fixture repositories cover the states a
+	# real checkout can be in: pushed head, unpushed head, no remote, and an offline bundle clone.
+	$provTemplateRoot = Join-Path $provenanceRoot 'ProvTemplate'
+	New-FixtureRepository -SourceRoot $repoRoot -DestinationRoot $provTemplateRoot | Out-Null
+	$provTemplateRevision = Update-FixtureRepository -RepositoryRoot $provTemplateRoot -Message 'provenance fixture base'
+	$provRemote = Join-Path $provenanceRoot 'ProvRemote.git'
+	& git init --quiet --bare $provRemote
+	if ($LASTEXITCODE -ne 0) { throw 'Could not create the provenance fixture remote.' }
+	& git -C $provTemplateRoot remote add origin $provRemote
+	if ($LASTEXITCODE -ne 0) { throw 'Could not attach the provenance fixture remote.' }
+	& git -C $provTemplateRoot push --quiet origin HEAD:refs/heads/main
+	if ($LASTEXITCODE -ne 0) { throw 'Could not publish the provenance fixture base commit.' }
+	[System.IO.Directory]::CreateDirectory((Join-Path $provTemplateRoot 'Production')) | Out-Null
+	$provGenerator = Join-Path $provTemplateRoot 'scripts\New-UETemplateScaffold.ps1'
+
+	function Test-CommitRetrievable([string]$Repository, [string]$Commit, [string]$ScratchRoot) {
+		$probeRepo = Join-Path $ScratchRoot ('fetch-' + [Guid]::NewGuid().ToString('N') + '.git')
+		& git init --quiet --bare $probeRepo | Out-Null
+		if ($LASTEXITCODE -ne 0) { throw "Could not create the provenance fetch probe repository: $probeRepo" }
+		# PowerShell 5.1 raises a terminating error for a failing native command's stderr when
+		# `$ErrorActionPreference = 'Stop'`, so a *expected* rejection ("not our ref") must be run
+		# with the preference relaxed locally; otherwise the negative assertion would throw in 5.1
+		# and silently pass in pwsh 7.
+		$previousPreference = $ErrorActionPreference
+		$ErrorActionPreference = 'Continue'
+		try {
+			& git -C $probeRepo fetch --quiet --depth 1 --no-tags $Repository $Commit 2>&1 | Out-Null
+			$fetchCode = $LASTEXITCODE
+		} finally {
+			$ErrorActionPreference = $previousPreference
+		}
+		Remove-Item -LiteralPath $probeRepo -Recurse -Force -ErrorAction SilentlyContinue
+		return $fetchCode -eq 0
+	}
+	function Get-LockProvenance([string]$ProjectRoot) {
+		return [System.IO.File]::ReadAllText((Join-Path $ProjectRoot 'template-lock.json')) | ConvertFrom-Json
+	}
+
+	# (a) pushed head: the default path succeeds and the lock names the commit the fixture remote serves.
+	$provPublishedName = "Pub_$testId"
+	$provPublishedOutput = Join-Path (Join-Path $provTemplateRoot 'Production') "${provPublishedName}_$testId-pub"
+	& $provGenerator -Recipe 'spectator-explore' -ProjectName $provPublishedName -RunId "$testId-pub" -EngineRoot $fixtureEngine -ProjectDiff @() | Out-Null
+	if (-not (Test-Path -LiteralPath $provPublishedOutput -PathType Container)) { throw 'The published-commit scaffold run produced no output.' }
+	$provPublishedLock = Get-LockProvenance $provPublishedOutput
+	Assert-True ($provPublishedLock.template_commit -ceq $provTemplateRevision) 'published fixture: lock records the template HEAD it was generated from'
+	Assert-True ($provPublishedLock.template_repository -ceq $provRemote) 'published fixture: lock records the measured origin, not a fixed repository constant'
+	Assert-True ($provPublishedLock.template_repository -cne 'https://github.com/eiei114/ue5-agent-template') 'published fixture: lock does not claim the public repository it was never cloned from'
+	Assert-True ($provPublishedLock.template_source_kind -ceq 'local-path') 'published fixture: lock records the source kind of the clone origin'
+	Assert-True ($provPublishedLock.template_commit_published -eq $true) 'published fixture: the publication probe reports a retrievable commit'
+	$fetchScratch = Join-Path $provenanceRoot 'FetchScratch'
+	[System.IO.Directory]::CreateDirectory($fetchScratch) | Out-Null
+	Assert-True (Test-CommitRetrievable -Repository $provPublishedLock.template_repository -Commit $provPublishedLock.template_commit -ScratchRoot $fetchScratch) 'the locked template commit can be fetched from the repository the lock names'
+	Assert-True (-not (Test-CommitRetrievable -Repository $provPublishedLock.template_repository -Commit ('0' * 40) -ScratchRoot $fetchScratch)) 'the retrieval assertion rejects a well-formed but non-existent commit (the previous suite accepted an all-zero SHA)'
+	# A third party must also be able to reconstruct the template from that repository and commit.
+	$thirdPartyClone = Join-Path $provenanceRoot 'ThirdPartyClone'
+	& git clone --quiet $provPublishedLock.template_repository $thirdPartyClone
+	if ($LASTEXITCODE -ne 0) { throw 'Could not clone the repository the published lock names.' }
+	& git -C $thirdPartyClone checkout --quiet --detach $provPublishedLock.template_commit
+	if ($LASTEXITCODE -ne 0) { throw 'A third party could not check out the commit the published lock names.' }
+	Assert-True (Test-Path -LiteralPath (Join-Path $thirdPartyClone 'scripts\New-UETemplateScaffold.ps1') -PathType Leaf) 'the commit the lock names contains the template the lock describes'
+	Write-Output 'PASS: a published template commit is recorded with its measured repository and stays retrievable'
+
+	# (b) unpushed head: default stops, and the explicit switch records published = false.
+	[System.IO.File]::AppendAllText((Join-Path $provTemplateRoot 'PROVENANCE-FIXTURE.txt'), "unpublished change`n", [System.Text.UTF8Encoding]::new($false))
+	$provUnpublishedRevision = Update-FixtureRepository -RepositoryRoot $provTemplateRoot -Message 'provenance fixture unpublished head'
+	Assert-True (-not (Test-CommitRetrievable -Repository $provRemote -Commit $provUnpublishedRevision -ScratchRoot $fetchScratch)) 'the fixture remote genuinely cannot serve the unpushed commit'
+	$provUnpublishedName = "Unp_$testId"
+	$provUnpublishedDefaultOutput = Join-Path (Join-Path $provTemplateRoot 'Production') "${provUnpublishedName}_$testId-default"
+	$provUnpublishedFailure = ''
+	try {
+		& $provGenerator -Recipe 'spectator-explore' -ProjectName $provUnpublishedName -RunId "$testId-default" -EngineRoot $fixtureEngine -ProjectDiff @() | Out-Null
+	} catch {
+		$provUnpublishedFailure = $_.Exception.Message
+	}
+	Assert-True ($provUnpublishedFailure.Contains('is not retrievable from the recorded template repository')) 'an unpushed template commit stops generation by default'
+	Assert-True (-not (Test-Path -LiteralPath $provUnpublishedDefaultOutput)) 'the unpublished stop writes no project'
+	$provUnpublishedAllowedOutput = Join-Path (Join-Path $provTemplateRoot 'Production') "${provUnpublishedName}_$testId-allowed"
+	& $provGenerator -Recipe 'spectator-explore' -ProjectName $provUnpublishedName -RunId "$testId-allowed" -EngineRoot $fixtureEngine -ProjectDiff @() -AllowUnpublishedTemplate | Out-Null
+	$provUnpublishedLock = Get-LockProvenance $provUnpublishedAllowedOutput
+	Assert-True ($provUnpublishedLock.template_commit -ceq $provUnpublishedRevision) 'the explicit switch still records the real template commit'
+	Assert-True ($provUnpublishedLock.template_commit_published -eq $false) 'the explicit switch records published = false instead of claiming the commit exists remotely'
+	Assert-True ($null -ne $provUnpublishedLock.PSObject.Properties['template_commit_published']) 'an unpublished lock spells out template_commit_published rather than omitting it'
+	Write-Output 'PASS: an unpushed template commit stops the default path and is recorded as unpublished when allowed'
+
+	# (c) no remote: the lock must not fall back to the public repository constant.
+	$provNoRemoteRoot = Join-Path $provenanceRoot 'ProvNoRemote'
+	& git clone --quiet --no-hardlinks $provTemplateRoot $provNoRemoteRoot
+	if ($LASTEXITCODE -ne 0) { throw 'Could not create the no-remote provenance fixture.' }
+	& git -C $provNoRemoteRoot remote remove origin
+	if ($LASTEXITCODE -ne 0) { throw 'Could not remove the origin of the no-remote provenance fixture.' }
+	[System.IO.Directory]::CreateDirectory((Join-Path $provNoRemoteRoot 'Production')) | Out-Null
+	$provNoRemoteGenerator = Join-Path $provNoRemoteRoot 'scripts\New-UETemplateScaffold.ps1'
+	$provNoRemoteName = "Nor_$testId"
+	$provNoRemoteDefaultOutput = Join-Path (Join-Path $provNoRemoteRoot 'Production') "${provNoRemoteName}_$testId-default"
+	$provNoRemoteFailure = ''
+	try {
+		& $provNoRemoteGenerator -Recipe 'spectator-explore' -ProjectName $provNoRemoteName -RunId "$testId-default" -EngineRoot $fixtureEngine -ProjectDiff @() | Out-Null
+	} catch {
+		$provNoRemoteFailure = $_.Exception.Message
+	}
+	Assert-True ($provNoRemoteFailure.Contains("has no 'origin' remote")) 'a checkout without an origin stops the default path'
+	Assert-True (($provNoRemoteFailure.Contains('no-remote') -or $provNoRemoteFailure.Contains('no-origin'))) 'the no-remote stop reports which source kind it saw'
+	Assert-True (-not (Test-Path -LiteralPath $provNoRemoteDefaultOutput)) 'the no-remote stop writes no project'
+	$provNoRemoteAllowedOutput = Join-Path (Join-Path $provNoRemoteRoot 'Production') "${provNoRemoteName}_$testId-allowed"
+	& $provNoRemoteGenerator -Recipe 'spectator-explore' -ProjectName $provNoRemoteName -RunId "$testId-allowed" -EngineRoot $fixtureEngine -ProjectDiff @() -AllowUnpublishedTemplate | Out-Null
+	$provNoRemoteLock = Get-LockProvenance $provNoRemoteAllowedOutput
+	Assert-True ($null -ne $provNoRemoteLock.PSObject.Properties['template_repository']) 'a checkout without an origin still declares template_repository'
+	Assert-True ($null -eq $provNoRemoteLock.template_repository) 'a checkout without an origin records no repository instead of the public repository constant'
+	Assert-True ($provNoRemoteLock.template_source_kind -ceq 'no-remote') 'a checkout without an origin records the no-remote source kind'
+	Assert-True ($null -eq $provNoRemoteLock.template_commit_published) 'an unprobeable commit is recorded as null and not as published'
+	Write-Output 'PASS: a checkout without a remote records no repository and an unverified publication state'
+
+	# (d) offline bundle clone: the lock must identify the bundle as the source, never the public repository.
+	$provBundle = Join-Path $provenanceRoot 'prov-template.bundle'
+	& git -C $provTemplateRoot bundle create --quiet $provBundle --all
+	if ($LASTEXITCODE -ne 0) { throw 'Could not create the provenance bundle fixture.' }
+	$provBundleClone = Join-Path $provenanceRoot 'ProvBundleClone'
+	& git clone --quiet $provBundle $provBundleClone
+	if ($LASTEXITCODE -ne 0) { throw 'Could not clone the provenance bundle fixture.' }
+	[System.IO.File]::AppendAllText((Join-Path $provBundleClone 'PROVENANCE-BUNDLE.txt'), "offline change`n", [System.Text.UTF8Encoding]::new($false))
+	$provBundleRevision = Update-FixtureRepository -RepositoryRoot $provBundleClone -Message 'provenance fixture offline head'
+	[System.IO.Directory]::CreateDirectory((Join-Path $provBundleClone 'Production')) | Out-Null
+	$provBundleGenerator = Join-Path $provBundleClone 'scripts\New-UETemplateScaffold.ps1'
+	$provBundleName = "Bun_$testId"
+	$provBundleDefaultOutput = Join-Path (Join-Path $provBundleClone 'Production') "${provBundleName}_$testId-default"
+	$provBundleFailure = ''
+	try {
+		& $provBundleGenerator -Recipe 'spectator-explore' -ProjectName $provBundleName -RunId "$testId-default" -EngineRoot $fixtureEngine -ProjectDiff @() | Out-Null
+	} catch {
+		$provBundleFailure = $_.Exception.Message
+	}
+	Assert-True ($provBundleFailure.Contains('offline hand-off file')) 'a bundle clone stops the default path because a bundle cannot establish a published commit'
+	Assert-True (-not (Test-Path -LiteralPath $provBundleDefaultOutput)) 'the bundle stop writes no project'
+	$provBundleAllowedOutput = Join-Path (Join-Path $provBundleClone 'Production') "${provBundleName}_$testId-allowed"
+	& $provBundleGenerator -Recipe 'spectator-explore' -ProjectName $provBundleName -RunId "$testId-allowed" -EngineRoot $fixtureEngine -ProjectDiff @() -AllowUnpublishedTemplate | Out-Null
+	$provBundleLock = Get-LockProvenance $provBundleAllowedOutput
+	Assert-True ($provBundleLock.template_source_kind -ceq 'bundle') 'a bundle clone records the bundle source kind'
+	Assert-True ($provBundleLock.template_repository -ceq $provBundle) 'a bundle clone records the bundle path instead of the public repository'
+	Assert-True ($provBundleLock.template_repository -cne 'https://github.com/eiei114/ue5-agent-template') 'a bundle clone does not claim the public repository'
+	Assert-True ($provBundleLock.template_commit -ceq $provBundleRevision) 'a bundle clone records its own head'
+	Assert-True ($null -eq $provBundleLock.template_commit_published) 'an offline bundle cannot establish publication, so the state stays null'
+	Write-Output 'PASS: an offline bundle clone is recorded as a bundle with an unverified publication state'
 
 	$projectName = $projectPrefix
 	$diff = @('Map: /Game/Test/Maps/L_Set', 'Exposure: capture preset A')
@@ -257,10 +464,15 @@ try {
 	Assert-True ((ConvertTo-Json -InputObject ($reformattedLock | ConvertFrom-Json) -Depth 12 -Compress) -ceq $firstSemantic) 'a lock re-serialized with different whitespace keeps the same parsed value'
 	$lockData = $firstLock | ConvertFrom-Json
 	Assert-True ($lockData.engine_version -eq '5.8.4') 'lock records the installed engine version'
-	Assert-True ($lockData.template_commit -match '^[0-9a-f]{40}$') 'lock records a full template commit SHA'
+	Assert-True ($lockData.template_commit -ceq $templateRevision) 'lock records the template checkout HEAD instead of an arbitrary 40-digit string'
+	# The regression groups above run with -SkipTemplatePublishCheck, so the recorded publication state
+	# has to be an explicit null. A `true` here would mean the check was never skipped (or that a null
+	# was read as published), and the provenance group below covers the measured states.
+	Assert-True ($null -ne $lockData.PSObject.Properties['template_commit_published']) 'the lock declares template_commit_published instead of omitting the field'
+	Assert-True ($null -eq $lockData.template_commit_published) 'a skipped publication probe is recorded as null, never as published'
 	Assert-True ($lockData.plugins.MulticaOnlineStarter -eq '1.0.1') 'lock records the project plugin version'
 	Assert-True ($lockData.project_differences.Count -eq 2) 'lock records normalized project-specific differences'
-	Assert-True ($lockData.schema_version -eq 3) 'lock records the engine-build-identity schema version'
+	Assert-True ($lockData.schema_version -ge 4) 'lock declares at least the template-provenance schema version'
 	Assert-True ($lockData.engine_changelist -eq 55116800) 'lock records the effective changelist UE derives from CompatibleChangelist'
 	Assert-True ($lockData.engine_changelist_source -eq 'CompatibleChangelist') 'lock names CompatibleChangelist as the effective changelist source'
 	Assert-True ($lockData.engine_changelist_raw -eq 58902052) 'lock keeps the raw Changelist exactly as the engine reported it'
@@ -446,7 +658,7 @@ try {
 	$badVersionOutput = Join-Path (Join-Path $badVersionRepoRoot 'Production') "${badVersionProjectName}_badver"
 	$badVersionFailure = ''
 	try {
-		& $badVersionGenerator -Recipe 'vertical-loop' -ProjectName $badVersionProjectName -RunId 'badver' -EngineRoot $badVersionEngine -ProjectDiff @() -AllowDirtyTemplate | Out-Null
+		& $badVersionGenerator -Recipe 'vertical-loop' -ProjectName $badVersionProjectName -RunId 'badver' -EngineRoot $badVersionEngine -ProjectDiff @() -AllowDirtyTemplate -SkipTemplatePublishCheck | Out-Null
 	} catch {
 		$badVersionFailure = $_.Exception.Message
 	}
@@ -472,7 +684,7 @@ try {
 	$driftOutput = Join-Path (Join-Path $driftRepoRoot 'Production') "${driftProjectName}_drift"
 	$driftFailure = ''
 	try {
-		& $driftGenerator -Recipe 'vertical-loop' -ProjectName $driftProjectName -RunId 'drift' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate | Out-Null
+		& $driftGenerator -Recipe 'vertical-loop' -ProjectName $driftProjectName -RunId 'drift' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -SkipTemplatePublishCheck | Out-Null
 	} catch {
 		$driftFailure = $_.Exception.Message
 	}
@@ -501,6 +713,10 @@ try {
 	if (Test-Path -LiteralPath $fixtureRoot -PathType Container) {
 		Remove-Item -LiteralPath $fixtureRoot -Recurse -Force
 	}
+	if (Test-Path -LiteralPath $provenanceRoot -PathType Container) {
+		Remove-Item -LiteralPath $provenanceRoot -Recurse -Force
+	}
+	if (Test-Path -LiteralPath $provenanceRoot) { $cleanupProblems += "provenance fixture root still exists: $provenanceRoot" }
 	$cleanupProblems = @(Get-ProductionResidue | ForEach-Object { "Production/ residual entry after cleanup: $_" })
 	if (Test-Path -LiteralPath $fixtureRoot) { $cleanupProblems += "fixture root still exists: $fixtureRoot" }
 	$finalCheckoutStatus = @(& git -C $repoRoot status --porcelain --untracked-files=all)

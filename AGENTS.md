@@ -51,8 +51,10 @@ project identityの契約は1つだけ。`scripts/New-UETemplateScaffold.ps1`は
 - `materialize_project: true`のrecipe（`third-person-game`）は、template自身の`Config/TemplateDefs.ini`をUEウィザードと同じ規則で適用するため、`<Name>.uproject` / `Source/<Name>` / `Modules[].Name = <Name>`になる。
 - それ以外のrecipe（`spectator-explore` / `vertical-loop`）は生コピーするため、template名（`TP_FirstPerson` / `TP_BlankBP`）がそのまま残る。ここで`.uproject`だけrenameすると`Source/**/*.Build.cs`と食い違う。
 
-generatorはコピー前にdescriptorと`Source/`を照合し、既知パターンに一致しなければ**推測で続行せず停止**して未一致pathを列挙する。コピー後にもコピー物同士で同じ照合を行い、食い違えばdescriptorを書き換えずに停止する。生成後に`.uproject`を手でrenameしない。identityは`template-lock.json`の`identity`（`project_file` / `project_modules` / `engine_association`、`schema_version: 3`）に記録され、そこで確認できる。
+generatorはコピー前にdescriptorと`Source/`を照合し、既知パターンに一致しなければ**推測で続行せず停止**して未一致pathを列挙する。コピー後にもコピー物同士で同じ照合を行い、食い違えばdescriptorを書き換えずに停止する。生成後に`.uproject`を手でrenameしない。identityは`template-lock.json`の`identity`（`project_file` / `project_modules` / `engine_association`、`schema_version: 4`）に記録され、そこで確認できる。
 
 engine build identityも同じ規則でlockに載る。`engine_version`は`Build.version`の3つの版fieldが全て数値であることが前提で、欠落・非数値なら生成は停止する。`engine_changelist`はUEの導出規則（`Changelist`と`CompatibleChangelist`が両方非0なら後者、さもなくば前者）で求めた値で、生値`engine_changelist_raw`・`engine_compatible_changelist`・`engine_is_licensee_version`・`engine_is_promoted_build`・`engine_branch_name`を併記する。**エンジンが書いていない値は`null`**で、`0`や空文字を「不明」の代用にしない。plugin版も`.uplugin`が未設定なら`null`。lockを比べるときはbyteやsha256ではなくparseしたJSONのfield比較を使う（`ConvertTo-Json`の整形がshell間で異なるため）。
+
+template provenanceも`template-lock.json`に残る。`template_repository`は生成に使ったcheckoutの実測clone元（定数ではない。remote無しなら`null`）、`template_source_kind`は`remote` / `local-path` / `bundle` / `no-remote` / `no-origin`、`template_commit_published`は「そのSHAをそのrepoから取得できることを実測したか」で`true` / `false` / `null`（**`null`は未検査**）。既定の生成は`true`でなければ停止する。未pushやbundleで通す場合は`-AllowUnpublishedTemplate`（実測の`false`/`null`をlockに残す）または`-SkipTemplatePublishCheck`（probeせず`null`）を明示し、そのlockを**第三者へ渡す前に**記録SHAを配信可能なrepoへpushして新RunIdで再生成する。
 
 旧版は上書きしない。Out/_v1のような旧運用よりrun別の分離を推奨。Outに置いただけで納品とは呼ばない。
