@@ -8,7 +8,20 @@ $generator = Join-Path $PSScriptRoot 'New-UETemplateScaffold.ps1'
 $initialCheckoutStatus = @(& git -C $repoRoot status --porcelain --untracked-files=all)
 if ($LASTEXITCODE -ne 0) { throw 'Could not record the developer checkout status before testing.' }
 $testId = [Guid]::NewGuid().ToString('N')
-$fixtureRoot = Join-Path $productionRoot ('.scaffold-test-' + $testId)
+# The fixtures are isolated git clones that each hold their own Production/ and a generated project,
+# so the deepest path the suite creates is the fixture root plus roughly 80 characters. A developer
+# checkout that is already deep (for example an agent workspace under %USERPROFILE%) pushes that past
+# the Win32 path limit, the generator stops with 'Could not exclusively create the output directory
+# (Win32 206)', and the suite reports the fixture layout as a generator defect. Keep the fixture under
+# Production/ while it fits; fall back to the system temp directory when it does not. This is harness
+# hygiene only: the generator's own long-path behaviour is DOT-3132's scope, not this suite's.
+$fixtureRootPathBudget = 160
+$productionFixtureRoot = Join-Path $productionRoot ('.scaffold-test-' + $testId)
+$fixtureRoot = if ($productionFixtureRoot.Length -le $fixtureRootPathBudget) {
+	$productionFixtureRoot
+} else {
+	Join-Path ([System.IO.Path]::GetTempPath()) ('ue-agent-template-scaffold-' + $testId)
+}
 $fixtureEngine = Join-Path $fixtureRoot 'EngineRoot'
 $projectPrefix = "Ex_$testId"
 $loopProjectName = "Lp_$testId"
@@ -564,6 +577,8 @@ try {
 	if (Test-Path -LiteralPath $fixtureRoot -PathType Container) {
 		Remove-Item -LiteralPath $fixtureRoot -Recurse -Force
 	}
+	# The fixture may live outside Production/ when the checkout is deep, so both locations are
+	# checked: Production/ must keep only the tracked placeholder, and the fixture root must be gone.
 	$cleanupProblems = @(Get-ProductionResidue | ForEach-Object { "Production/ residual entry after cleanup: $_" })
 	if (Test-Path -LiteralPath $fixtureRoot) { $cleanupProblems += "fixture root still exists: $fixtureRoot" }
 	$finalCheckoutStatus = @(& git -C $repoRoot status --porcelain --untracked-files=all)

@@ -7,12 +7,13 @@
 - `SharedContentPacks` の per-mount `DetailLevels` を探索 path に使う。宣言 level に実体が無い場合だけ `EditDetailLevelPreference` → `High` → `Standard` の順に fall back し、fall back したら警告する。実際に使った level と「宣言どおりか」を lock の `template_defs.shared_content_packs`（`mount` / `detail_level` / `declared`）に記録する。
 - 生成後の不変条件検査は既存の `Get-ScaffoldIdentityReport`（`.uproject` の `Modules[].Name` と `Source/<Name>/<Name>.Build.cs` の双方向照合、非 0 停止）をそのまま使う。module 名は宣言された `ReplacementsInFiles` で置換するため、宣言規則が module 名に届かない場合は**停止**し、未一致 path を列挙する。exit 0 のまま食い違った tree を返す経路は無い。
 - `scripts/Test-UETemplateScaffold.ps1` に 5 group 追加（既存 8 group → 13 group）。非対称 fixture（`FilenameReplacements=(cpp,cs)` / `ReplacementsInFiles=(ini,cs)`）で「ファイル名だけ改名・本文は据え置き」を固定し、`From` 不一致の負例、未対応キーの正例（警告 + lock 記録）、per-mount `DetailLevels` の正例（`Low` 宣言 + Low のみ存在）、宣言 level 欠落時の fall back 記録を追加した。
+- suite の fixture は `Production/.scaffold-test-<id>/` に置き、そこが深すぎる checkout（agent workspace 等）では system temp 配下へ退避する。fixture は clone 済み repo を含むため深い checkout では Win32 の path 上限に当たり、generator が `Could not exclusively create the output directory (Win32 206)` で止まって「generator の欠陥」に見えていた。起動経路の path 長の扱いは DOT-3132 の範囲で、本 PR は harness の置き場だけを直す。
 - docs（`CHANGELOG.md` / `README.md` / `AGENTS.md` / `docs/07-architecture.md` / `templates/recipes/third-person-game/Play.md`）の「UEウィザードと同じ規則」を、実装しているキーの列挙と未実装キーの明示に置き換えた。
 
 実測（本 host: Windows 10.0.26300 / pwsh 7.6.9 / Windows PowerShell 5.1.26100.9711）:
 
 - 実 install `UE_5.8`（Build.version 5.8.4 / CL 58902052）の `Templates/TP_ThirdPerson` を read-only で参照し、`third-person-game` を1回生成。`Created …` / exit 0、`.uproject` の `Modules[0].Name = Rtp_1`、`Source/Rtp_1/Rtp_1.Build.cs` が存在し、`Source/TP_ThirdPerson/` は残らない。lock の `template_defs.applied_keys` は 7 キー（`EditDetailLevelPreference` / `FilenameReplacements` / `FilesToIgnore` / `FolderRenames` / `FoldersToIgnore` / `ReplacementsInFiles` / `SharedContentPacks`）、`ignored_keys` は 6 キー（`AssetTypes` / `bThumbnailAsIcon` / `Categories` / `ClassTypes` / `LocalizedDescriptions` / `LocalizedDisplayNames`）、`shared_content_packs` は 3 mount すべて `declared: true` / `High`。engine 同梱物は repo へコピーしていない（一時 clone は削除）。
-- 変更前 `aa113700` に同じ suite を当てると、新 group が `ASSERT FAILED: FilenameReplacements renames the .cpp file name` 等で落ちる（追加 assertion が盲目でない）。
+- 変更前の generator に同じ suite を当てると、新 group が落ちる（追加 assertion が盲目でない）: `8f58615`（現行 `origin/main`）では `ASSERT FAILED: FilenameReplacements renames the .cpp file name`、`aa113700`（本 Issue の scout 基準）では DOT-3041 の identity 契約が未着地のため先に `ASSERT FAILED: generated project descriptor has a non-empty EngineAssociation` で止まる。
 - `scripts/Test-UETemplateScaffold.ps1` は `pwsh 7.6.9` と Windows PowerShell 5.1 の両方で 13 group PASS / exit 0。suite 前後で `git status --porcelain --untracked-files=all` は不変。
 
 UE install / launch / UBT compile / Editor / PIE / cook / MRQ / render / Shipping は本変更で実行していない。`Source/<Name>/<Name>.Build.cs` と `Modules[].Name = <Name>` の静的一致だけを合格根拠にし、UBT がこの tree をどう読むかは Unverified。
