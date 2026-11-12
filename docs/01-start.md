@@ -82,9 +82,12 @@ Project BrowserはUE側のtemplate materialize規則でprojectを作るため、
 | `scripts/Stop-UETemplateRunProcesses.ps1` | `-WhatIf`相当のdry-runで**停止対象一覧を先に出力・保存**し、`-Execute`で一覧のidentityだけを停止する。`-Execute`は同じsnapshotのdry-run planが無ければ**拒否**する | しない |
 | `scripts/Test-UETemplateLease.ps1` | leaseを`free` / `held` / `unknown`の3値で判定する。`unknown`は`free`へ丸めない | しない |
 
+終了codeは `free=0` / `held=1` / `unknown=2`。**実行できなかったcheckも`unknown`（2）を返す**（例外のexit 1を`held`と読み替えない）。`held`は「停止対象がまだ生きている」という観測結果であり、check自体の失敗と同じcodeにしない。
+
 - 回帰は`scripts/Test-UETemplateProcessOwnership.ps1`。自作fixture（writer→子→孫）で負例を固定し、UEを使わない。
 - 帰属不明（snapshotに無いprocess、`creation_utc_ticks`が読めないprocess、writerのidentity不一致、snapshotのhash/run/writer不一致）は**停止しない**。dry-run・実行後の検証とも`unknown`を返し、`free`と言わない。
 - PIDを再利用した別process（`creation_utc_ticks`がsnapshotと不一致）は停止対象から外す。
+- lease判定の`WRITER: pid=... alive=true`は「**このrunの**writerが生きている」の意味で、PIDが存在するだけでは`alive=true`にしない。PIDは存在するが`creation_utc_ticks`がsnapshotと違う場合は`pid-present=True` / `identity-verified=False` / `alive=False`として記録し、PID再利用と「終了した」を区別する。
 - 回収結果は`templates/QA.md`の当該行へ、停止対象件数・停止件数・残存件数・残存の帰属不明件数・判定の5つで記録する。空欄のまま納品しない。
 
 ### 制約（job objectに依存しない）

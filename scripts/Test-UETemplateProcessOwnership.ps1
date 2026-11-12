@@ -334,6 +334,60 @@ try {
 	Assert-True ($legacyCheck.stdout.Contains('snapshot-not-recorded')) 'the report says the snapshot is not recorded'
 	Write-Output 'PASS: a dead writer PID without a snapshot answers unknown, never free (d)'
 
+	# --- group 7a2: a check that cannot run is unknown, never the `held` exit code ---------------
+	# A PowerShell exception exits 1. A caller that maps 1 to `held` would then believe the lease is
+	# actively held when in fact nothing was checked. A missing lease must therefore answer unknown.
+	$missingLeasePath = Join-Path $fixtureRoot 'LEASE-does-not-exist.json'
+	$missingCheck = Invoke-ProcessScript $script:leaseScript @('-LeasePath', $missingLeasePath, '-ReportPath', (Join-Path $fixtureRoot 'lease-check-missing.json'))
+	Assert-True ($missingCheck.exit_code -eq 2) ("a lease that cannot be read exits 2 (unknown), not the held code 1, got {0}: {1}" -f $missingCheck.exit_code, $missingCheck.stderr)
+	Assert-True ($missingCheck.stdout.Contains('VERDICT: unknown')) 'the unreadable lease still reports an explicit unknown verdict'
+	Assert-True (-not $missingCheck.stdout.Contains('VERDICT: held')) 'a check that could not run is not reported as held'
+	$missingReport = Read-UETemplateJsonFile -Path (Join-Path $fixtureRoot 'lease-check-missing.json') -Description 'lease-check-missing'
+	Assert-True (([string]$missingReport.verdict) -ceq 'unknown') 'the report for an unreadable lease records unknown'
+	Write-Output 'PASS: a lease the check cannot read answers unknown (exit 2) instead of the held exit code'
+
+	# --- group 7c: a live PID with a different creation time is not this run's writer -------------
+	# writer_alive answers "is the run's writer alive", not "does this PID exist". A reused PID is
+	# somebody else's process and must not be reported as the run's writer.
+	$writerIdentityChain = Start-ChainFixture
+	$null = Wait-ChainLeaf -WriterId ([int]$writerIdentityChain.Id)
+	$writerIdentitySnapshotPath = Join-Path $fixtureRoot 'snapshot-writer-identity.json'
+	$writerIdentityCapture = Invoke-ProcessScript $script:startScript @('-RunId', ("run-writer-identity-$testId"), '-WriterProcessId', ([string]$writerIdentityChain.Id), '-SnapshotPath', $writerIdentitySnapshotPath)
+	Assert-True ($writerIdentityCapture.exit_code -eq 0) 'the writer identity fixture snapshot is captured'
+	$writerIdentitySnapshot = Read-UETemplateJsonFile -Path $writerIdentitySnapshotPath -Description 'snapshot-writer-identity'
+	$reusedWriterSnapshot = $writerIdentitySnapshot | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+	$reusedWriterSnapshot.processes = @(@($reusedWriterSnapshot.processes) | ForEach-Object {
+		if ([int]$_.process_id -eq [int]$writerIdentityChain.Id) {
+			[pscustomobject]@{
+				process_id = [int]$_.process_id
+				parent_process_id = [int]$_.parent_process_id
+				creation_utc_ticks = ([long]$_.creation_utc_ticks - 50000)
+				executable_path = [string]$_.executable_path
+				name = [string]$_.name
+			}
+		} else { $_ }
+	})
+	$reusedWriterSnapshot.writer = [pscustomobject]@{
+		process_id = [int]$reusedWriterSnapshot.writer.process_id
+		creation_utc_ticks = ([long]$reusedWriterSnapshot.writer.creation_utc_ticks - 50000)
+		executable_path = [string]$reusedWriterSnapshot.writer.executable_path
+		name = [string]$reusedWriterSnapshot.writer.name
+	}
+	$reusedWriterSnapshotPath = Join-Path $fixtureRoot 'snapshot-writer-reused.json'
+	Write-UETemplateJsonFile -Path $reusedWriterSnapshotPath -Value $reusedWriterSnapshot
+	$reusedWriterLeasePath = New-LeaseFile ("run-writer-identity-$testId") ([int]$writerIdentityChain.Id) $reusedWriterSnapshotPath
+	$reusedWriterReportPath = Join-Path $fixtureRoot 'lease-check-writer-reused.json'
+	$reusedWriterCheck = Invoke-ProcessScript $script:leaseScript @('-LeasePath', $reusedWriterLeasePath, '-ReportPath', $reusedWriterReportPath)
+	Assert-True ($reusedWriterCheck.exit_code -eq 2) ("a reused writer PID keeps the verdict at unknown, got {0}: {1}" -f $reusedWriterCheck.exit_code, ($reusedWriterCheck.stderr + $reusedWriterCheck.stdout))
+	Assert-True ($reusedWriterCheck.stdout.Contains('identity-verified=False')) 'the report says the writer identity could not be verified'
+	Assert-True ($reusedWriterCheck.stdout.Contains('pid-present=True')) 'the report still records that the PID exists, so "gone" and "reused" stay distinguishable'
+	$reusedWriterReport = Read-UETemplateJsonFile -Path $reusedWriterReportPath -Description 'lease-check-writer-reused'
+	Assert-True ($reusedWriterReport.writer_pid_present -eq $true) 'the report records the live PID'
+	Assert-True ($reusedWriterReport.writer_identity_verified -eq $false) 'the report records that the identity did not match the snapshot'
+	Assert-True ($reusedWriterReport.writer_alive -eq $false) 'a reused PID is not reported as the run writer'
+	Assert-True ((Get-LiveRecord -ProcessId ([int]$writerIdentityChain.Id)) -ne $null) 'the process behind the reused PID was not touched'
+	Write-Output 'PASS: a live PID whose creation time differs from the snapshot is not reported as the run writer'
+
 	# --- group 7b: a live run-owned set answers held -------------------------------------------
 	# The lease check must distinguish held from unknown: the snapshot verifies, and the run-owned
 	# processes are still alive.
@@ -350,7 +404,7 @@ try {
 	# The same lease after the run's own stop must answer free.
 	$heldPlanPath = Join-Path $fixtureRoot 'plan-held.json'
 	$heldDryRun = Invoke-ProcessScript $script:stopScript @('-SnapshotPath', $heldSnapshotPath, '-ReportPath', $heldPlanPath)
-	Assert-True ($heldDryRun.exit_code -eq 0) 'the held fixture dry run is ready'
+	Assert-True ($heldDryRun.exit_code -eq 0) ("the held fixture dry run is ready, got {0}: {1}" -f $heldDryRun.exit_code, ($heldDryRun.stderr + $heldDryRun.stdout))
 	$heldExecute = Invoke-ProcessScript $script:stopScript @('-SnapshotPath', $heldSnapshotPath, '-ReportPath', $heldPlanPath, '-Execute', '-VerificationPath', (Join-Path $fixtureRoot 'verification-held.json'), '-GraceMilliseconds', '5000')
 	Assert-True ($heldExecute.exit_code -eq 0) 'the held fixture is stopped'
 	$heldCheckAfter = Invoke-ProcessScript $script:leaseScript @('-LeasePath', $heldLeasePath)

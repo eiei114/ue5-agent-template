@@ -36,6 +36,33 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# A check that cannot finish must answer `unknown` (exit 2). A PowerShell exception exits 1, and a
+# caller would read 1 as `held`. The error text goes to stderr; the verdict stays on stdout so the
+# output remains parseable and reportable.
+trap {
+	$message = $_.Exception.Message
+	[Console]::Error.WriteLine(('ERROR: ' + $message))
+	Write-Output 'VERDICT: unknown'
+	Write-Output ('REASON: the check could not complete: ' + $message)
+	Write-Output 'UE: not started (lease check only reads the process table and the lease)'
+	try {
+		if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
+			Write-UETemplateJsonFile -Path ([System.IO.Path]::GetFullPath($ReportPath)) -Value ([pscustomobject]@{
+				schema_version = 1
+				checked_at_utc = [datetime]::UtcNow.ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
+				lease_path     = [string]$LeasePath
+				verdict        = 'unknown'
+				reason         = ('the check could not complete: ' + $message)
+				problem        = 'check-failed'
+				ue_started     = $false
+			})
+		}
+	} catch {
+	}
+	exit 2
+}
+
 . (Join-Path $PSScriptRoot 'UETemplateProcessOwnership.ps1')
 
 $leasePathFull = [System.IO.Path]::GetFullPath($LeasePath)
@@ -147,11 +174,24 @@ if ($null -ne $ownership -and $ownership.ok -and $null -ne $liveTable) {
 	$liveOwned = @($ownership.owned | Where-Object { $_.live })
 }
 
+# writer_alive must not be a PID-existence answer. A live PID whose creation time no longer matches
+# the snapshot is a reused PID, i.e. somebody else's process, so it cannot be reported as this run's
+# writer. When the snapshot carries no writer creation time the identity cannot be checked at all,
+# which is already recorded as an `unknown` problem above.
+$writerPresent = $false
 $writerAlive = $false
+$writerIdentityVerified = $false
 if ($writerPid -gt 0 -and $null -ne $liveTable) {
 	$liveIndex = Get-UETemplateProcessIndex -Table @(ConvertTo-UETemplateProcessTable -Records $liveTable)
 	$liveWriter = $liveIndex.byId[$writerPid]
-	$writerAlive = $null -ne $liveWriter
+	$writerPresent = ($null -ne $liveWriter)
+	if ($writerPresent -and $null -ne $snapshot -and $null -ne $snapshot.writer) {
+		$expectedWriterTicks = [long]$snapshot.writer.creation_utc_ticks
+		if ($expectedWriterTicks -gt 0) {
+			$writerIdentityVerified = Test-UETemplateProcessIdentity -ExpectedRecord ([pscustomobject]@{ process_id = $writerPid; creation_utc_ticks = $expectedWriterTicks }) -LiveRecord $liveWriter
+		}
+	}
+	$writerAlive = $writerIdentityVerified
 }
 
 $verdict = 'free'
@@ -172,6 +212,8 @@ $record = [pscustomobject]@{
 	run_id                = $runId
 	writer_pid            = $writerPid
 	writer_alive          = $writerAlive
+	writer_pid_present    = $writerPresent
+	writer_identity_verified = $writerIdentityVerified
 	snapshot_path         = $snapshotFilePath
 	snapshot_present      = ($null -ne $snapshot)
 	snapshot_verified     = ($problems.Count -eq 0 -and $null -ne $snapshot)
@@ -193,7 +235,7 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
 if (-not $Quiet) {
 	Write-Output ("VERDICT: {0}" -f $verdict)
 	Write-Output ("REASON: {0}" -f $reason)
-	Write-Output ("WRITER: pid={0} alive={1}" -f $writerPid, $writerAlive)
+	Write-Output ("WRITER: pid={0} alive={1} pid-present={2} identity-verified={3} (a live PID with a different creation time is a reused PID, not this run's writer)" -f $writerPid, $writerAlive, $writerPresent, $writerIdentityVerified)
 	Write-Output ("SNAPSHOT: present={0} verified={1} path={2}" -f $record.snapshot_present, $record.snapshot_verified, $(if ($snapshotFilePath) { $snapshotFilePath } else { '(none)' }))
 	Write-Output ("OWNED-LIVE: {0}" -f $liveOwned.Count)
 	foreach ($liveProcess in @($liveOwned)) {

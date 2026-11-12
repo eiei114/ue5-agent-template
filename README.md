@@ -89,6 +89,7 @@ workerのrunは自分のプロセス木（writer + 子孫）を同期回収し�
 ```
 
 - 帰属不明（snapshotに無いprocess、PID再利用、hash/run/writer不一致）は停止せず `unknown`。`unknown`を`free`に読み替えない。
+- 終了codeは `free=0` / `held=1` / `unknown=2`。check自体が実行できなかった場合も`unknown`（2）を返すので、`held`（1）を「check失敗」の意味に使わない。
 - 共有Chrome・他runのprocess・writerの親は停止対象外として記録する。
 - UEを起動しない層なので、UEのbuild/Editor/renderはこの手順の対象外。回帰は`scripts/Test-UETemplateProcessOwnership.ps1`（UE不使用の自作fixture）。詳細は[着手手順](docs/01-start.md)のlease節。
 

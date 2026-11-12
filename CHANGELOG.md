@@ -12,9 +12,9 @@
   - `scripts/Test-UETemplateLease.ps1` — lease を **`free` / `held` / `unknown` の3値**で判定する。`writer_pid` が死んでいるだけでは `free` を返さない。snapshot欠落・hash/run/writer不一致・帰属不明のいずれでも `unknown`。
   - `scripts/UETemplateProcessOwnership.ps1` — 上記3本が dot-source する共通helper（snapshot union、親子鎖、深さ、identity判定）。
 - **`templates/QA.md` を機械可読にした**。`run所有processの回収` 行と `## run所有processの回収` 節を、**停止対象件数・停止件数・残存件数・残存の帰属不明件数・判定** の5項目 + report path で記録する形にした。`unknown` は合格にしない。
-- **回帰suite を追加**（`scripts/Test-UETemplateProcessOwnership.ps1`、12 group、UE不使用・fixtureはsystem temp）。負例を固定: (a) writer→子→孫を snapshot の親子鎖で列挙・停止、(b) snapshotに無いlive process は停止せずgapとして報告、(c) PID再利用は停止しない、(d) writer PID死亡だけでは `unknown`（`free`でない）、(e) 変更前のlease形状（snapshot無し・単一PID）では孫に到達できず `unknown`。
+- **回帰suite を追加**（`scripts/Test-UETemplateProcessOwnership.ps1`、14 group、UE不使用・fixtureはsystem temp）。負例を固定: (a) writer→子→孫を snapshot の親子鎖で列挙・停止、(b) snapshotに無いlive process は停止せずgapとして報告、(c) PID再利用は停止しない、(d) writer PID死亡だけでは `unknown`（`free`でない）、(e) 変更前のlease形状（snapshot無し・単一PID）では孫に到達できず `unknown`。加えて、読めないleaseは `held` ではなく `unknown`（exit 2）を返し、writer PIDが生存していても`creation_utc_ticks`が不一致なら`alive=False` / `pid-present=True`と記録する。
 
-**検証（本host、Windows 10.0.26300、`pwsh 7.6.9` と Windows PowerShell 5.1.26100.9711）**: `scripts/Test-UETemplateProcessOwnership.ps1` = **12 group PASS / exit 0**（両PS）。`scripts/Test-UETemplateScaffold.ps1` = **8 group PASS / exit 0**（両PS、回帰なし）。`git status --porcelain --untracked-files=all` は test 前後で不変（suite 自身が断言）。UEは一度も起動していない。
+**検証（本host、Windows 10.0.26300、`pwsh 7.6.9` と Windows PowerShell 5.1.26100.9711）**: `scripts/Test-UETemplateProcessOwnership.ps1`（14 group PASS / exit 0、両PS）。`scripts/Test-UETemplateScaffold.ps1` = **8 group PASS / exit 0**（両PS、回帰なし）。`git status --porcelain --untracked-files=all` は test 前後で不変（suite 自身が断言）。UEは一度も起動していない。
 
 **移行**: 既存の生成projectと `Production/` の生成物は書き換えない。snapshotが無い旧leaseは `Test-UETemplateLease.ps1` で `unknown` になるので、新runは `Start-UETemplateRunProcessSnapshot.ps1` を lease 取得直後に1回実行する（snapshotが無いまま `free` を主張しない）。既存runを遡って snapshot を捏造しない。
 

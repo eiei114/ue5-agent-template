@@ -17,6 +17,9 @@
 #
 # Processes that cannot be attributed (`gaps`) are never stopped. While a gap exists the verdict is
 # `unknown`, never `free`. The script never starts or attaches to UE.
+#
+# Exit codes: free = 0, held = 1, unknown = 2. A check that cannot complete also answers `unknown`
+# (2) instead of letting a PowerShell exception exit 1, which a caller would read as `held`.
 
 [CmdletBinding()]
 param(
@@ -40,6 +43,19 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Exit code 1 means `held` (run-owned processes survived the stop). A script exception also exits 1,
+# so a caller would read a failed check as "the run is held". Failures therefore answer `unknown`
+# (2) explicitly. The detail goes to stderr; the verdict stays on stdout.
+trap {
+	$message = $_.Exception.Message
+	[Console]::Error.WriteLine(('ERROR: ' + $message))
+	Write-Output 'VERDICT: unknown'
+	Write-Output ('REASON: the check could not complete: ' + $message)
+	Write-Output 'UE: not started (the stop script never launches UE)'
+	exit 2
+}
+
 . (Join-Path $PSScriptRoot 'UETemplateProcessOwnership.ps1')
 
 $snapshotPathFull = [System.IO.Path]::GetFullPath($SnapshotPath)
