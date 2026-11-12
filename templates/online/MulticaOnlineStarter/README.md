@@ -14,7 +14,12 @@ asset. It is not an EOS/Steam-ready or internet-NAT-tested product.
    `MovieRenderPipeline` in the copied `.uproject`.
 2. Open the generated `TP_FirstPerson.uproject` with the exact Engine version
    in `template-lock.json`; allow the normal project-module build. Do not install
-   or download an engine/plugin to make the test pass.
+   or download an engine/plugin to make the test pass. The plugin ships the
+   `IMPLEMENT_MODULE` entry point for its declared module
+   (`Source/MulticaOnlineStarter/Private/MulticaOnlineStarter.cpp`); UE builds the
+   module against a forced `IMPLEMENT_MODULE_MulticaOnlineStarter` reference, so a
+   generated project copied without that file fails at build or plugin load, not
+   because of the project's own C++.
 3. Use the generated project map or create a new map. Place `PlayerStart`
    actors and select `AMulticaOnlineGameMode` (or a Blueprint child) for that
    map. Set the intended project Pawn on that mode; the plugin deliberately

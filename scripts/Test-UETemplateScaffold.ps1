@@ -166,6 +166,57 @@ function Assert-GeneratorFails([scriptblock]$Action, [string]$Message) {
 	Assert-True $failed $Message
 }
 
+function Get-PluginModuleEntryPointViolations([string]$PluginRoot) {
+	# A `.uplugin` declares the modules UE creates, and each of them needs the entry point that
+	# IMPLEMENT_MODULE generates (Engine/Source/Runtime/Core/.../ModuleManager.h/.cpp); a module
+	# without one produces a DLL that fails to initialize at load. The check reads file *contents*
+	# because the engine convention does not fix the file name
+	# (AudioCapture/Private/AudioCapture.cpp holds IMPLEMENT_MODULE(FAudioCaptureModule, AudioCapture)).
+	$violations = New-Object System.Collections.Generic.List[string]
+	$descriptors = @(Get-ChildItem -LiteralPath $PluginRoot -Filter '*.uplugin' -File)
+	if ($descriptors.Count -eq 0) {
+		$violations.Add(("{0}: no .uplugin descriptor was found" -f $PluginRoot))
+		return $violations.ToArray()
+	}
+	if ($descriptors.Count -gt 1) {
+		$violations.Add(('{0}: {1} .uplugin descriptors; the module contract is ambiguous' -f $PluginRoot, $descriptors.Count))
+		return $violations.ToArray()
+	}
+	$descriptor = [System.IO.File]::ReadAllText($descriptors[0].FullName) | ConvertFrom-Json
+	$declaredModules = @($descriptor.Modules | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_.Name })
+	$sourceRoot = Join-Path $PluginRoot 'Source'
+	$sourceFiles = @()
+	if (Test-Path -LiteralPath $sourceRoot -PathType Container) {
+		$sourceFiles = @(Get-ChildItem -LiteralPath $sourceRoot -Filter '*.cpp' -File -Recurse | Sort-Object FullName)
+	}
+	$entryPoints = New-Object System.Collections.Generic.List[object]
+	foreach ($sourceFile in $sourceFiles) {
+		$text = [System.IO.File]::ReadAllText($sourceFile.FullName)
+		foreach ($match in [regex]::Matches($text, 'IMPLEMENT_MODULE\s*\(\s*(?<implementation>[A-Za-z_][A-Za-z0-9_:]*)\s*,\s*(?<module>[A-Za-z_][A-Za-z0-9_]*)\s*\)')) {
+			$entryPoints.Add([pscustomobject]@{
+				Module = $match.Groups['module'].Value
+				Implementation = $match.Groups['implementation'].Value
+				File = $sourceFile.FullName
+			})
+		}
+	}
+	foreach ($moduleName in $declaredModules) {
+		$matching = @($entryPoints | Where-Object { $_.Module -ceq $moduleName })
+		if ($matching.Count -eq 0) {
+			$violations.Add(("{0} declares module '{1}' but no .cpp under {2} holds IMPLEMENT_MODULE(<class>, {1})" -f $descriptors[0].Name, $moduleName, $sourceRoot))
+		} elseif ($matching.Count -gt 1) {
+			$violations.Add(("{0} declares module '{1}' and {2} .cpp files hold an IMPLEMENT_MODULE entry point for it" -f $descriptors[0].Name, $moduleName, $matching.Count))
+		}
+	}
+	foreach ($entryPoint in $entryPoints) {
+		if ($declaredModules -notcontains $entryPoint.Module) {
+			$relativePath = $entryPoint.File.Replace($PluginRoot + [System.IO.Path]::DirectorySeparatorChar, '')
+			$violations.Add(("{0} holds IMPLEMENT_MODULE({1}, {2}) but {3} declares modules '{4}'; the entry point name must equal the declared module name" -f $relativePath, $entryPoint.Implementation, $entryPoint.Module, $descriptors[0].Name, ($declaredModules -join ',')))
+		}
+	}
+	return $violations.ToArray()
+}
+
 $suiteError = $null
 try {
 	$initialProductionResidue = @(Get-ProductionResidue)
@@ -317,6 +368,24 @@ try {
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $pluginDirectory 'Config\DefaultEngine.ini'))) 'online plugin does not ship Config/DefaultEngine.ini, which the engine resolves to the unknown DefaultEngine branch'
 	$pluginConfig = [System.IO.File]::ReadAllText($projectConfigPath)
 	Assert-True ($pluginConfig.Contains('DefaultPlatformService=Null')) 'generated project config carrier selects the Null provider'
+	# The descriptor declaring a module is not the same as the module being loadable: UE builds every
+	# declared C++ module with a forced `IMPLEMENT_MODULE_<Name>` reference and fails the plugin at
+	# load when the entry point is absent. Assert both the repository template and the generated copy.
+	$templateEntryPointViolations = @(Get-PluginModuleEntryPointViolations (Join-Path $repoRoot 'templates\online\MulticaOnlineStarter'))
+	Assert-True ($templateEntryPointViolations.Count -eq 0) ('repository plugin declares every module with a matching IMPLEMENT_MODULE entry point: ' + ($templateEntryPointViolations -join '; '))
+	$generatedEntryPointViolations = @(Get-PluginModuleEntryPointViolations (Join-Path $firstOutput 'Plugins\MulticaOnlineStarter'))
+	Assert-True ($generatedEntryPointViolations.Count -eq 0) ('the generated plugin copy carries a matching IMPLEMENT_MODULE entry point for every declared module: ' + ($generatedEntryPointViolations -join '; '))
+	$generatedModuleCpp = @(Get-ChildItem -LiteralPath (Join-Path $pluginDirectory 'Source') -Filter '*.cpp' -File -Recurse | Where-Object { [System.IO.File]::ReadAllText($_.FullName) -match 'IMPLEMENT_MODULE\s*\(\s*[A-Za-z_][A-Za-z0-9_:]*\s*,\s*MulticaOnlineStarter\s*\)' })
+	Assert-True ($generatedModuleCpp.Count -eq 1) 'the generated project ships exactly one IMPLEMENT_MODULE entry point for MulticaOnlineStarter'
+	# Repository-wide inventory: every .uplugin this repository ships must back its declared
+	# module with an entry point, so a second plugin cannot reintroduce the same gap unnoticed.
+	$repositoryPlugins = @(Get-ChildItem -LiteralPath $repoRoot -Filter '*.uplugin' -File -Recurse | Where-Object { $_.FullName -notmatch '\\(Production|\.git)\\' })
+	Assert-True ($repositoryPlugins.Count -ge 1) 'the repository-wide module inventory finds at least one plugin descriptor'
+	$inventoryViolations = @()
+	foreach ($pluginDescriptor in $repositoryPlugins) {
+		$inventoryViolations += @(Get-PluginModuleEntryPointViolations $pluginDescriptor.DirectoryName)
+	}
+	Assert-True ($inventoryViolations.Count -eq 0) ('every module declared by the repository .uplugin descriptors has a matching IMPLEMENT_MODULE entry point: ' + ($inventoryViolations -join '; '))
 	$expectedSessionIdentifier = "eiei114.ue5-agent-template:$projectName"
 	$otherSessionIdentifier = "eiei114.ue5-agent-template:$otherProjectName"
 	Assert-True ($pluginConfig.Contains("SessionProjectIdentifier=$expectedSessionIdentifier")) 'generated project config carries the requested stable project key'
@@ -498,7 +567,6 @@ try {
 	Assert-True ($driftFailure.Contains('Source/TP_IdentityDrift/TP_IdentityDrift.Build.cs')) 'the stop names the unmatched source path instead of guessing'
 	Assert-True (-not (Test-Path -LiteralPath $driftOutput)) 'identity stop writes no raw-copied project'
 	Write-Output 'PASS: unresolvable project identity stops generation instead of emitting a raw copy'
-
 	# The generated project's own Config declares the map it opens. If that map is only available
 	# through a declared shared content pack, the pack copy has to happen before the check; if it is
 	# missing altogether the generator must stop instead of printing `Created ...` over a project
@@ -552,6 +620,46 @@ try {
 	Assert-True ($missingMapFailure.Contains('Content/LevelPrototyping/Lvl_Prototype.umap')) 'the stop names the missing asset path instead of guessing'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $missingMapOutput 'template-lock.json'))) 'the default map stop happens before the lock is written, so success is never recorded'
 	Write-Output 'PASS: a missing default map stops generation instead of reporting success'
+	# Negative case: the commit `a9e31bc` shape - a .uplugin that declares a module while no .cpp in
+	# Source/ holds its IMPLEMENT_MODULE entry point. The detector must name the declared module, so
+	# the previous "the descriptor and the folder exist, therefore the module loads" reading cannot
+	# pass. The fixture is built from the repository plugin and every IMPLEMENT_MODULE holder is
+	# removed, because file names do not define the contract.
+	$baselinePluginRoot = Join-Path $fixtureRoot 'BaselinePlugin\MulticaOnlineStarter'
+	[System.IO.Directory]::CreateDirectory($baselinePluginRoot) | Out-Null
+	Get-ChildItem -LiteralPath (Join-Path $repoRoot 'templates\online\MulticaOnlineStarter') -Force | ForEach-Object {
+		Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $baselinePluginRoot $_.Name) -Recurse
+	}
+	$entryPointCppFiles = @(Get-ChildItem -LiteralPath (Join-Path $baselinePluginRoot 'Source') -Filter '*.cpp' -File -Recurse | Where-Object { [System.IO.File]::ReadAllText($_.FullName) -match 'IMPLEMENT_MODULE' })
+	Assert-True ($entryPointCppFiles.Count -ge 1) 'the repository plugin ships an IMPLEMENT_MODULE holder the baseline fixture can strip'
+	foreach ($entryPointFile in $entryPointCppFiles) { Remove-Item -LiteralPath $entryPointFile.FullName -Force }
+	$baselineViolations = @(Get-PluginModuleEntryPointViolations $baselinePluginRoot)
+	Assert-True ($baselineViolations.Count -eq 1) ('the entry-point-less plugin is reported exactly once: ' + ($baselineViolations -join '; '))
+	Assert-True ($baselineViolations[0].Contains("declares module 'MulticaOnlineStarter'")) 'the entry-point-less plugin is reported by its declared module name, matching the a9e31bc baseline'
+	$declaredModuleOnly = [System.IO.File]::ReadAllText((Join-Path $baselinePluginRoot 'MulticaOnlineStarter.uplugin')) | ConvertFrom-Json
+	Assert-True (@($declaredModuleOnly.Modules).Count -eq 1 -and $declaredModuleOnly.Modules[0].Name -eq 'MulticaOnlineStarter') 'the negative fixture keeps the declaration that the detector must contradict'
+	Write-Output 'PASS: a plugin that declares a module without IMPLEMENT_MODULE fails the module entry-point check'
+
+	# Negative case: the entry point names a different module than the descriptor declares. UBT
+	# forces a reference to `IMPLEMENT_MODULE_<declared name>`, so a mismatched argument links
+	# nothing; the check must report the mismatch instead of accepting "an IMPLEMENT_MODULE exists".
+	$mismatchPluginRoot = Join-Path $fixtureRoot 'MismatchPlugin\MulticaOnlineStarter'
+	[System.IO.Directory]::CreateDirectory($mismatchPluginRoot) | Out-Null
+	Get-ChildItem -LiteralPath (Join-Path $repoRoot 'templates\online\MulticaOnlineStarter') -Force | ForEach-Object {
+		Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $mismatchPluginRoot $_.Name) -Recurse
+	}
+	$mismatchedName = 'MulticaOnlineStarterRenamed'
+	foreach ($sourceFile in @(Get-ChildItem -LiteralPath (Join-Path $mismatchPluginRoot 'Source') -Filter '*.cpp' -File -Recurse)) {
+		$sourceText = [System.IO.File]::ReadAllText($sourceFile.FullName)
+		if ($sourceText -notmatch 'IMPLEMENT_MODULE') { continue }
+		$rewritten = [regex]::Replace($sourceText, 'IMPLEMENT_MODULE\s*\(\s*([A-Za-z_][A-Za-z0-9_:]*)\s*,\s*MulticaOnlineStarter\s*\)', ('IMPLEMENT_MODULE($1, ' + $mismatchedName + ')'))
+		Assert-True ($rewritten -cne $sourceText) "the mismatch fixture rewrites the entry point in $($sourceFile.Name)"
+		[System.IO.File]::WriteAllText($sourceFile.FullName, $rewritten, [System.Text.UTF8Encoding]::new($false))
+	}
+	$mismatchViolations = @(Get-PluginModuleEntryPointViolations $mismatchPluginRoot)
+	Assert-True ($mismatchViolations.Count -eq 2) ('a renamed entry point is reported for both the unbacked declaration and the stray entry point: ' + ($mismatchViolations -join '; '))
+	Assert-True (($mismatchViolations -join ' ').Contains("no .cpp under") -and ($mismatchViolations -join ' ').Contains($mismatchedName)) 'the mismatch report names both the declared module and the entry point that does not match it'
+	Write-Output 'PASS: an IMPLEMENT_MODULE whose module argument differs from the declared module fails the check'
 
 	$existingOutput = $outputPaths[3]
 	[System.IO.Directory]::CreateDirectory($existingOutput) | Out-Null
