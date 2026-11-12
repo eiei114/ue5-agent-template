@@ -11,6 +11,7 @@
 | DOT-2935 / thread 01a18d63-d4e7-7770-b999-11416e304647 | CLI実体/RoomSeven map区別、Splice同期basename、play8/hitch | sync scriptフルpath/引数未確定。音の聴取なし |
 | DOT-2935 / thread 01a18d62-d52b-712c-ae6f-5c2f430671d9 | H264/AAC・10秒MP4、版ずれ防止、未所有credit gate | 当時の5分測定は旧版。素材実物を流用不可 |
 | DOT-2936本文 / DOT-2941記録 | Windows主導準備、Mac SDK・実行先不足、sourceと.app区別 | Windows単独.app成功なし。キット受入は実Mac完成でない |
+| 制作 repo `charakuru-dance-ue`（非公開）`docs/video-to-animation.md`・`docs/mediapipe-skeleton-workflow.md`、2026-11-11〜12 | 動画モーキャプの工程・補い方・実測（docs/09-video-mocap.md） | 1 本の動画・1 体のキャラ・UE 5.9 / VRM4U での実測。UE 5.8 系・別動画・別キャラは未検証 |
 | Epic公式docs（各工程のURL、2026-10-31参照） | packaging段階、MRQ前提、UE5.8 Xcode表 | 公式仕様は当該hostの実証でない |
 
 ## このrepo自体
