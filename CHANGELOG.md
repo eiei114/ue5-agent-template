@@ -1,5 +1,10 @@
 # 変更履歴
 
+## Unreleased — 動画モーキャプ
+
+- `docs/09-video-mocap.md` を追加した。単眼のダンス動画から MediaPipe で体・手・顔の点を取り、VRM の骨の回転 → VRMA → UE（VRM4U）→ MV にする工程、単眼で取れない量の補い方、確認方法、1 本での実測、残る限界、権利の gate をまとめた。
+- 図は工程図・棒人間・腰の高さのグラフだけで、元動画・キャラの画像は入れていない。スクリプトは非公開の制作 repo にあり、本 repo には同梱しない。
+
 ## Unreleased — DOT-3118
 
 - recipe層の合成を**名前の直書きからデータ駆動へ**移した。`scripts/New-UETemplateScaffold.ps1` の `-Recipe` から `ValidateSet` を廃止し、`templates/recipes/<Recipe>/recipe.json` の実在とスキーマ検証で受ける。recipeディレクトリを追加するだけで新層が使え、generatorの編集は不要。存在しない名前は停止し、出力ディレクトリを作らない。
