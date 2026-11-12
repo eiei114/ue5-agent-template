@@ -213,7 +213,7 @@ try {
 	$lockData = $firstLock | ConvertFrom-Json
 	Assert-True ($lockData.engine_version -eq '5.8.4') 'lock records the installed engine version'
 	Assert-True ($lockData.template_commit -match '^[0-9a-f]{40}$') 'lock records a full template commit SHA'
-	Assert-True ($lockData.plugins.MulticaOnlineStarter -eq '1.0.1') 'lock records the project plugin version'
+	Assert-True ($lockData.plugins.MulticaOnlineStarter -eq '1.0.2') 'lock records the project plugin version'
 	Assert-True ($lockData.project_differences.Count -eq 2) 'lock records normalized project-specific differences'
 	Assert-True ($lockData.schema_version -eq 2) 'lock records the identity-bearing schema version'
 	Assert-True ($lockData.identity.project_file -eq 'TP_FirstPerson.uproject') 'lock records the generated project file name'
@@ -331,6 +331,11 @@ try {
 	Assert-True ($driftFailure.Contains('Source/TP_IdentityDrift/TP_IdentityDrift.Build.cs')) 'the stop names the unmatched source path instead of guessing'
 	Assert-True (-not (Test-Path -LiteralPath $driftOutput)) 'identity stop writes no raw-copied project'
 	Write-Output 'PASS: unresolvable project identity stops generation instead of emitting a raw copy'
+
+	$playerCountGate = Join-Path $PSScriptRoot 'Test-MulticaOnlinePlayerCountContract.ps1'
+	$playerCountFindings = @(& $playerCountGate -RepositoryRoot $repoRoot)
+	Assert-True ($LASTEXITCODE -eq 0) ('the online player-count contract gate passes (the Logout path excludes the leaving controller and keeps the engine predicate): ' + ($playerCountFindings -join '; '))
+	Write-Output 'PASS: online player count excludes the leaving controller and keeps the engine player predicate'
 
 	$existingOutput = $outputPaths[3]
 	[System.IO.Directory]::CreateDirectory($existingOutput) | Out-Null

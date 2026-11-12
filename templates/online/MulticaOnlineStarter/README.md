@@ -41,7 +41,15 @@ project file by hand. Renaming only the file leaves `Modules[].Name` pointing at
 matches the `identity.project_file` its own lock recorded.
 
 `AMulticaOnlineGameMode` uses UE's server-owned default spawn/restart flow;
-server-side `PostLogin`/`Logout` update the replicated player count. Bind the
+server-side `PostLogin`/`Logout` update the replicated player count. `PostLogin`
+counts the players already registered in the world. `Logout` counts the players
+that remain with the departing controller excluded: UE calls `Logout` from
+`AController::Destroyed` before it removes the controller from the world's
+controller list and before `CleanupPlayerState`, so a count taken at that moment
+still contains the player who is leaving and the replicated value would never
+fall. Both paths apply one predicate: a controller counts only while it owns a
+`PlayerState` and is not spectator-only. A leaving spectator is skipped rather
+than subtracted, so it cannot reduce the real player count. Bind the
 GameState delegates to observe replicated changes. Configure the mode and its
 project-specific Pawn, then add a map with actual `PlayerStart` actors before
 claiming a spawn test. The generated project config selects Null as the session

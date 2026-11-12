@@ -21,7 +21,7 @@
 
 `templates/online/MulticaOnlineStarter`はUE Online Subsystem interfaceを使うC++ plugin scaffold。generatorがgame-and-capture recipeにだけコピーし、`DefaultPlatformService=Null`を設定する。
 
-- `AMulticaOnlineGameMode`はserver authorityでjoin/leave人数を更新。pluginはglobal GameModeを強制しない。mapに採用する場合はproject固有PawnとPlayerStartを別途設定し、標準GameModeのserver-owned restartを使う。clientからspawn ownerを決めさせない。
+- `AMulticaOnlineGameMode`はserver authorityでjoin/leave人数を更新。joinは`PostLogin`でworldに登録済みのplayerを数え、leaveは`Logout`の引数`Exiting`を除外して残りの非spectatorを数える。UEは`Logout`を`CleanupPlayerState`と`UWorld::RemoveController`より前に呼ぶため、その時点で「worldに居るplayer」を数えると離脱者を含んでしまい、同値で早期returnしてreplicated値が減らない。両経路の述語は1つ（`PlayerState`を持ち、spectator-onlyでない）。離脱するspectatorは差し引きではなく除外するので実player数を下回らない。pluginはglobal GameModeを強制しない。mapに採用する場合はproject固有PawnとPlayerStartを別途設定し、標準GameModeのserver-owned restartを使う。clientからspawn ownerを決めさせない。
 - `AMulticaOnlineGameState`はsample scoreと接続数をreplicate。`AMulticaOnlinePlayerController`上のowned Server RPCが入力を範囲検証し、serverだけがscoreを変更する。
 - `UMulticaOnlineSessionSubsystem`はLAN session create/find/join/leaveをasyncに呼び、拒否・空検索・join失敗・connect string不足・bounded timeoutを通知する。host mapに`?listen`を付けてtravelする。
 - timeout時にprovider operationがまだ完了していない可能性がある。遅れて成功したcreate/joinはcleanupを試み、新しいoperationを受けずcleanupを待つ。timeoutは接続成功/安全に解放できた証拠ではない。
