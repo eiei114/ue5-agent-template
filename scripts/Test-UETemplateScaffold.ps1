@@ -9,6 +9,7 @@ $initialCheckoutStatus = @(& git -C $repoRoot status --porcelain --untracked-fil
 if ($LASTEXITCODE -ne 0) { throw 'Could not record the developer checkout status before testing.' }
 $testId = [Guid]::NewGuid().ToString('N')
 $fixtureRoot = Join-Path $productionRoot ('.scaffold-test-' + $testId)
+$fixtureTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('.ue-scaffold-recipes-' + $testId)
 $fixtureEngine = Join-Path $fixtureRoot 'EngineRoot'
 $projectPrefix = "Ex_$testId"
 $loopProjectName = "Lp_$testId"
@@ -91,6 +92,45 @@ function Assert-GeneratorFails([scriptblock]$Action, [string]$Message) {
 	$failed = $false
 	try { & $Action } catch { $failed = $true }
 	Assert-True $failed $Message
+}
+
+function New-FixtureRepository([string]$Name, [string]$Revision) {
+	# An isolated clone of the committed template, with the generator under test copied in. Recipe
+	# directories can then be added or broken without touching the developer checkout, and the
+	# checkout-unchanged gate at the end of the suite keeps its meaning. The clones live in a short
+	# throwaway directory outside the repository because a checkout under
+	# Production/<fixture>/<repo>/Production/<Name>_<runid>/ would exceed the Windows path budget.
+	$path = Join-Path $fixtureTempRoot $Name
+	& git -C $repoRoot clone --quiet --local --no-hardlinks --no-tags --no-checkout $repoRoot $path
+	if ($LASTEXITCODE -ne 0) { throw "Could not create the isolated repository fixture $Name." }
+	& git -C $path checkout --quiet --detach $Revision
+	if ($LASTEXITCODE -ne 0) { throw "Could not check out revision $Revision in the isolated repository fixture $Name." }
+	[System.IO.Directory]::CreateDirectory((Join-Path $path 'Production')) | Out-Null
+	Copy-Item -LiteralPath $generator -Destination (Join-Path $path 'scripts\New-UETemplateScaffold.ps1') -Force
+	return $path
+}
+
+function Invoke-RepositoryGenerator([string]$RepositoryRoot, [string]$RecipeName, [string]$Name, [string]$Run, [string[]]$Diff) {
+	$repositoryGenerator = Join-Path $RepositoryRoot 'scripts\New-UETemplateScaffold.ps1'
+	& $repositoryGenerator -Recipe $RecipeName -ProjectName $Name -RunId $Run -EngineRoot $fixtureEngine -ProjectDiff $Diff -AllowDirtyTemplate | Out-Null
+}
+
+function Get-GeneratorFailure([scriptblock]$Action) {
+	try { & $Action | Out-Null; return '' } catch { return $_.Exception.Message }
+}
+
+function Write-FixtureRecipe([string]$Directory, [string]$Name, [string]$Purpose, [string[]]$Plugins, [string]$EngineTemplate, [bool]$WithCapture, [bool]$WithPlay) {
+	[System.IO.Directory]::CreateDirectory($Directory) | Out-Null
+	$recipeJson = [ordered]@{
+		schema_version = 1
+		recipe = $Name
+		purpose = $Purpose
+		engine_template = $EngineTemplate
+		required_plugins = @($Plugins)
+	}
+	Write-FixtureJson (Join-Path $Directory 'recipe.json') (ConvertTo-Json -InputObject $recipeJson -Depth 5)
+	if ($WithCapture) { [System.IO.File]::WriteAllText((Join-Path $Directory 'Capture.md'), "# $Name capture delta`r`n", [System.Text.UTF8Encoding]::new($false)) }
+	if ($WithPlay) { [System.IO.File]::WriteAllText((Join-Path $Directory 'Play.md'), "# $Name play delta`r`n", [System.Text.UTF8Encoding]::new($false)) }
 }
 
 $suiteError = $null
@@ -277,6 +317,150 @@ try {
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $productionRoot "escape_$testId"))) 'path traversal did not create an out-of-scope directory'
 	Write-Output 'PASS: path traversal rejected before output creation'
 
+	# Recipe layer group (DOT-3118): the selectable recipes are data. The suite proves this by adding
+	# and breaking recipe directories in an isolated clone of the committed template, so the checked-in
+	# recipes stay untouched and the checkout-unchanged gate keeps its meaning.
+	$recipeRepo = New-FixtureRepository 'RecipeLayer' $templateRevision
+	$recipeRepoProduction = Join-Path $recipeRepo 'Production'
+	$fixtureGenre = 'Fixture-Genre'
+	$fixtureCapture = 'fixture-capture'
+	Write-FixtureRecipe (Join-Path $recipeRepo "templates\recipes\$fixtureGenre") $fixtureGenre 'game-and-capture' @('MovieRenderPipeline', 'MulticaOnlineStarter') 'TP_FirstPerson' $true $true
+	Write-FixtureRecipe (Join-Path $recipeRepo "templates\recipes\$fixtureCapture") $fixtureCapture 'capture-only' @('MovieRenderPipeline') 'TP_FirstPerson' $true $false
+	$genreName = "Rx_$testId"
+	$genreRun = "$testId-genre"
+	$captureName = "Rc_$testId"
+	$captureRun = "$testId-capture"
+	$genreOutput = Join-Path $recipeRepoProduction "${genreName}_$genreRun"
+	$captureOutput = Join-Path $recipeRepoProduction "${captureName}_$captureRun"
+	Invoke-RepositoryGenerator $recipeRepo $fixtureGenre $genreName $genreRun @('Layer: added genre recipe')
+	Invoke-RepositoryGenerator $recipeRepo $fixtureCapture $captureName $captureRun @('Layer: added capture-only recipe')
+	Assert-True (Test-Path -LiteralPath (Join-Path $genreOutput 'Recipe\Play.md')) 'a recipe directory added without touching the generator generates a project and ships its own play delta'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $captureOutput 'Recipe\Play.md'))) 'a recipe directory without Play.md generates a project without a play delta'
+	Assert-True (Test-Path -LiteralPath (Join-Path $genreOutput 'Plugins\MulticaOnlineStarter\MulticaOnlineStarter.uplugin')) 'declaring MulticaOnlineStarter in required_plugins ships the plugin payload'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $captureOutput 'Plugins\MulticaOnlineStarter'))) 'not declaring MulticaOnlineStarter ships no plugin payload'
+	$genreLock = [System.IO.File]::ReadAllText((Join-Path $genreOutput 'template-lock.json')) | ConvertFrom-Json
+	$captureLock = [System.IO.File]::ReadAllText((Join-Path $captureOutput 'template-lock.json')) | ConvertFrom-Json
+	Assert-True ($genreLock.recipe -ceq $fixtureGenre) 'lock records the recipe directory that was actually synthesized'
+	Assert-True ($genreLock.purpose -ceq 'game-and-capture') 'lock records the purpose the recipe declares'
+	Assert-True (@($genreLock.plugins.PSObject.Properties).Count -eq 2 -and $genreLock.plugins.MulticaOnlineStarter -eq '1.0.1') 'lock records every declared plugin version'
+	Assert-True ($captureLock.recipe -ceq $fixtureCapture -and @($captureLock.plugins.PSObject.Properties).Count -eq 1) 'a capture-only fixture recipe locks only its one declared plugin'
+	Assert-True ($captureLock.online_session_identifier -eq $null) 'a recipe without the online plugin records no session identifier'
+	$genreDescriptor = [System.IO.File]::ReadAllText((Join-Path $genreOutput 'TP_FirstPerson.uproject')) | ConvertFrom-Json
+	Assert-True (@($genreDescriptor.Plugins | Where-Object { $_.Name -eq 'MulticaOnlineStarter' }).Count -eq 1) 'the project descriptor enables exactly the plugins the recipe declares'
+	Write-Output 'PASS: a recipe directory added on its own generates a project, and Play.md / required_plugins drive the composition'
+
+	# Same declared data, different purpose: the purpose is recorded in the lock only and must not move
+	# a single generated file, so an agent cannot get two different trees for the same dependency set.
+	$purposeOutput = Join-Path $recipeRepoProduction "${captureName}_$testId-purpose"
+	$purposeRecipePath = Join-Path $recipeRepo "templates\recipes\$fixtureCapture\recipe.json"
+	$purposeData = [System.IO.File]::ReadAllText($purposeRecipePath) | ConvertFrom-Json
+	$purposeData.purpose = 'game-and-capture'
+	Write-FixtureJson $purposeRecipePath (ConvertTo-Json -InputObject $purposeData -Depth 10)
+	Invoke-RepositoryGenerator $recipeRepo $fixtureCapture $captureName "$testId-purpose" @('Layer: purpose only')
+	$captureFiles = @(Get-ChildItem -LiteralPath $captureOutput -Recurse -File -Force | ForEach-Object { $_.FullName.Substring($captureOutput.Length + 1).Replace('\', '/') } | Where-Object { $_ -ne 'template-lock.json' -and $_ -ne 'Recipe/recipe.json' } | Sort-Object)
+	$purposeFiles = @(Get-ChildItem -LiteralPath $purposeOutput -Recurse -File -Force | ForEach-Object { $_.FullName.Substring($purposeOutput.Length + 1).Replace('\', '/') } | Where-Object { $_ -ne 'template-lock.json' -and $_ -ne 'Recipe/recipe.json' } | Sort-Object)
+	Assert-True (($captureFiles -join ',') -ceq ($purposeFiles -join ',')) 'changing only purpose leaves the generated tree identical'
+	foreach ($relative in $captureFiles) {
+		$captureHash = (Get-FileHash -LiteralPath (Join-Path $captureOutput $relative) -Algorithm SHA256).Hash
+		$purposeHash = (Get-FileHash -LiteralPath (Join-Path $purposeOutput $relative) -Algorithm SHA256).Hash
+		Assert-True ($captureHash -ceq $purposeHash) "changing only purpose leaves $relative byte-identical"
+	}
+	$purposeLock = [System.IO.File]::ReadAllText((Join-Path $purposeOutput 'template-lock.json')) | ConvertFrom-Json
+	Assert-True ($purposeLock.purpose -ceq 'game-and-capture' -and $captureLock.purpose -ceq 'capture-only') 'the differing purpose is visible in the lock, which is the only place it changes'
+	Write-Output 'PASS: purpose is recorded in the lock only; it does not change the generated tree'
+
+	# required_plugins is the single truth for the plugin payload: removing the online plugin from an
+	# existing recipe must remove Plugins/, the descriptor entry and the lock entry together.
+	$recipeJsonPath = Join-Path $recipeRepo 'templates\recipes\spectator-explore\recipe.json'
+	$spectatorData = [System.IO.File]::ReadAllText($recipeJsonPath) | ConvertFrom-Json
+	$spectatorData.required_plugins = @($spectatorData.required_plugins | Where-Object { $_ -ne 'MulticaOnlineStarter' })
+	Write-FixtureJson $recipeJsonPath (ConvertTo-Json -InputObject $spectatorData -Depth 10)
+	$noOnlineName = "Rn_$testId"
+	$noOnlineRun = "$testId-no-online"
+	$noOnlineOutput = Join-Path $recipeRepoProduction "${noOnlineName}_$noOnlineRun"
+	Invoke-RepositoryGenerator $recipeRepo 'spectator-explore' $noOnlineName $noOnlineRun @('Layer: plugin removed')
+	$noOnlineLock = [System.IO.File]::ReadAllText((Join-Path $noOnlineOutput 'template-lock.json')) | ConvertFrom-Json
+	$noOnlineDescriptor = [System.IO.File]::ReadAllText((Join-Path $noOnlineOutput 'TP_FirstPerson.uproject')) | ConvertFrom-Json
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $noOnlineOutput 'Plugins\MulticaOnlineStarter'))) 'removing MulticaOnlineStarter from required_plugins ships no plugin payload'
+	Assert-True ($noOnlineLock.plugins.MulticaOnlineStarter -eq $null) 'removing a declared plugin removes it from the lock'
+	Assert-True (@($noOnlineDescriptor.Plugins | Where-Object { $_.Name -eq 'MulticaOnlineStarter' }).Count -eq 0) 'removing a declared plugin removes it from the project descriptor'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $noOnlineOutput 'docs\08-online-foundations.md'))) 'a recipe without the online plugin ships no online guide'
+	$loopRecipePath = Join-Path $recipeRepo 'templates\recipes\vertical-loop\recipe.json'
+	$loopData = [System.IO.File]::ReadAllText($loopRecipePath) | ConvertFrom-Json
+	$loopData.required_plugins = @($loopData.required_plugins) + @('MulticaOnlineStarter')
+	Write-FixtureJson $loopRecipePath (ConvertTo-Json -InputObject $loopData -Depth 10)
+	$withOnlineName = "Ro_$testId"
+	$withOnlineRun = "$testId-with-online"
+	$withOnlineOutput = Join-Path $recipeRepoProduction "${withOnlineName}_$withOnlineRun"
+	Invoke-RepositoryGenerator $recipeRepo 'vertical-loop' $withOnlineName $withOnlineRun @('Layer: plugin added')
+	Assert-True (Test-Path -LiteralPath (Join-Path $withOnlineOutput 'Plugins\MulticaOnlineStarter\MulticaOnlineStarter.uplugin')) 'adding MulticaOnlineStarter to a capture-only recipe ships the plugin payload'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $withOnlineOutput 'Recipe\Play.md'))) 'adding a plugin does not add a play delta the recipe does not ship'
+	# Restore the committed vertical-loop data so the regression group below measures the shipped recipe.
+	Copy-Item -LiteralPath (Join-Path $repoRoot 'templates\recipes\vertical-loop\recipe.json') -Destination $loopRecipePath -Force
+	Write-Output 'PASS: required_plugins drives the plugin payload, the descriptor and the lock together'
+
+	# Stop conditions: every mismatch must refuse before the output directory exists, and none of them
+	# may record an unknown value as an empty string.
+	$mismatchDir = Join-Path $recipeRepo 'templates\recipes\fixture-mismatch'
+	Write-FixtureRecipe $mismatchDir $fixtureCapture 'capture-only' @('MovieRenderPipeline') 'TP_FirstPerson' $true $false
+	$mismatchName = "Rm_$testId"
+	$mismatchFailure = Get-GeneratorFailure { Invoke-RepositoryGenerator $recipeRepo 'fixture-mismatch' $mismatchName "$testId-mismatch" @() }
+	Assert-True ($mismatchFailure.Contains('both names must match')) 'a recipe.json naming another recipe stops generation'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $recipeRepoProduction "${mismatchName}_$testId-mismatch"))) 'a recipe identity mismatch creates no output directory'
+	$missingFieldDir = Join-Path $recipeRepo 'templates\recipes\fixture-missing-field'
+	Write-FixtureRecipe $missingFieldDir 'fixture-missing-field' 'capture-only' @('MovieRenderPipeline') 'TP_FirstPerson' $true $false
+	$missingFieldJson = [System.IO.File]::ReadAllText((Join-Path $missingFieldDir 'recipe.json')) | ConvertFrom-Json
+	$missingFieldJson.PSObject.Properties.Remove('purpose')
+	Write-FixtureJson (Join-Path $missingFieldDir 'recipe.json') (ConvertTo-Json -InputObject $missingFieldJson -Depth 10)
+	$missingFieldName = "Rf_$testId"
+	$missingFieldFailure = Get-GeneratorFailure { Invoke-RepositoryGenerator $recipeRepo 'fixture-missing-field' $missingFieldName "$testId-missing-field" @() }
+	Assert-True ($missingFieldFailure.Contains('must declare purpose')) 'a recipe.json without purpose stops generation instead of writing an empty value'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $recipeRepoProduction "${missingFieldName}_$testId-missing-field"))) 'a missing recipe field creates no output directory'
+	$unknownPluginDir = Join-Path $recipeRepo 'templates\recipes\fixture-unknown-plugin'
+	Write-FixtureRecipe $unknownPluginDir 'fixture-unknown-plugin' 'capture-only' @('MovieRenderPipeline', 'NotARealPlugin') 'TP_FirstPerson' $true $false
+	$unknownPluginName = "Ru_$testId"
+	$unknownPluginFailure = Get-GeneratorFailure { Invoke-RepositoryGenerator $recipeRepo 'fixture-unknown-plugin' $unknownPluginName "$testId-unknown-plugin" @() }
+	Assert-True ($unknownPluginFailure.Contains("requires the plugin 'NotARealPlugin'")) 'a recipe.json naming an unknown plugin stops generation'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $recipeRepoProduction "${unknownPluginName}_$testId-unknown-plugin"))) 'an unknown declared plugin creates no output directory'
+	$noCaptureDir = Join-Path $recipeRepo 'templates\recipes\fixture-no-capture'
+	Write-FixtureRecipe $noCaptureDir 'fixture-no-capture' 'capture-only' @('MovieRenderPipeline') 'TP_FirstPerson' $false $false
+	$noCaptureName = "RB_$testId"
+	$noCaptureFailure = Get-GeneratorFailure { Invoke-RepositoryGenerator $recipeRepo 'fixture-no-capture' $noCaptureName "$testId-no-capture" @() }
+	Assert-True ($noCaptureFailure.Contains('does not ship Capture.md')) 'a recipe without Capture.md stops generation'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $recipeRepoProduction "${noCaptureName}_$testId-no-capture"))) 'a recipe without Capture.md creates no output directory'
+	$missingRecipeName = "Rz_$testId"
+	$missingRecipeFailure = Get-GeneratorFailure { Invoke-RepositoryGenerator $recipeRepo 'does-not-exist' $missingRecipeName "$testId-missing-recipe" @() }
+	Assert-True ($missingRecipeFailure.Contains('Unknown recipe')) 'an unknown recipe name stops generation and names the data file it looked for'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $recipeRepoProduction "${missingRecipeName}_$testId-missing-recipe"))) 'an unknown recipe name creates no output directory'
+	Write-Output 'PASS: recipe data mismatches stop generation before any output directory exists'
+
+	# Regression: the two original recipes keep the exact tree they had before the data-driven rewrite.
+	$spectatorData.required_plugins = @('MovieRenderPipeline', 'OnlineSubsystem', 'OnlineSubsystemNull', 'OnlineSubsystemUtils', 'MulticaOnlineStarter')
+	Write-FixtureJson $recipeJsonPath (ConvertTo-Json -InputObject $spectatorData -Depth 10)
+	$regressionName = "Rg_$testId"
+	$regressionRun = "$testId-regression"
+	$regressionOutput = Join-Path $recipeRepoProduction "${regressionName}_$regressionRun"
+	Invoke-RepositoryGenerator $recipeRepo 'spectator-explore' $regressionName $regressionRun @()
+	$loopRegressionName = "Rl_$testId"
+	$loopRegressionRun = "$testId-loop-regression"
+	$loopRegressionOutput = Join-Path $recipeRepoProduction "${loopRegressionName}_$loopRegressionRun"
+	Invoke-RepositoryGenerator $recipeRepo 'vertical-loop' $loopRegressionName $loopRegressionRun @()
+	[string[]]$recipeFiles = @(Get-ChildItem -LiteralPath (Join-Path $regressionOutput 'Recipe') -File -Force | Select-Object -ExpandProperty Name)
+	[Array]::Sort($recipeFiles, [System.StringComparer]::Ordinal)
+	Assert-True (($recipeFiles -join ',') -ceq 'Capture.md,Play.md,SET.md,recipe.json') ('the original game recipe still ships exactly Capture/Play/SET/recipe, observed: ' + ($recipeFiles -join ','))
+	[string[]]$loopRecipeFiles = @(Get-ChildItem -LiteralPath (Join-Path $loopRegressionOutput 'Recipe') -File -Force | Select-Object -ExpandProperty Name)
+	[Array]::Sort($loopRecipeFiles, [System.StringComparer]::Ordinal)
+	Assert-True (($loopRecipeFiles -join ',') -ceq 'Capture.md,SET.md,recipe.json') ('the original video recipe still ships exactly Capture/SET/recipe, observed: ' + ($loopRecipeFiles -join ','))
+	$regressionLock = [System.IO.File]::ReadAllText((Join-Path $regressionOutput 'template-lock.json')) | ConvertFrom-Json
+	Assert-True ($regressionLock.recipe -ceq 'spectator-explore' -and $regressionLock.purpose -ceq 'game-and-capture') 'the original game recipe keeps its recorded recipe and purpose'
+	Assert-True ((@($regressionLock.plugins.PSObject.Properties.Name) -join ',') -ceq 'MovieRenderPipeline,MulticaOnlineStarter,OnlineSubsystem,OnlineSubsystemNull,OnlineSubsystemUtils') ('the original game recipe keeps its recorded plugin set, observed: ' + (@($regressionLock.plugins.PSObject.Properties.Name) -join ','))
+	Assert-True (Test-Path -LiteralPath (Join-Path $regressionOutput 'Plugins\MulticaOnlineStarter')) 'the original game recipe still ships the online plugin'
+	Assert-True (Test-Path -LiteralPath (Join-Path $regressionOutput 'docs\08-online-foundations.md')) 'the original game recipe still ships the online guide'
+	$loopRegressionLock = [System.IO.File]::ReadAllText((Join-Path $loopRegressionOutput 'template-lock.json')) | ConvertFrom-Json
+	Assert-True ($loopRegressionLock.recipe -ceq 'vertical-loop' -and (@($loopRegressionLock.plugins.PSObject.Properties.Name) -join ',') -ceq 'MovieRenderPipeline') 'the original video recipe keeps its recorded recipe and single plugin'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $loopRegressionOutput 'Plugins'))) 'the original video recipe still ships no plugin payload'
+	Write-Output 'PASS: the original two recipes keep their recorded recipe, purpose, plugin set and recipe files'
+
 	# Negative case: Build.version carries a non-numeric version field. Deriving 5.8 from it would
 	# write a fragment such as '.8' into the descriptor and the lock and then report success, so the
 	# generator must stop before copying and leave no output behind.
@@ -352,6 +536,10 @@ try {
 	if (Test-Path -LiteralPath $fixtureRoot -PathType Container) {
 		Remove-Item -LiteralPath $fixtureRoot -Recurse -Force
 	}
+	if (Test-Path -LiteralPath $fixtureTempRoot -PathType Container) {
+		Remove-Item -LiteralPath $fixtureTempRoot -Recurse -Force
+	}
+	if (Test-Path -LiteralPath $fixtureTempRoot) { $cleanupProblems += "recipe fixture root still exists: $fixtureTempRoot" }
 	$cleanupProblems = @(Get-ProductionResidue | ForEach-Object { "Production/ residual entry after cleanup: $_" })
 	if (Test-Path -LiteralPath $fixtureRoot) { $cleanupProblems += "fixture root still exists: $fixtureRoot" }
 	$finalCheckoutStatus = @(& git -C $repoRoot status --porcelain --untracked-files=all)

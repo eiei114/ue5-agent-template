@@ -19,7 +19,7 @@
 
 ## 小さな実装
 
-`templates/online/MulticaOnlineStarter`はUE Online Subsystem interfaceを使うC++ plugin scaffold。generatorがgame-and-capture recipeにだけコピーし、`DefaultPlatformService=Null`を設定する。
+`templates/online/MulticaOnlineStarter`はUE Online Subsystem interfaceを使うC++ plugin scaffold。generatorは `required_plugins` に `MulticaOnlineStarter` を宣言したrecipeにだけコピーし、`DefaultPlatformService=Null`を設定する（recipe名では判断しない）。
 
 - `AMulticaOnlineGameMode`はserver authorityでjoin/leave人数を更新。pluginはglobal GameModeを強制しない。mapに採用する場合はproject固有PawnとPlayerStartを別途設定し、標準GameModeのserver-owned restartを使う。clientからspawn ownerを決めさせない。
 - `AMulticaOnlineGameState`はsample scoreと接続数をreplicate。`AMulticaOnlinePlayerController`上のowned Server RPCが入力を範囲検証し、serverだけがscoreを変更する。

@@ -1,7 +1,10 @@
 [CmdletBinding()]
 param(
 	[Parameter(Mandatory = $true)]
-	[ValidateSet('spectator-explore', 'vertical-loop', 'third-person-game')]
+	# The selectable recipes are data, not a hardcoded list: any directory under
+	# templates/recipes/ that carries a valid recipe.json is a recipe, so adding a genre layer
+	# must not require editing this script. The pattern only keeps the name a safe path segment.
+	[ValidatePattern('^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$')]
 	[string]$Recipe,
 
 	[Parameter(Mandatory = $true)]
@@ -21,6 +24,106 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# The only recipe.json contract this generator implements. A file declaring another version is rejected
+# rather than partially honoured, so a future field cannot be silently ignored.
+$recipeSchemaVersion = 1
+$knownPluginNames = @('MovieRenderPipeline', 'MulticaOnlineStarter', 'OnlineSubsystem', 'OnlineSubsystemNull', 'OnlineSubsystemUtils')
+
+function Read-RecipeData {
+	# Validates the recipe contract before anything is generated. Every value that reaches the lock comes
+	# from here, so an unknown value is a stop condition and never an empty string in the record.
+	param(
+		[Parameter(Mandatory = $true)][string]$Path,
+		[Parameter(Mandatory = $true)][string]$DirectoryName
+	)
+
+	try { $data = [System.IO.File]::ReadAllText($Path) | ConvertFrom-Json } catch {
+		throw "recipe.json is not readable JSON: $Path. $($_.Exception.Message)"
+	}
+	if ($data -isnot [pscustomobject]) { throw "recipe.json must be a JSON object, not an array or a scalar: $Path" }
+
+	$schemaEntry = $data.PSObject.Properties['schema_version']
+	$schemaValue = if ($null -ne $schemaEntry -and $null -ne $schemaEntry.Value) { [string]$schemaEntry.Value } else { '' }
+	if ([string]::IsNullOrWhiteSpace($schemaValue)) {
+		throw "recipe.json does not declare schema_version, so the generator cannot tell which recipe contract it follows: $Path"
+	}
+	if ($schemaValue -notmatch '^[0-9]+$' -or [int]$schemaValue -ne $recipeSchemaVersion) {
+		throw "recipe.json declares schema_version '$schemaValue', but this generator implements only schema_version ${recipeSchemaVersion}: $Path"
+	}
+
+	foreach ($field in @('recipe', 'purpose', 'engine_template')) {
+		$entry = $data.PSObject.Properties[$field]
+		$value = if ($null -ne $entry) { $entry.Value } else { $null }
+		if ($value -isnot [string] -or [string]::IsNullOrWhiteSpace($value)) {
+			throw "recipe.json must declare $field as a non-empty string; an unknown value is never recorded as an empty string: $Path"
+		}
+	}
+	# One identity, not two: the directory is what the generator synthesizes, so a recipe.json naming
+	# another recipe would make the lock disagree with the generated tree.
+	if ([string]$data.recipe -cne $DirectoryName) {
+		throw "recipe.json declares recipe '$($data.recipe)' but lives in templates/recipes/$DirectoryName; the generated project records the directory it was generated from, so both names must match: $Path"
+	}
+
+	$pluginEntry = $data.PSObject.Properties['required_plugins']
+	if ($null -eq $pluginEntry -or $null -eq $pluginEntry.Value) {
+		throw "recipe.json does not declare required_plugins, so nothing selects the plugin payload: $Path"
+	}
+	if ($pluginEntry.Value -is [string]) {
+		throw "recipe.json must declare required_plugins as a JSON array of plugin names, not a single string: $Path"
+	}
+	[string[]]$pluginNames = @()
+	foreach ($item in @($pluginEntry.Value)) {
+		if ($item -isnot [string] -or [string]::IsNullOrWhiteSpace($item)) {
+			throw "recipe.json contains a required_plugins entry that is not a non-empty plugin name: $Path"
+		}
+		$trimmedPluginName = $item.Trim()
+		if ($pluginNames -ccontains $trimmedPluginName) {
+			throw "recipe.json lists the plugin '$trimmedPluginName' more than once: $Path"
+		}
+		$pluginNames += $trimmedPluginName
+	}
+
+	$materialize = $false
+	$materializeEntry = $data.PSObject.Properties['materialize_project']
+	if ($null -ne $materializeEntry -and $null -ne $materializeEntry.Value) {
+		if ($materializeEntry.Value -isnot [bool]) {
+			throw "recipe.json must declare materialize_project as true or false, not '$($materializeEntry.Value)': $Path"
+		}
+		$materialize = [bool]$materializeEntry.Value
+	}
+
+	return [pscustomobject]@{
+		Recipe = $DirectoryName
+		Purpose = [string]$data.purpose
+		EngineTemplate = [string]$data.engine_template
+		RequiredPlugins = $pluginNames
+		MaterializeProject = $materialize
+		SchemaVersion = $recipeSchemaVersion
+	}
+}
+
+function Get-PluginDescriptorPath {
+	# Resolves a declared plugin name to the descriptor whose version the lock records. The repository's
+	# own plugin comes from this checkout; engine plugins come from the installed engine. Any other name
+	# is data the generator cannot honour, so it stops instead of generating a partial plugin tree.
+	param(
+		[Parameter(Mandatory = $true)][string]$PluginName,
+		[Parameter(Mandatory = $true)][string]$RepositoryRoot,
+		[Parameter(Mandatory = $true)][string]$EngineRootPath
+	)
+
+	switch ($PluginName) {
+		'MulticaOnlineStarter' { return Join-Path $RepositoryRoot 'templates\online\MulticaOnlineStarter\MulticaOnlineStarter.uplugin' }
+		'OnlineSubsystem' { return Join-Path $EngineRootPath 'Engine\Plugins\Online\OnlineSubsystem\OnlineSubsystem.uplugin' }
+		'OnlineSubsystemNull' { return Join-Path $EngineRootPath 'Engine\Plugins\Online\OnlineSubsystemNull\OnlineSubsystemNull.uplugin' }
+		'OnlineSubsystemUtils' { return Join-Path $EngineRootPath 'Engine\Plugins\Online\OnlineSubsystemUtils\OnlineSubsystemUtils.uplugin' }
+		'MovieRenderPipeline' { return Join-Path $EngineRootPath 'Engine\Plugins\MovieScene\MovieRenderPipeline\MovieRenderPipeline.uplugin' }
+		default {
+			throw ("recipe.json requires the plugin '{0}', which has no descriptor in this generator, so the generated project cannot record its version. Known plugins: {1}. Nothing was generated." -f $PluginName, ($knownPluginNames -join ', '))
+		}
+	}
+}
 
 function Convert-TemplateName([string]$Text, [string]$TemplateName, [string]$Name) {
 	# Same order as TemplateDefs.ini: UPPERCASE and lowercase (case-sensitive), then any case.
@@ -157,7 +260,44 @@ if (-not (Test-Path -LiteralPath $engineBuildFile -PathType Leaf) -or
 	throw 'EngineRoot must be an installed UE directory containing Engine/Build/Build.version and Templates/.'
 }
 if (-not (Test-Path -LiteralPath $recipeFile -PathType Leaf)) {
-	throw "Unknown recipe data file: $recipeFile"
+	$availableRecipes = @(Get-ChildItem -LiteralPath $recipeRoot -Directory -Force | Select-Object -ExpandProperty Name | Sort-Object)
+	throw ("Unknown recipe '{0}': templates/recipes/{0}/recipe.json does not exist, so there is no recipe data to synthesize. Add the directory under templates/recipes/ or pick one of: {1}. Nothing was generated." -f $Recipe, ($availableRecipes -join ', '))
+}
+$recipeData = Read-RecipeData -Path $recipeFile -DirectoryName $Recipe
+$recipeSourceDir = Join-Path $recipeRoot $Recipe
+# Capture.md is the one delta every recipe promises. Play.md is optional, and its presence is the only
+# switch that decides whether a play delta is synthesized: composition never reads a recipe name.
+$captureSource = Join-Path $recipeSourceDir 'Capture.md'
+if (-not (Test-Path -LiteralPath $captureSource -PathType Leaf)) {
+	throw "Recipe '$Recipe' does not ship Capture.md, so its capture delta cannot be synthesized: $captureSource. Nothing was generated."
+}
+$playSource = Join-Path $recipeSourceDir 'Play.md'
+$hasPlayDelta = Test-Path -LiteralPath $playSource -PathType Leaf
+
+# Plugin descriptors and versions are resolved before the exclusive output directory is created, so a
+# recipe that declares an unknown or missing plugin stops with no partially generated project.
+# Two orders are kept on purpose: the descriptor is written in the recipe's declared order (so an
+# existing recipe keeps its generated .uproject byte-for-byte), and the lock records the versions in
+# ordinal order (the recorded-order the lock has always used).
+[string[]]$pluginNames = @($recipeData.RequiredPlugins)
+[string[]]$sortedPluginNames = @($recipeData.RequiredPlugins)
+[Array]::Sort($sortedPluginNames, [System.StringComparer]::Ordinal)
+$pluginVersions = [ordered]@{}
+foreach ($pluginName in $sortedPluginNames) {
+	$pluginPath = Get-PluginDescriptorPath -PluginName $pluginName -RepositoryRoot $repoRoot -EngineRootPath $engineRootFull
+	if (-not (Test-Path -LiteralPath $pluginPath -PathType Leaf)) {
+		throw "Required plugin metadata is missing for '$pluginName': $pluginPath. Nothing was generated."
+	}
+	$pluginJson = Get-Content -Raw -LiteralPath $pluginPath | ConvertFrom-Json
+	$pluginVersion = if (-not [string]::IsNullOrWhiteSpace([string]$pluginJson.VersionName)) {
+		[string]$pluginJson.VersionName
+	} else {
+		[string]$pluginJson.Version
+	}
+	if ([string]::IsNullOrWhiteSpace($pluginVersion)) {
+		throw "Plugin '$pluginName' declares neither VersionName nor Version, so the lock cannot record its identity: $pluginPath. Nothing was generated."
+	}
+	$pluginVersions[$pluginName] = $pluginVersion
 }
 
 $gitCommit = (& git -C $repoRoot rev-parse HEAD).Trim()
@@ -173,7 +313,6 @@ if ($templateDirty -and -not $AllowDirtyTemplate) {
 	throw 'The template working tree is dirty. Commit the template before generating a reproducible project.'
 }
 
-$recipeData = Get-Content -Raw -LiteralPath $recipeFile | ConvertFrom-Json
 $buildData = Get-Content -Raw -LiteralPath $engineBuildFile | ConvertFrom-Json
 # A missing, empty or non-numeric field cannot produce a describable EngineAssociation: the
 # derived value would be a fragment such as '.8', which the descriptor and the lock would then
@@ -185,7 +324,7 @@ foreach ($requiredBuildField in @('MajorVersion', 'MinorVersion', 'PatchVersion'
 	}
 }
 $engineVersion = '{0}.{1}.{2}' -f $buildData.MajorVersion, $buildData.MinorVersion, $buildData.PatchVersion
-$templateName = [string]$recipeData.engine_template
+$templateName = $recipeData.EngineTemplate
 $sourceTemplate = Join-Path $engineTemplateRoot $templateName
 $templateProjectFile = Join-Path $sourceTemplate ($templateName + '.uproject')
 if (-not (Test-Path -LiteralPath $templateProjectFile -PathType Leaf)) {
@@ -193,7 +332,7 @@ if (-not (Test-Path -LiteralPath $templateProjectFile -PathType Leaf)) {
 }
 # materialize_project: apply the template's own Config/TemplateDefs.ini rules (as the UE New Project
 # wizard does) so the output is <ProjectName>.uproject with renamed module/source, not TP_* names.
-$materialize = ($null -ne $recipeData.PSObject.Properties['materialize_project']) -and [bool]$recipeData.materialize_project
+$materialize = [bool]$recipeData.MaterializeProject
 if ($materialize -and $ProjectName -notmatch '^[A-Za-z][A-Za-z0-9_]{0,39}$') {
 	throw 'Recipes that materialize a C++ project need a ProjectName that is a C++ identifier (letter first, letters/digits/underscore only).'
 }
@@ -327,7 +466,7 @@ try {
 		$projectDescriptor.EngineAssociation = $engineAssociationValue
 	}
 	$projectPlugins = @($projectDescriptor.Plugins | Where-Object { $null -ne $_ })
-	foreach ($pluginName in $recipeData.required_plugins) {
+	foreach ($pluginName in $pluginNames) {
 		$existing = $projectPlugins | Where-Object { $_.Name -eq $pluginName } | Select-Object -First 1
 		if ($null -eq $existing) {
 			$projectPlugins += [pscustomobject]@{ Name = [string]$pluginName; Enabled = $true }
@@ -342,47 +481,6 @@ try {
 	}
 	$projectJson = ConvertTo-Json -InputObject $projectDescriptor -Depth 30
 	[System.IO.File]::WriteAllText($projectFile, $projectJson + [Environment]::NewLine, $utf8NoBom)
-
-	$requiredPlugins = @($recipeData.required_plugins)
-	foreach ($pluginName in $requiredPlugins) {
-		if ($pluginName -eq 'MulticaOnlineStarter') {
-			$pluginDescriptor = Join-Path $repoRoot 'templates\online\MulticaOnlineStarter\MulticaOnlineStarter.uplugin'
-		} else {
-			switch ($pluginName) {
-				'OnlineSubsystem' { $pluginDescriptor = Join-Path $engineRootFull 'Engine\Plugins\Online\OnlineSubsystem\OnlineSubsystem.uplugin' }
-				'OnlineSubsystemNull' { $pluginDescriptor = Join-Path $engineRootFull 'Engine\Plugins\Online\OnlineSubsystemNull\OnlineSubsystemNull.uplugin' }
-				'OnlineSubsystemUtils' { $pluginDescriptor = Join-Path $engineRootFull 'Engine\Plugins\Online\OnlineSubsystemUtils\OnlineSubsystemUtils.uplugin' }
-				'MovieRenderPipeline' { $pluginDescriptor = Join-Path $engineRootFull 'Engine\Plugins\MovieScene\MovieRenderPipeline\MovieRenderPipeline.uplugin' }
-				default { throw "No installed plugin path is defined for $pluginName" }
-			}
-		}
-		if (-not (Test-Path -LiteralPath $pluginDescriptor -PathType Leaf)) {
-			throw "Required plugin metadata is missing: $pluginDescriptor"
-		}
-	}
-
-	[string[]]$orderedPluginNames = @($requiredPlugins)
-	[Array]::Sort($orderedPluginNames, [System.StringComparer]::Ordinal)
-	$pluginVersions = [ordered]@{}
-	foreach ($pluginName in $orderedPluginNames) {
-		if ($pluginName -eq 'MulticaOnlineStarter') {
-			$pluginPath = Join-Path $repoRoot 'templates\online\MulticaOnlineStarter\MulticaOnlineStarter.uplugin'
-		} else {
-			switch ($pluginName) {
-				'OnlineSubsystem' { $pluginPath = Join-Path $engineRootFull 'Engine\Plugins\Online\OnlineSubsystem\OnlineSubsystem.uplugin' }
-				'OnlineSubsystemNull' { $pluginPath = Join-Path $engineRootFull 'Engine\Plugins\Online\OnlineSubsystemNull\OnlineSubsystemNull.uplugin' }
-				'OnlineSubsystemUtils' { $pluginPath = Join-Path $engineRootFull 'Engine\Plugins\Online\OnlineSubsystemUtils\OnlineSubsystemUtils.uplugin' }
-				'MovieRenderPipeline' { $pluginPath = Join-Path $engineRootFull 'Engine\Plugins\MovieScene\MovieRenderPipeline\MovieRenderPipeline.uplugin' }
-			}
-		}
-		$pluginJson = Get-Content -Raw -LiteralPath $pluginPath | ConvertFrom-Json
-		$pluginVersion = if (-not [string]::IsNullOrWhiteSpace([string]$pluginJson.VersionName)) {
-			[string]$pluginJson.VersionName
-		} else {
-			[string]$pluginJson.Version
-		}
-		$pluginVersions[$pluginName] = $pluginVersion
-	}
 
 	$differenceSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
 	foreach ($difference in $ProjectDiff) {
@@ -404,24 +502,26 @@ try {
 			project_modules = @($moduleNames)
 			engine_association = $engineAssociationValue
 		}
-		recipe = [string]$recipeData.recipe
-		purpose = [string]$recipeData.purpose
+		recipe = $recipeData.Recipe
+		purpose = $recipeData.Purpose
 		plugins = $pluginVersions
-		online_session_identifier = if (@($recipeData.required_plugins) -contains 'MulticaOnlineStarter') { 'eiei114.ue5-agent-template:{0}' -f $ProjectName } else { $null }
+		online_session_identifier = if ($pluginNames -contains 'MulticaOnlineStarter') { 'eiei114.ue5-agent-template:{0}' -f $ProjectName } else { $null }
 		project_differences = $projectDifferences
 	}
 	$lockJson = ConvertTo-Json -InputObject $lock -Depth 12
 
+	# Composition is driven by the recipe data and the files the recipe ships, never by its name:
+	# Capture.md is required, Play.md exists when the recipe ships one, and the online payload is
+	# selected by required_plugins. Lock, project descriptor and tree therefore share one truth.
 	$recipeOutput = Join-Path $destinationPath 'Recipe'
 	[System.IO.Directory]::CreateDirectory($recipeOutput) | Out-Null
 	Copy-Item -LiteralPath (Join-Path $recipeRoot 'common\SET.md') -Destination (Join-Path $recipeOutput 'SET.md')
-	Copy-Item -LiteralPath (Join-Path (Join-Path $recipeRoot $Recipe) 'recipe.json') -Destination (Join-Path $recipeOutput 'recipe.json')
-	Copy-Item -LiteralPath (Join-Path (Join-Path $recipeRoot $Recipe) 'Capture.md') -Destination (Join-Path $recipeOutput 'Capture.md')
-	if ($Recipe -eq 'third-person-game') {
-		Copy-Item -LiteralPath (Join-Path (Join-Path $recipeRoot $Recipe) 'Play.md') -Destination (Join-Path $recipeOutput 'Play.md')
+	Copy-Item -LiteralPath $recipeFile -Destination (Join-Path $recipeOutput 'recipe.json')
+	Copy-Item -LiteralPath $captureSource -Destination (Join-Path $recipeOutput 'Capture.md')
+	if ($hasPlayDelta) {
+		Copy-Item -LiteralPath $playSource -Destination (Join-Path $recipeOutput 'Play.md')
 	}
-	if ($Recipe -eq 'spectator-explore') {
-		Copy-Item -LiteralPath (Join-Path (Join-Path $recipeRoot $Recipe) 'Play.md') -Destination (Join-Path $recipeOutput 'Play.md')
+	if ($pluginNames -contains 'MulticaOnlineStarter') {
 		$onlineGuideTarget = Join-Path $destinationPath 'docs'
 		[System.IO.Directory]::CreateDirectory($onlineGuideTarget) | Out-Null
 		Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\08-online-foundations.md') -Destination (Join-Path $onlineGuideTarget '08-online-foundations.md')
@@ -445,7 +545,7 @@ try {
 	if ([string]$writtenDescriptor.EngineAssociation -ne $engineAssociationValue) {
 		throw "Project identity check stopped: $projectFileName was written without the expected EngineAssociation '$engineAssociationValue'."
 	}
-	Write-Output "Created $destinationName from the installed $templateName template ($projectFileName, EngineAssociation '$engineAssociationValue', UE $engineVersion, recipe $Recipe)."
+	Write-Output "Created $destinationName from the installed $templateName template ($projectFileName, EngineAssociation '$engineAssociationValue', UE $engineVersion, recipe $($recipeData.Recipe), purpose $($recipeData.Purpose))."
 } catch {
 	throw "Scaffold generation stopped. The exclusive output directory was left untouched by cleanup to avoid deleting work: $destinationPath. $($_.Exception.Message)"
 }
