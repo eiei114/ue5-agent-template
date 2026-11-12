@@ -35,7 +35,13 @@
 - 両関数を `MulticaOnlineDeferredSessionCleanup.cpp` の `RegisterDeferredCreateSessionCleanup` / `RegisterDeferredJoinSessionCleanup` へ移し、DOT-3295の `MulticaOnlineDeferredDestroyCleanup.cpp` と同じ形（provider操作を `TSharedRef` のoperation surfaceに閉じ込め、callback内でcapturesをローカルへコピーし、その後はcaptureに触らない）に揃えた。`Deinitialize()` からの呼び出しはoperation surfaceを作って渡す形になる。
 - 回帰test `Multica.Online.Session.DeferredCreateJoinCleanup` を追加した。既存のdestroy用fakeはdelegateを値コピーしてから `ExecuteIfBound` するためこの欠陥を検出できない（clear後もコピー側のcapturesは生きている）。新しいfakeはprovider bindingをheap slotに置き、in-placeでbroadcastし、clearが「いま実行中のbinding」を消したことを記録する。あわせてdestroy要求時点のoperation surfaceの共有owner数が2（testの1 + callbackの1）であることをassertするので、clear後にcaptureを読むと落ちる。
 
-確認: `scripts/Test-UETemplateScaffold.ps1` と `scripts/Test-UERenderArtifacts.ps1` は本変更の対象外（C++のみ）。UE 5.8 build/automationの実測結果はPRに記載する。
+実測（本host、Windows、UE 5.8.4 CL 58902052、`spectator-explore` / `Dot3405Smoke` を新規scaffoldして計測）:
+
+- `TP_FirstPersonEditor Win64 Development` → `Result: Succeeded`。
+- `UnrealEditor-Cmd ... -ExecCmds="Automation RunTests Multica.Online" -nullrhi` → `Result={Success} Name={DeferredCreateJoinCleanup}`、`Result={Success} Name={DeferredDestroyCleanup}`、`Result={Success} Name={SessionIdentity}`、`**** TestExit: Automation Test Queue Empty ****`（3 tests performed）。
+- 回帰testが落ちる側の確認: 同projectへ修正前のcallback形（callback内で自分のhandleをclearし、その後captureを読む）だけを戻してbuildし、`DeferredCreateJoinCleanup` を単体実行すると `Result={Fail}`、`Expected 'the completing create callback still owns its operations copy' to be 2, but it was 1.` と `... join ...` の2件で落ちた。修正版に戻して再buildすると3件とも `Success`。
+
+未検証: PIE、2 clientのNull/LAN接続、EOS/Steamは実行していない。`scripts/Test-UETemplateScaffold.ps1`（8 group PASS / exit 0）と `scripts/Test-UERenderArtifacts.ps1`（exit 0）は本PRでも通したが、このC++修正の検証主体ではない。
 
 ## Unreleased — 動画モーキャプ
 

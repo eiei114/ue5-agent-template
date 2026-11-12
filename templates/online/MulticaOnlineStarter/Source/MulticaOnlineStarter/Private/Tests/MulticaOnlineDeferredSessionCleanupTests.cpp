@@ -41,7 +41,13 @@ namespace
 	class FControllableSessionLifecycle
 	{
 	public:
-		TSharedRef<FDeferredCreateSessionCleanupOperations> MakeCreateOperations() const
+		// TSharedRef has no usable default constructor, so the state is created explicitly.
+		FControllableSessionLifecycle()
+			: State(MakeShared<FTestCleanupState>())
+		{
+		}
+
+		TSharedRef<FDeferredCreateSessionCleanupOperations> MakeCreateOperations()
 		{
 			const TSharedRef<FTestCleanupState> SharedState = State;
 			TSharedRef<FDeferredCreateSessionCleanupOperations> Operations =
@@ -60,7 +66,7 @@ namespace
 			return Operations;
 		}
 
-		TSharedRef<FDeferredJoinSessionCleanupOperations> MakeJoinOperations() const
+		TSharedRef<FDeferredJoinSessionCleanupOperations> MakeJoinOperations()
 		{
 			const TSharedRef<FTestCleanupState> SharedState = State;
 			TSharedRef<FDeferredJoinSessionCleanupOperations> Operations =
