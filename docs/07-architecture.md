@@ -44,6 +44,8 @@ lockはtemplate commit SHA、clean/dirty状態、UE version/changelist、Engine/
 ## 継続改善
 
 Multicaの既存ボードと管理機会で「出典調査→候補→小さな検証→採否→変更理由・移行手順」を記録。公式仕様・掲示板の事例・当該host実測を区別する。未検証情報を既定値へ昇格しない。
+
+「同梱する／しない」という主張は散文ではなく `docs/PROVENANCE.inventory.json` を正本とし、`scripts/Test-UETemplateProvenance.ps1` が tracked file と照合する（R1 虚偽の「無い」、R2 宙に浮いた「有る」、R3 未分類の新規層、R4 解決しない相対リンク）。新しい層や area を追加するときは同じ commit で inventory を更新し、`scripts/Test-UETemplateProvenance.Tests.ps1` の負例を回す。実績と未確認点の本文は [docs/PROVENANCE.md](PROVENANCE.md)。
 Epic公式Custom TemplatesとPluginsを参考にするが、文書テンプレートはUE登録済みproject templateとは別物。
 
 - https://dev.epicgames.com/documentation/en-us/unreal-engine/converting-a-project-to-an-unreal-engine-template

@@ -1,5 +1,19 @@
 # 変更履歴
 
+## Unreleased — DOT-3122
+
+- `docs/PROVENANCE.md` は README の入口表で「実績と未確認点」の正本を名乗りながら、2026-10-31 の 15 ファイル時代で止まっていた。そのため `:18` の「UE生成/build/render/アセット取得scriptは同梱しない」が、同梱済みの `scripts/New-UETemplateScaffold.ps1`（generator）と `scripts/Test-UETemplateScaffold.ps1`、Null/LAN plugin、3 recipe、`docs/07` の 6 層と正面から矛盾していた。`:19` の「納品添付の検証記録を参照」は tracked file に解決せず、`2026-11-02` の実績（UE Editor build）も 1 件も無かった。
+- 同梱物の主張を散文からデータへ移した。`docs/PROVENANCE.inventory.json`（`schema_version: 1`、`bundled` / `not_bundled`）が正本で、`docs/PROVENANCE.md` の散文はその写しである。語の一致で判定すると「UE本体は同梱しない」のような**修正後の正しい文**を偽陽性で落とすため、判定対象を構造化データにした。
+- 新規 `scripts/Test-UETemplateProvenance.ps1`（`-RepoRoot`、既定は script から `..`）を追加。R1 `not_bundled` が tracked path に一致したら FAIL（虚偽の「無い」）、R2 `bundled` が 1 件も一致しなければ FAIL（宙に浮いた「有る」）、R3 tracked の全 top-level area が未分類なら FAIL（新しい層の追加漏れ）、R4 source document の相対リンクが tracked file に解決しなければ FAIL。出力は 1 行 1 件 `FAIL: <rule>: <detail>`、exit 0 = PASS / 1 = rule 違反 / 2 = guard 自体が動けない（inventory 破損・git 失敗）。`git ls-files -z` を使うので空白・改行を含む path でも壊れない。
+- 新規 `scripts/Test-UETemplateProvenance.Tests.ps1`：使い捨て git repo の fixture で負例を固定する。`not_bundled` に `scripts/*`、`bundled` から `docs/*` を落とす、宙に浮いた `docs/09-missing.md`、未分類の新 top-level `tools/`、解決しない相対リンク、空白入り path、未 track の inventory、壊れた JSON の 8 ケースがすべて期待どおり落ちること、checkout を書き換えないことを assert する。
+- `docs/PROVENANCE.md` を現在の tree に合わせて書き直した。「script は同梱しない」を撤回し、同梱する層（generator・検品helper・回帰suite・3 recipe・用途部品・Null/LAN starter・CI）と同梱しないもの（UE 本体、build/render 本体、素材実物、生成物）を列挙した。`docs/07-architecture.md` の 6 層それぞれに「tracked での実体」「実装状態」「未検証範囲」の対応表を追加し、2026-11-02 の UE Editor build（実施者報告、exit 0 / 37 actions / 94.22 秒）を検証履歴に記録した。scope 日付は 2026-11-03 へ更新。`:19` の参照先を、実在する `docs/08-online-foundations.md` の「検証履歴」・`CHANGELOG.md`・各 Issue comment へ差し替えた。
+- `.github/workflows/verify.yml` に provenance guard とその回帰 suite の step を追加した。guard を CI に繋がないと、次の層追加で再び陳腐化する。
+- `docs/07-architecture.md` の継続改善節から guard を参照し、層・area の追加と同じ commit で inventory を更新する契約を明記した。
+
+実測（本 host、2026-11-03、`pwsh 7.6.9` と Windows PowerShell 5.1 の両方）：修正前の tree に guard を当てると `FAIL: R1: not_bundled pattern 'scripts/*' matches tracked path 'scripts/New-UETemplateScaffold.ps1'` で exit 1、修正後 tree は `PASS: R1`〜`R4` で exit 0。`scripts/Test-UETemplateProvenance.Tests.ps1` は 10 の負例/正例 assert group と最終の網羅確認を合わせて 11 行 PASS・exit 0、`scripts/Test-UETemplateScaffold.ps1` は 8 assertion group PASS / exit 0（回帰なし）。`0` 件の `git status --porcelain --untracked-files=all` が実行前後で不変。
+
+移行：既存 project・`Production/`・`Out/` の生成物には触れない。inventory は現行 tree の分類であり、新しい top-level ディレクトリを新設する変更は同じ commit で `bundled`/`not_bundled` を更新する（更新しないと R3 で落ちる）。UE の install/compile/Editor/PIE/MRQ/render は本変更で一切実行していない（Unverified Scope のまま）。
+
 ## Unreleased — DOT-3395
 
 - 画像列QA helperは、`FramesDirectory`またはreport親pathにjunction/symlink等のreparse pointが含まれる場合に、実効出力境界を確認できないため検査前に拒否する。reportがjunction経由で画像列へ書き込まれるのを防ぐ回帰fixtureを追加した。
