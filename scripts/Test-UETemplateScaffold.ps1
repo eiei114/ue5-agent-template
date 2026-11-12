@@ -14,13 +14,23 @@ $projectPrefix = "Ex_$testId"
 $loopProjectName = "Lp_$testId"
 $existingProjectName = "No_$testId"
 $otherProjectName = "Alt_$testId"
+$compatibleOnlyProjectName = "Cpo_$testId"
+$changelistOnlyProjectName = "Clo_$testId"
+$installAProjectName = "Ida_$testId"
+$installBProjectName = "Idb_$testId"
+$noChangelistProjectName = "Ncl_$testId"
 $outputNames = @(
 	"${projectPrefix}_$testId-a",
 	"${projectPrefix}_$testId-b",
 	"${loopProjectName}_$testId-a",
 	"${existingProjectName}_$testId-preserved",
 	"Tp_${testId}_$testId-a",
-	"${otherProjectName}_$testId-c"
+	"${otherProjectName}_$testId-c",
+	"${compatibleOnlyProjectName}_$testId-a",
+	"${changelistOnlyProjectName}_$testId-a",
+	"${installAProjectName}_$testId-a",
+	"${installBProjectName}_$testId-b",
+	"${noChangelistProjectName}_$testId-a"
 )
 $outputPaths = @($outputNames | ForEach-Object { Join-Path $productionRoot $_ })
 
@@ -65,6 +75,24 @@ function Invoke-Generator([string]$RecipeName, [string]$Name, [string]$Run, [str
 	& $generator -Recipe $RecipeName -ProjectName $Name -RunId $Run -EngineRoot $fixtureEngine -ProjectDiff $Diff -AllowDirtyTemplate | Out-Null
 }
 
+function Invoke-EngineGenerator([string]$RecipeName, [string]$Name, [string]$Run, [string[]]$Diff, [string]$EngineRoot) {
+	& $generator -Recipe $RecipeName -ProjectName $Name -RunId $Run -EngineRoot $EngineRoot -ProjectDiff $Diff -AllowDirtyTemplate | Out-Null
+}
+
+function New-FixtureEngineRoot([string]$Path, [string]$BuildVersionJson, [switch]$PluginWithoutVersion) {
+	# A minimal installed-engine fixture for engine build identity cases: one official template and the
+	# one plugin the vertical-loop recipe requires.
+	[System.IO.Directory]::CreateDirectory($Path) | Out-Null
+	Write-FixtureJson (Join-Path $Path 'Engine\Build\Build.version') $BuildVersionJson
+	Write-FixtureTemplate (Join-Path $Path 'Templates\TP_BlankBP') 'TP_BlankBP' 'TP_BlankBP'
+	$pluginDescriptor = if ($PluginWithoutVersion) { '{"FileVersion":3}' } else { '{"FileVersion":3,"Version":1,"VersionName":"1.0"}' }
+	Write-FixtureJson (Join-Path $Path 'Engine\Plugins\MovieScene\MovieRenderPipeline\MovieRenderPipeline.uplugin') $pluginDescriptor
+}
+
+function Read-FixtureLock([string]$OutputPath) {
+	return [System.IO.File]::ReadAllText((Join-Path $OutputPath 'template-lock.json'))
+}
+
 function Write-FixtureTemplate([string]$TemplateRoot, [string]$TemplateName, [string]$ModuleName) {
 	# Builds an installed-engine template fixture with real Modules/Source shape so the previous
 	# `Modules: []` shortcut cannot hide an unresolved project identity.
@@ -99,7 +127,10 @@ try {
 	Assert-True ($initialProductionResidue.Count -eq 0) ("Production/ holds only the tracked placeholder before testing: " + ($initialProductionResidue -join '; '))
 
 	[System.IO.Directory]::CreateDirectory($fixtureEngine) | Out-Null
-	Write-FixtureJson (Join-Path $fixtureEngine 'Engine\Build\Build.version') '{"MajorVersion":5,"MinorVersion":8,"PatchVersion":4,"Changelist":58902052}'
+	# Epic's own Engine/Build/Build.version keeps Changelist 0 and puts the build identifier in
+	# CompatibleChangelist (EpicGames/UnrealEngine, read 2026-11-03); public mirrors show the same
+	# shape. The fixture uses that real shape so the suite cannot pass on a single-shape assumption.
+	Write-FixtureJson (Join-Path $fixtureEngine 'Engine\Build\Build.version') '{"MajorVersion":5,"MinorVersion":8,"PatchVersion":4,"Changelist":58902052,"CompatibleChangelist":55116800,"IsLicenseeVersion":0,"IsPromotedBuild":1,"BranchName":"++UE5+Release-5.8"}'
 
 	$firstPersonTemplate = Join-Path $fixtureEngine 'Templates\TP_FirstPerson'
 	$blankTemplate = Join-Path $fixtureEngine 'Templates\TP_BlankBP'
@@ -209,13 +240,34 @@ try {
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $firstOutput 'SyntheticAsset.uasset'))) 'generator does not fabricate Unreal assets'
 	$firstLock = [System.IO.File]::ReadAllText((Join-Path $firstOutput 'template-lock.json'))
 	$secondLock = [System.IO.File]::ReadAllText((Join-Path $secondOutput 'template-lock.json'))
-	Assert-True ($firstLock -ceq $secondLock) 'identical dependencies and differences reproduce the same lock record'
+	Assert-True ($firstLock -ceq $secondLock) 'identical dependencies and differences reproduce the same lock record in the same shell'
+	# A lock compared across hosts or shells must be compared as JSON fields, not as bytes:
+	# `ConvertTo-Json` formats differently per shell (4-space + '":  "' vs 2-space + '": "'), so the
+	# same record has two different sha256 values. The semantic comparison is the contract that holds
+	# across shells; this assertion fails if a future change makes two equivalent records differ in
+	# a way JSON parsing cannot absorb.
+	$firstSemantic = ConvertTo-Json -InputObject ($firstLock | ConvertFrom-Json) -Depth 12 -Compress
+	$secondSemantic = ConvertTo-Json -InputObject ($secondLock | ConvertFrom-Json) -Depth 12 -Compress
+	Assert-True ($firstSemantic -ceq $secondSemantic) 'records that differ only in formatting compare equal as parsed JSON'
+	# Reformatting the same record (colon spacing, newline style) must not change its parsed value: that
+	# is exactly the difference two shells introduce, so a byte-based comparison would report a false
+	# mismatch while the field comparison holds.
+	$reformattedLock = ($firstLock -replace '":  "', '": "') -replace "`r`n", "`n"
+	Assert-True ($reformattedLock -cne $firstLock) 'the whitespace variation this assertion covers is a real byte difference'
+	Assert-True ((ConvertTo-Json -InputObject ($reformattedLock | ConvertFrom-Json) -Depth 12 -Compress) -ceq $firstSemantic) 'a lock re-serialized with different whitespace keeps the same parsed value'
 	$lockData = $firstLock | ConvertFrom-Json
 	Assert-True ($lockData.engine_version -eq '5.8.4') 'lock records the installed engine version'
 	Assert-True ($lockData.template_commit -match '^[0-9a-f]{40}$') 'lock records a full template commit SHA'
 	Assert-True ($lockData.plugins.MulticaOnlineStarter -eq '1.0.1') 'lock records the project plugin version'
 	Assert-True ($lockData.project_differences.Count -eq 2) 'lock records normalized project-specific differences'
-	Assert-True ($lockData.schema_version -eq 2) 'lock records the identity-bearing schema version'
+	Assert-True ($lockData.schema_version -eq 3) 'lock records the engine-build-identity schema version'
+	Assert-True ($lockData.engine_changelist -eq 55116800) 'lock records the effective changelist UE derives from CompatibleChangelist'
+	Assert-True ($lockData.engine_changelist_source -eq 'CompatibleChangelist') 'lock names CompatibleChangelist as the effective changelist source'
+	Assert-True ($lockData.engine_changelist_raw -eq 58902052) 'lock keeps the raw Changelist exactly as the engine reported it'
+	Assert-True ($lockData.engine_compatible_changelist -eq 55116800) 'lock records CompatibleChangelist'
+	Assert-True ($lockData.engine_is_licensee_version -eq 0) 'lock records IsLicenseeVersion'
+	Assert-True ($lockData.engine_is_promoted_build -eq 1) 'lock records IsPromotedBuild'
+	Assert-True ($lockData.engine_branch_name -eq '++UE5+Release-5.8') 'lock records BranchName'
 	Assert-True ($lockData.identity.project_file -eq 'TP_FirstPerson.uproject') 'lock records the generated project file name'
 	Assert-True (@($lockData.identity.project_modules) -join ',' -eq 'TP_FirstPerson') 'lock records the generated project module identity'
 	Assert-True ($lockData.identity.engine_association -eq '5.8') 'lock records the generated engine association'
@@ -235,6 +287,7 @@ try {
 	Assert-True (@($loopDescriptor.Modules).Count -eq 1 -and $loopDescriptor.Modules[0].Name -eq 'TP_BlankBP') 'video-only recipe keeps the template module identity'
 	Assert-True ([string]$loopDescriptor.EngineAssociation -eq '5.8') 'video-only recipe writes a derived EngineAssociation'
 	$loopLock = [System.IO.File]::ReadAllText((Join-Path $loopOutput 'template-lock.json')) | ConvertFrom-Json
+	Assert-True ($loopLock.engine_changelist -eq 55116800) 'video-only lock records the effective engine changelist'
 	Assert-True ($loopLock.identity.project_file -eq 'TP_BlankBP.uproject') 'video-only lock records the generated project file name'
 	Assert-True ($loopLock.identity.engine_association -eq '5.8') 'video-only lock records the engine association'
 	$movieRenderPlugins = @($loopDescriptor.Plugins | Where-Object { $_.Name -eq 'MovieRenderPipeline' })
@@ -276,6 +329,102 @@ try {
 	Assert-GeneratorFails { Invoke-Generator 'spectator-explore' "TestExplore_$testId" '..\escape' @() } 'path traversal run ID is rejected'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $productionRoot "escape_$testId"))) 'path traversal did not create an out-of-scope directory'
 	Write-Output 'PASS: path traversal rejected before output creation'
+
+	# Engine build identity cases (UE-LOCK-001). Each case runs the shipped generator against its own
+	# installed-engine fixture, because the effective changelist, the optional fields and the plugin
+	# version all come from the engine tree.
+	#
+	# Epic's own shape: Changelist 0 with the identifier in CompatibleChangelist (mirrors of 4.18/4.22/4.26
+	# show the same). UE's rule then yields 0, so the lock must not pretend otherwise; it records the
+	# derived value, the raw Changelist and the CompatibleChangelist next to each other.
+	$compatibleOnlyEngine = Join-Path $fixtureRoot 'CompatibleOnlyEngineRoot'
+	New-FixtureEngineRoot $compatibleOnlyEngine '{"MajorVersion":5,"MinorVersion":8,"PatchVersion":4,"Changelist":0,"CompatibleChangelist":44201111,"IsLicenseeVersion":1}' -PluginWithoutVersion
+	Invoke-EngineGenerator 'vertical-loop' $compatibleOnlyProjectName "$testId-a" @() $compatibleOnlyEngine
+	$compatibleOnlyOutput = $outputPaths[6]
+	$compatibleOnlyLock = Read-FixtureLock $compatibleOnlyOutput | ConvertFrom-Json
+	Assert-True ($compatibleOnlyLock.engine_changelist -eq 0) 'a Build.version with Changelist 0 records the value the engine''s rule derives, not CompatibleChangelist'
+	Assert-True ($compatibleOnlyLock.engine_changelist_source -eq 'Changelist') 'the derived changelist names the field the rule used'
+	Assert-True ($compatibleOnlyLock.engine_compatible_changelist -eq 44201111) 'the build identifier that lives in CompatibleChangelist is recorded instead of ignored'
+	Assert-True ($compatibleOnlyLock.engine_changelist_raw -eq 0) 'the raw Changelist is recorded exactly as the engine reported it'
+	Assert-True ($compatibleOnlyLock.engine_is_licensee_version -eq 1) 'lock records the licensee flag of this install'
+	Assert-True ($null -eq $compatibleOnlyLock.engine_is_promoted_build) 'a missing IsPromotedBuild is recorded as null, not as 0'
+	Assert-True ($null -eq $compatibleOnlyLock.engine_branch_name) 'a missing BranchName is recorded as null, not as an empty string'
+	Assert-True ($null -eq $compatibleOnlyLock.plugins.MovieRenderPipeline) 'a plugin that declares no version is recorded as null, not as an empty string'
+	Assert-True ($null -ne $compatibleOnlyLock.plugins.PSObject.Properties['MovieRenderPipeline']) 'the plugin without a declared version is still named in the lock'
+	Write-Output 'PASS: optional engine build fields distinguish unknown (null) from a reported zero'
+
+	$changelistOnlyEngine = Join-Path $fixtureRoot 'ChangelistOnlyEngineRoot'
+	New-FixtureEngineRoot $changelistOnlyEngine '{"MajorVersion":5,"MinorVersion":8,"PatchVersion":4,"Changelist":58902052}'
+	Invoke-EngineGenerator 'vertical-loop' $changelistOnlyProjectName "$testId-a" @() $changelistOnlyEngine
+	$changelistOnlyOutput = $outputPaths[7]
+	$changelistOnlyLock = Read-FixtureLock $changelistOnlyOutput | ConvertFrom-Json
+	Assert-True ($changelistOnlyLock.engine_changelist -eq 58902052) 'a Build.version with only Changelist records that changelist'
+	Assert-True ($changelistOnlyLock.engine_changelist_source -eq 'Changelist') 'the effective changelist names Changelist as its source'
+	Assert-True ($null -eq $changelistOnlyLock.engine_compatible_changelist) 'a missing CompatibleChangelist is recorded as null, not as 0'
+	Assert-True ($changelistOnlyLock.plugins.MovieRenderPipeline -eq '1.0') 'a plugin that declares a version records it'
+	Write-Output 'PASS: a Build.version with only Changelist still records its build identity'
+
+	# The baseline wrote the same lock for both: Changelist 0 in both installs, CompatibleChangelist
+	# never read. The lock has to separate them through the raw fields it now records.
+	$installAEngine = Join-Path $fixtureRoot 'InstallAEngineRoot'
+	$installBEngine = Join-Path $fixtureRoot 'InstallBEngineRoot'
+	New-FixtureEngineRoot $installAEngine '{"MajorVersion":5,"MinorVersion":8,"PatchVersion":4,"Changelist":0,"CompatibleChangelist":58902052}'
+	New-FixtureEngineRoot $installBEngine '{"MajorVersion":5,"MinorVersion":8,"PatchVersion":4,"Changelist":0,"CompatibleChangelist":44201111,"IsLicenseeVersion":1}'
+	Invoke-EngineGenerator 'vertical-loop' $installAProjectName "$testId-a" @() $installAEngine
+	Invoke-EngineGenerator 'vertical-loop' $installBProjectName "$testId-b" @() $installBEngine
+	$installAOutput = $outputPaths[8]
+	$installBOutput = $outputPaths[9]
+	$installALockText = Read-FixtureLock $installAOutput
+	$installBLockText = Read-FixtureLock $installBOutput
+	$installALock = $installALockText | ConvertFrom-Json
+	$installBLock = $installBLockText | ConvertFrom-Json
+	Assert-True ($installALock.engine_version -eq $installBLock.engine_version) 'the two installs agree on the engine version so only the build identity can separate them'
+	Assert-True ($installALock.engine_compatible_changelist -ne $installBLock.engine_compatible_changelist) 'two installs whose CompatibleChangelist differs record different build identifiers'
+	Assert-True ($installALockText -cne $installBLockText) 'two different engine installs do not produce byte-identical locks'
+	Write-Output 'PASS: two different engine installs do not produce the same lock record'
+
+	# Negative cases: a Build.version whose version fields are absent. `[string]$null` is '', so the
+	# baseline concatenated nothing and still reported success with '.8' or '5.8.'. The generator has
+	# to stop instead of inventing a value.
+	# ProjectName is capped at 40 characters, so the case labels stay short.
+	$missingFieldCases = @(
+		@{ Label = 'Maj'; Expected = 'numeric MajorVersion'; Json = '{"MinorVersion":8,"PatchVersion":4,"Changelist":58902052}' },
+		@{ Label = 'Min'; Expected = 'numeric MinorVersion'; Json = '{"MajorVersion":5,"PatchVersion":4,"Changelist":58902052}' },
+		@{ Label = 'Pat'; Expected = 'numeric PatchVersion'; Json = '{"MajorVersion":5,"MinorVersion":8,"Changelist":58902052}' },
+		@{ Label = 'Num'; Expected = 'numeric PatchVersion'; Json = '{"MajorVersion":5,"MinorVersion":8,"PatchVersion":"4a","Changelist":58902052}' },
+		@{ Label = 'Cl'; Expected = 'numeric Changelist'; Json = '{"MajorVersion":5,"MinorVersion":8,"PatchVersion":4,"Changelist":"unknown"}' }
+	)
+	foreach ($missingCase in $missingFieldCases) {
+		$caseEngine = Join-Path $fixtureRoot ('Missing' + $missingCase.Label + 'EngineRoot')
+		New-FixtureEngineRoot $caseEngine $missingCase.Json
+		$caseProjectName = "Mf$($missingCase.Label)_$testId"
+		$caseOutput = Join-Path $productionRoot ("{0}_{1}-mf" -f $caseProjectName, $testId)
+		$caseFailure = ''
+		try {
+			Invoke-EngineGenerator 'vertical-loop' $caseProjectName "$testId-mf" @() $caseEngine
+		} catch {
+			$caseFailure = $_.Exception.Message
+		}
+		Assert-True ($caseFailure.Contains($missingCase.Expected)) ('a Build.version without ' + $missingCase.Label + ' stops the generator instead of writing a fabricated value')
+		Assert-True (-not (Test-Path -LiteralPath $caseOutput)) ('a Build.version without ' + $missingCase.Label + ' writes no project')
+	}
+	Write-Output 'PASS: missing or non-numeric version fields stop generation instead of fabricating an empty version string'
+
+	# A Build.version that omits Changelist entirely. UE's own parser leaves the field at 0 when the
+	# file omits it, but an absent key is not the same evidence as a written 0: writing 0 would claim
+	# the engine said something it never said. The lock records null for both the raw and derived values.
+	$noChangelistEngine = Join-Path $fixtureRoot 'NoChangelistEngineRoot'
+	New-FixtureEngineRoot $noChangelistEngine '{"MajorVersion":5,"MinorVersion":8,"PatchVersion":4,"CompatibleChangelist":44201111}'
+	Invoke-EngineGenerator 'vertical-loop' $noChangelistProjectName "$testId-a" @() $noChangelistEngine
+	$noChangelistOutput = $outputPaths[10]
+	$noChangelistLock = Read-FixtureLock $noChangelistOutput | ConvertFrom-Json
+	Assert-True ($null -ne $noChangelistLock.PSObject.Properties['engine_changelist']) 'the lock always carries the engine_changelist key'
+	Assert-True ($null -eq $noChangelistLock.engine_changelist) 'a Build.version without Changelist records an unknown effective changelist, not 0'
+	Assert-True ($null -eq $noChangelistLock.engine_changelist_raw) 'a Build.version without Changelist records an unknown raw changelist, not 0'
+	Assert-True ($null -eq $noChangelistLock.engine_changelist_source) 'an unknown effective changelist names no source field'
+	Assert-True ($noChangelistLock.engine_compatible_changelist -eq 44201111) 'the CompatibleChangelist that was present is still recorded'
+	Assert-True ($noChangelistLock.engine_version -eq '5.8.4') 'the version string is complete when every version field exists'
+	Write-Output 'PASS: a Build.version without Changelist records unknown as null instead of 0'
 
 	# Negative case: Build.version carries a non-numeric version field. Deriving 5.8 from it would
 	# write a fragment such as '.8' into the descriptor and the lock and then report success, so the

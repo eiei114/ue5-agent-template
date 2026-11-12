@@ -2,7 +2,7 @@
 
 ## Preflightの完了条件
 
-`templates/QA.md`に日時、Issue/run、hostname/OS、UE実version、GPU/VRAM、disk/RAM、既存toolchain、モデル指定/実効値、利用枠の観測範囲を記録。不明を0や無料と扱わない。
+`templates/QA.md`に日時、Issue/run、hostname/OS、UE実version、GPU/VRAM、disk/RAM、既存toolchain、モデル指定/実効値、利用枠の観測範囲を記録。不明を0や無料と扱わない。これはQA記録だけの規則ではなく、`scripts/New-UETemplateScaffold.ps1`が書く`template-lock.json`にも等しく適用される：エンジンが書いていない値は`null`、0は「エンジンが0と書いた」値だけに使う（[構造と更新](07-architecture.md)のengine build identity）。
 Multicaのissue runs / runtime activity（先に各--help）と現地UE/renderプロセス・project leaseを確認。onlineはbuild可能の証拠ではない。
 Windows offlineなら新規buildをqueueして成功扱いしない。MacBookは許可済みApple工程の候補、miniは軽い計画・文書確認のみ。
 
