@@ -30,15 +30,85 @@ function Convert-TemplateName([string]$Text, [string]$TemplateName, [string]$Nam
 }
 
 function Read-TemplateDefs([string]$Path, [string]$TemplateName) {
-	$defs = [ordered]@{ FoldersToIgnore = @(); FilesToIgnore = @(); FolderRenames = @(); Extensions = @(); SharedContentPacks = @(); DetailLevel = 'High' }
+	$defs = [ordered]@{
+		FoldersToIgnore    = @()
+		FilesToIgnore      = @()
+		FolderRenames      = @()
+		Extensions         = @()
+		SharedContentPacks = @()
+		DetailLevel        = 'High'
+		UnreadableLines    = @()
+	}
+	# The installed engine templates write the same rule two ways — `FolderRenames=(From="...", To="...")`
+	# and the unspaced `,To="` form — so whitespace around `=` and between tuple fields is optional here.
+	# This only widens what parses: a rule this reader drops is applied by nobody, and the output then
+	# keeps the template's own module directory while the descriptor claims the project name.
+	$ruleSection = '[/Script/GameProjectGeneration.TemplateProjectDefs]'
+	$parsedKeys = @('FoldersToIgnore', 'FilesToIgnore', 'FolderRenames', 'ReplacementsInFiles', 'SharedContentPacks', 'EditDetailLevelPreference')
+	$section = $null
+	$lineNumber = 0
 	foreach ($line in [System.IO.File]::ReadAllLines($Path)) {
+		$lineNumber++
 		$trimmed = $line.Trim()
-		if ($trimmed -match '^FoldersToIgnore=(.+)$') { $defs.FoldersToIgnore += $Matches[1].Trim('"').Replace('%TEMPLATENAME%', $TemplateName).Replace('\', '/') }
-		elseif ($trimmed -match '^FilesToIgnore=(.+)$') { $defs.FilesToIgnore += $Matches[1].Trim('"').Replace('%TEMPLATENAME%', $TemplateName).Replace('\', '/') }
-		elseif ($trimmed -match '^FolderRenames=\(From="([^"]+)",To="([^"]+)"\)') { $defs.FolderRenames += ,@($Matches[1].Replace('%TEMPLATENAME%', $TemplateName), $Matches[2]) }
-		elseif ($trimmed -match '^ReplacementsInFiles=\(Extensions=\(([^)]*)\)') { $defs.Extensions += @($Matches[1].Split(',') | ForEach-Object { $_.Trim().Trim('"').ToLowerInvariant() }) }
-		elseif ($trimmed -match '^SharedContentPacks=\(MountName="([^"]+)"') { $defs.SharedContentPacks += $Matches[1] }
-		elseif ($trimmed -match '^EditDetailLevelPreference="?([^"]+)"?$') { $defs.DetailLevel = $Matches[1] }
+		if ($trimmed -match '^\[(.+)\]$') { $section = $trimmed; continue }
+		if ($trimmed -eq '' -or $trimmed.StartsWith(';')) { continue }
+		# Rules are applied from every section, as before, so no file that parsed previously is rejected
+		# now; only the unreadable-line report is scoped to the section that is supposed to hold them.
+		$inRuleSection = ($null -eq $section) -or ($section -ceq $ruleSection)
+		$key = ''
+		if ($trimmed -match '^([A-Za-z]+)[ \t]*=') { $key = $Matches[1] }
+		elseif ($trimmed -match '^([A-Za-z]+)$') { $key = $Matches[1] }
+		$wasRead = $false
+		# The key comparison stays case-insensitive (PowerShell's default) so the spellings this reader
+		# accepted before still parse; nothing that used to be read is now rejected.
+		switch ($key) {
+			'FoldersToIgnore' {
+				if ($trimmed -match '^FoldersToIgnore[ \t]*=[ \t]*(.+)$') {
+					$defs.FoldersToIgnore += $Matches[1].Trim().Trim('"').Replace('%TEMPLATENAME%', $TemplateName).Replace('\', '/')
+					$wasRead = $true
+				}
+			}
+			'FilesToIgnore' {
+				if ($trimmed -match '^FilesToIgnore[ \t]*=[ \t]*(.+)$') {
+					$defs.FilesToIgnore += $Matches[1].Trim().Trim('"').Replace('%TEMPLATENAME%', $TemplateName).Replace('\', '/')
+					$wasRead = $true
+				}
+			}
+			'FolderRenames' {
+				if ($trimmed -match '^FolderRenames[ \t]*=[ \t]*\([ \t]*From[ \t]*=[ \t]*"([^"]+)"[ \t]*,[ \t]*To[ \t]*=[ \t]*"([^"]+)"[ \t]*\)[ \t]*$') {
+					$defs.FolderRenames += ,@($Matches[1].Replace('%TEMPLATENAME%', $TemplateName), $Matches[2])
+					$wasRead = $true
+				}
+			}
+			'ReplacementsInFiles' {
+				if ($trimmed -match '^ReplacementsInFiles[ \t]*=[ \t]*\([ \t]*Extensions[ \t]*=[ \t]*\(([^)]*)\)') {
+					$defs.Extensions += @($Matches[1].Split(',') | ForEach-Object { $_.Trim().Trim('"').ToLowerInvariant() })
+					$wasRead = $true
+				}
+			}
+			'SharedContentPacks' {
+				if ($trimmed -match '^SharedContentPacks[ \t]*=[ \t]*\([ \t]*MountName[ \t]*=[ \t]*"([^"]+)"') {
+					$defs.SharedContentPacks += $Matches[1]
+					$wasRead = $true
+				}
+			}
+			'EditDetailLevelPreference' {
+				if ($trimmed -match '^EditDetailLevelPreference[ \t]*=[ \t]*"?([^"\s]+)"?[ \t]*$') {
+					$defs.DetailLevel = $Matches[1]
+					$wasRead = $true
+				}
+			}
+		}
+		if ($wasRead) { continue }
+		# A rule the reader claims to apply but produced nothing is reported instead of being skipped
+		# quietly: a rule nobody applied must not look like a successful materialization. The run
+		# continues, because a template may still carry a form this reader does not know; the
+		# post-copy identity check below is what turns a dropped folder rename into a stop.
+		# `FilenameReplacements` is not listed: whether it is implemented is the
+		# materialization-fidelity issue (DOT-3135), and one owner keeps that layer.
+		if ($inRuleSection -and ($parsedKeys -contains $key)) {
+			$defs.UnreadableLines += ('line {0}: {1}' -f $lineNumber, $trimmed)
+		}
 	}
 	$defs.Extensions = @($defs.Extensions | Select-Object -Unique)
 	$defs.SharedContentPacks = @($defs.SharedContentPacks | Select-Object -Unique)
@@ -88,6 +158,9 @@ function Copy-MaterializedTemplate([string]$SourceTemplate, [string]$Destination
 	$defsPath = Join-Path $SourceTemplate 'Config\TemplateDefs.ini'
 	if (-not (Test-Path -LiteralPath $defsPath -PathType Leaf)) { throw "The template has no Config/TemplateDefs.ini to materialize from: $defsPath" }
 	$defs = Read-TemplateDefs -Path $defsPath -TemplateName $TemplateName
+	foreach ($unreadable in @($defs.UnreadableLines)) {
+		Write-Warning ('TemplateDefs.ini rule was not understood and was skipped ({0}): {1}' -f $defsPath, $unreadable)
+	}
 	$sourceRoot = [System.IO.Path]::GetFullPath($SourceTemplate).TrimEnd('\', '/')
 	foreach ($file in Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Force) {
 		$relative = $file.FullName.Substring($sourceRoot.Length + 1).Replace('\', '/')
