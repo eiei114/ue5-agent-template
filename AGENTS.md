@@ -51,6 +51,8 @@ project identityの契約は1つだけ。`scripts/New-UETemplateScaffold.ps1`は
 - `materialize_project: true`のrecipe（`third-person-game`）は、template自身の`Config/TemplateDefs.ini`をUEウィザードと同じ規則で適用するため、`<Name>.uproject` / `Source/<Name>` / `Modules[].Name = <Name>`になる。
 - それ以外のrecipe（`spectator-explore` / `vertical-loop`）は生コピーするため、template名（`TP_FirstPerson` / `TP_BlankBP`）がそのまま残る。ここで`.uproject`だけrenameすると`Source/**/*.Build.cs`と食い違う。
 
-generatorはコピー前にdescriptorと`Source/`を照合し、既知パターンに一致しなければ**推測で続行せず停止**して未一致pathを列挙する。コピー後にもコピー物同士で同じ照合を行い、食い違えばdescriptorを書き換えずに停止する。生成後に`.uproject`を手でrenameしない。identityは`template-lock.json`の`identity`（`project_file` / `project_modules` / `engine_association`、`schema_version: 2`）に記録され、そこで確認できる。
+generatorはコピー前にdescriptorと`Source/`を照合し、既知パターンに一致しなければ**推測で続行せず停止**して未一致pathを列挙する。コピー後にもコピー物同士で同じ照合を行い、食い違えばdescriptorを書き換えずに停止する。生成後に`.uproject`を手でrenameしない。identityは`template-lock.json`の`identity`（`project_file` / `project_modules` / `engine_association`、`schema_version: 3`）に記録され、そこで確認できる。
+
+plugin identityも同じgeneratorが保証する。`template-lock.json`の`plugins`は生成`.uproject`の`Plugins`全entryを`{ version, source, enabled_in_project }`で持ち、`Enabled: true`のpluginはコピー**前**に`.uplugin`の実在を確認する。当該Engine installに存在しなければ出力directoryを作らずに停止し、plugin名と探索pathを列挙する（存在しないpluginを有効化したままexit 0で「開けないproject」を出さない）。版は`.uplugin`の`VersionName`（空なら`Version`）を写し、読めない場合は文字列`unknown`を残して推測しない。
 
 旧版は上書きしない。Out/_v1のような旧運用よりrun別の分離を推奨。Outに置いただけで納品とは呼ばない。

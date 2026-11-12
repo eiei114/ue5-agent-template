@@ -107,7 +107,10 @@ try {
 	Write-FixtureTemplate $blankTemplate 'TP_BlankBP' 'TP_BlankBP'
 
 	$thirdPersonTemplate = Join-Path $fixtureEngine 'Templates\TP_ThirdPerson'
-	Write-FixtureJson (Join-Path $thirdPersonTemplate 'TP_ThirdPerson.uproject') '{"FileVersion":3,"EngineAssociation":"","Modules":[{"Name":"TP_ThirdPerson","Type":"Runtime"}],"Plugins":[]}'
+	# The installed TP_ThirdPerson descriptor enables three plugins of its own. The fixture keeps that
+	# shape so the suite exercises a project whose plugin set is wider than the recipe's
+	# required_plugins; a fixture that enables nothing cannot tell the two sets apart.
+	Write-FixtureJson (Join-Path $thirdPersonTemplate 'TP_ThirdPerson.uproject') '{"FileVersion":3,"EngineAssociation":"","Modules":[{"Name":"TP_ThirdPerson","Type":"Runtime"}],"Plugins":[{"Name":"ModelingToolsEditorMode","Enabled":true,"TargetAllowList":["Editor"]},{"Name":"StateTree","Enabled":true},{"Name":"GameplayStateTree","Enabled":true}]}'
 	Write-FixtureJson (Join-Path $thirdPersonTemplate 'Config\TemplateDefs.ini') (@(
 		'[/Script/GameProjectGeneration.TemplateProjectDefs]',
 		'FoldersToIgnore=Media',
@@ -135,7 +138,13 @@ try {
 		@{ Name = 'OnlineSubsystem'; RelativePath = 'Engine\Plugins\Online\OnlineSubsystem\OnlineSubsystem.uplugin'; Version = '1.0' },
 		@{ Name = 'OnlineSubsystemNull'; RelativePath = 'Engine\Plugins\Online\OnlineSubsystemNull\OnlineSubsystemNull.uplugin'; Version = '1.0' },
 		@{ Name = 'OnlineSubsystemUtils'; RelativePath = 'Engine\Plugins\Online\OnlineSubsystemUtils\OnlineSubsystemUtils.uplugin'; Version = '1.0' },
-		@{ Name = 'MovieRenderPipeline'; RelativePath = 'Engine\Plugins\MovieScene\MovieRenderPipeline\MovieRenderPipeline.uplugin'; Version = '1.0' }
+		@{ Name = 'MovieRenderPipeline'; RelativePath = 'Engine\Plugins\MovieScene\MovieRenderPipeline\MovieRenderPipeline.uplugin'; Version = '1.0' },
+		# The three plugins the TP_ThirdPerson template enables. Two sit directly under a category
+		# directory like the installed engine, one sits a level deeper, so the resolution has to walk
+		# the category directories and then fall back to a recursive scan.
+		@{ Name = 'ModelingToolsEditorMode'; RelativePath = 'Engine\Plugins\Editor\ModelingToolsEditorMode\ModelingToolsEditorMode.uplugin'; Version = '0.1' },
+		@{ Name = 'StateTree'; RelativePath = 'Engine\Plugins\Runtime\StateTree\StateTree.uplugin'; Version = '0.1' },
+		@{ Name = 'GameplayStateTree'; RelativePath = 'Engine\Plugins\Runtime\AI\GameplayStateTree\GameplayStateTree.uplugin'; Version = '1.0' }
 	)
 	foreach ($plugin in $pluginFixtures) {
 		Write-FixtureJson (Join-Path $fixtureEngine $plugin.RelativePath) ("{`"FileVersion`":3,`"Version`":1,`"VersionName`":`"$($plugin.Version)`"}")
@@ -213,9 +222,17 @@ try {
 	$lockData = $firstLock | ConvertFrom-Json
 	Assert-True ($lockData.engine_version -eq '5.8.4') 'lock records the installed engine version'
 	Assert-True ($lockData.template_commit -match '^[0-9a-f]{40}$') 'lock records a full template commit SHA'
-	Assert-True ($lockData.plugins.MulticaOnlineStarter -eq '1.0.1') 'lock records the project plugin version'
+	Assert-True ($lockData.plugins.MulticaOnlineStarter.version -eq '1.0.1') 'lock records the project plugin version'
+	Assert-True ($lockData.plugins.MulticaOnlineStarter.source -eq 'project') 'lock records the plugin payload the generated project actually loads'
+	Assert-True ($lockData.plugins.MulticaOnlineStarter.enabled_in_project -eq $true) 'lock records that the project enables the plugin'
+	$lockPluginNames = @($lockData.plugins.PSObject.Properties.Name)
+	[Array]::Sort($lockPluginNames, [System.StringComparer]::Ordinal)
+	$descriptorPluginNames = @($firstDescriptor.Plugins | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_.Name })
+	[Array]::Sort($descriptorPluginNames, [System.StringComparer]::Ordinal)
+	Assert-True (($lockPluginNames -join ',') -ceq ($descriptorPluginNames -join ',')) 'lock records every plugin the generated project enables, and nothing else'
+	Assert-True ($lockPluginNames.Count -eq 5) 'the online game recipe records all five plugins it enables'
 	Assert-True ($lockData.project_differences.Count -eq 2) 'lock records normalized project-specific differences'
-	Assert-True ($lockData.schema_version -eq 2) 'lock records the identity-bearing schema version'
+	Assert-True ($lockData.schema_version -eq 3) 'lock records the identity-bearing schema version'
 	Assert-True ($lockData.identity.project_file -eq 'TP_FirstPerson.uproject') 'lock records the generated project file name'
 	Assert-True (@($lockData.identity.project_modules) -join ',' -eq 'TP_FirstPerson') 'lock records the generated project module identity'
 	Assert-True ($lockData.identity.engine_association -eq '5.8') 'lock records the generated engine association'
@@ -239,6 +256,9 @@ try {
 	Assert-True ($loopLock.identity.engine_association -eq '5.8') 'video-only lock records the engine association'
 	$movieRenderPlugins = @($loopDescriptor.Plugins | Where-Object { $_.Name -eq 'MovieRenderPipeline' })
 	Assert-True ($movieRenderPlugins.Count -eq 1 -and $movieRenderPlugins[0].Enabled -eq $true) 'video-only recipe enables MovieRenderPipeline in the project descriptor'
+	$loopLockPluginNames = @($loopLock.plugins.PSObject.Properties.Name)
+	Assert-True (($loopLockPluginNames -join ',') -ceq 'MovieRenderPipeline') 'video-only lock records the same plugin set the generated descriptor enables'
+	Assert-True ($loopLock.plugins.MovieRenderPipeline.enabled_in_project -eq $true -and $loopLock.plugins.MovieRenderPipeline.version -eq '1.0') 'video-only lock records the plugin version the install reports'
 	Assert-True (Test-Path -LiteralPath (Join-Path $loopOutput 'Recipe\Capture.md')) 'video-only recipe has capture instructions'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $loopOutput 'Recipe\Play.md'))) 'video-only recipe does not add a play delta'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $loopOutput 'Plugins\MulticaOnlineStarter'))) 'video-only recipe does not add online gameplay code'
@@ -267,7 +287,22 @@ try {
 	$tpGameIni = [System.IO.File]::ReadAllText((Join-Path $tpOutput 'Config\DefaultGame.ini'))
 	Assert-True ($tpGameIni.Contains("ProjectName=$tpName") -and -not $tpGameIni.Contains('ProjectID=(A=1,B=2,C=3,D=4)')) 'materialized recipe gives the project its own name and ID'
 	Assert-True (Test-Path -LiteralPath (Join-Path $tpOutput 'Recipe\Play.md')) 'third-person recipe has a play delta'
-	Assert-True ((([System.IO.File]::ReadAllText((Join-Path $tpOutput 'template-lock.json'))) | ConvertFrom-Json).engine_template -eq 'TP_ThirdPerson') 'lock records the third-person engine template'
+	$tpLock = [System.IO.File]::ReadAllText((Join-Path $tpOutput 'template-lock.json')) | ConvertFrom-Json
+	Assert-True ($tpLock.engine_template -eq 'TP_ThirdPerson') 'lock records the third-person engine template'
+	$tpLockPluginNames = @($tpLock.plugins.PSObject.Properties.Name)
+	[Array]::Sort($tpLockPluginNames, [System.StringComparer]::Ordinal)
+	$tpDescriptorPluginNames = @($tpDescriptor.Plugins | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_.Name })
+	[Array]::Sort($tpDescriptorPluginNames, [System.StringComparer]::Ordinal)
+	Assert-True (($tpLockPluginNames -join ',') -ceq ($tpDescriptorPluginNames -join ',')) 'lock records the plugins the template enables, not only the recipe requirement'
+	Assert-True ($tpLockPluginNames.Count -eq 4) 'the materialized recipe records the three template plugins and the one recipe plugin'
+	foreach ($templatePlugin in @('ModelingToolsEditorMode', 'StateTree', 'GameplayStateTree')) {
+		Assert-True ($tpLock.plugins.$templatePlugin.enabled_in_project -eq $true) "lock records the template plugin $templatePlugin as enabled"
+		Assert-True (@('0.1', '1.0') -contains $tpLock.plugins.$templatePlugin.version) "lock records the version $templatePlugin's .uplugin reports instead of inventing one"
+		Assert-True ($tpLock.plugins.$templatePlugin.source -eq 'engine') "lock records that $templatePlugin comes from the installed engine"
+	}
+	Assert-True ($tpLock.plugins.GameplayStateTree.version -eq '1.0') 'a plugin one directory deeper than its category is resolved, not recorded as unknown'
+	Assert-True ($tpLock.plugins.StateTree.version -eq '0.1') 'a plugin directly under its category is resolved'
+	Write-Output 'PASS: lock records every enabled plugin of the generated project with its resolved version'
 	Assert-GeneratorFails { Invoke-Generator 'third-person-game' 'Bad-Name' "$testId-bad" @() } 'materialized recipe rejects non-identifier project names'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $productionRoot "Bad-Name_$testId-bad"))) 'invalid materialized project name creates no output'
 	Write-Output 'PASS: third-person recipe materializes the official template like the New Project wizard'
@@ -331,6 +366,29 @@ try {
 	Assert-True ($driftFailure.Contains('Source/TP_IdentityDrift/TP_IdentityDrift.Build.cs')) 'the stop names the unmatched source path instead of guessing'
 	Assert-True (-not (Test-Path -LiteralPath $driftOutput)) 'identity stop writes no raw-copied project'
 	Write-Output 'PASS: unresolvable project identity stops generation instead of emitting a raw copy'
+
+	# Negative case: the template enables a plugin that this engine install does not ship. The
+	# generator must stop before creating the output directory instead of writing a lock (and a
+	# project) that opens on one install and not on another.
+	$pluginGapEngine = Join-Path $fixtureRoot 'PluginGapEngineRoot'
+	Write-FixtureJson (Join-Path $pluginGapEngine 'Engine\Build\Build.version') '{"MajorVersion":5,"MinorVersion":8,"PatchVersion":4,"Changelist":58902052}'
+	Write-FixtureJson (Join-Path $pluginGapEngine 'Engine\Plugins\MovieScene\MovieRenderPipeline\MovieRenderPipeline.uplugin') '{"FileVersion":3,"Version":1,"VersionName":"1.0"}'
+	$pluginGapTemplate = Join-Path $pluginGapEngine 'Templates\TP_BlankBP'
+	Write-FixtureTemplate $pluginGapTemplate 'TP_BlankBP' 'TP_BlankBP'
+	Write-FixtureJson (Join-Path $pluginGapTemplate 'TP_BlankBP.uproject') '{"FileVersion":3,"EngineAssociation":"","Modules":[{"Name":"TP_BlankBP","Type":"Runtime"}],"Plugins":[{"Name":"PhantomPlugin","Enabled":true}]}'
+	$pluginGapProjectName = "Phantom_$testId"
+	$pluginGapOutput = Join-Path $productionRoot ("{0}_{1}-phantom" -f $pluginGapProjectName, $testId)
+	$pluginGapFailure = ''
+	try {
+		& $generator -Recipe 'vertical-loop' -ProjectName $pluginGapProjectName -RunId "$testId-phantom" -EngineRoot $pluginGapEngine -ProjectDiff @() -AllowDirtyTemplate | Out-Null
+	} catch {
+		$pluginGapFailure = $_.Exception.Message
+	}
+	Assert-True ($pluginGapFailure.Contains('Plugin identity check stopped')) 'an enabled plugin that this install does not ship stops the generator'
+	Assert-True ($pluginGapFailure.Contains('PhantomPlugin')) 'the stop names the unresolvable plugin instead of a generic message'
+	Assert-True ($pluginGapFailure.Contains('PhantomPlugin.uplugin')) 'the stop lists the paths that were searched for the plugin'
+	Assert-True (-not (Test-Path -LiteralPath $pluginGapOutput)) 'the plugin stop creates no output directory'
+	Write-Output 'PASS: an enabled plugin that the installed engine does not ship stops generation before any output'
 
 	$existingOutput = $outputPaths[3]
 	[System.IO.Directory]::CreateDirectory($existingOutput) | Out-Null
