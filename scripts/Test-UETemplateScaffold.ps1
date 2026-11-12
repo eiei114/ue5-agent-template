@@ -93,6 +93,128 @@ function Assert-GeneratorFails([scriptblock]$Action, [string]$Message) {
 	Assert-True $failed $Message
 }
 
+function Get-DeliveryContractViolations([string]$RepositoryRoot) {
+	# The delivery set is declared once, in docs/06-delivery.md. This reads that declaration and
+	# compares it with the templates the repository ships and with the Out/run_<runid>/ listing in
+	# AGENTS.md, so the contract, the tree and the generated-folder layout cannot drift apart or be
+	# satisfied by an empty assertion.
+	$violations = New-Object System.Collections.Generic.List[string]
+	$docPath = Join-Path $RepositoryRoot 'docs\06-delivery.md'
+	$agentsPath = Join-Path $RepositoryRoot 'AGENTS.md'
+	if (-not (Test-Path -LiteralPath $docPath -PathType Leaf)) {
+		$violations.Add('docs/06-delivery.md: the delivery contract is missing')
+		return $violations.ToArray()
+	}
+	if (-not (Test-Path -LiteralPath $agentsPath -PathType Leaf)) {
+		$violations.Add('AGENTS.md: the folder contract is missing')
+		return $violations.ToArray()
+	}
+
+	$templateFiles = New-Object System.Collections.Generic.List[string]
+	$declaredNames = New-Object System.Collections.Generic.List[string]
+	$deliverySection = New-Object System.Collections.Generic.List[string]
+	$deliverySectionPrefix = '^## ' + [string][char]0x7D0D + [string][char]0x54C1 + [string][char]0x30BB + [string][char]0x30C3 + [string][char]0x30C8
+	$inDeliverySet = $false
+	foreach ($line in @(Get-Content -LiteralPath $docPath -Encoding UTF8)) {
+		if ($line -match '^## ') { $inDeliverySet = ($line -match $deliverySectionPrefix) ; continue }
+		if ($inDeliverySet) { $deliverySection.Add($line) }
+	}
+	if ($deliverySection.Count -eq 0) {
+		$violations.Add('docs/06-delivery.md: the delivery-set section that declares the delivery table is missing')
+	}
+	foreach ($line in $deliverySection) {
+		if ($line -notmatch '^[|]') { continue }
+		foreach ($token in @([regex]::Matches($line, '`([^`]+)`') | ForEach-Object { $_.Groups[1].Value })) {
+			$bareName = $token -match '^[A-Za-z0-9._-]+\.[A-Za-z0-9]+$'
+			if ($token -match '^templates/[A-Za-z0-9._-]+$') {
+				if ($templateFiles -notcontains $token) { $templateFiles.Add($token) }
+			} elseif ($bareName -and -not $token.Contains('/')) {
+				if ($declaredNames -notcontains $token) { $declaredNames.Add($token) }
+			}
+		}
+	}
+
+	if ($templateFiles.Count -eq 0) {
+		$violations.Add('docs/06-delivery.md: the delivery set names no templates/ file')
+	}
+	if (-not ($templateFiles -contains 'templates/README.md')) {
+		$violations.Add('docs/06-delivery.md: the delivery set no longer requires templates/README.md (the README operation sheet)')
+	}
+	foreach ($relative in $templateFiles) {
+		$resolved = Join-Path $RepositoryRoot ($relative -replace '/', '\')
+		if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) {
+			$violations.Add($relative + ': declared in docs/06-delivery.md but missing from the repository')
+		}
+	}
+
+	$expectedNames = New-Object System.Collections.Generic.List[string]
+	foreach ($relative in $templateFiles) {
+		$name = ($relative -split '/')[-1]
+		if ($expectedNames -notcontains $name) { $expectedNames.Add($name) }
+	}
+	foreach ($name in $declaredNames) {
+		if ($expectedNames -notcontains $name) { $expectedNames.Add($name) }
+	}
+
+	$agentsNames = New-Object System.Collections.Generic.List[string]
+	$inListing = $false
+	foreach ($line in @(Get-Content -LiteralPath $agentsPath -Encoding UTF8)) {
+		if ($line -match 'Out/run_<runid>/') { $inListing = $true; continue }
+		if (-not $inListing) { continue }
+		if ($line -match 'LEASE\.json' -or $line -match '^\s*```') { break }
+		foreach ($token in @($line -split '\s+' | Where-Object { $_ -match '^[A-Za-z0-9._-]+\.[A-Za-z0-9]+$' })) {
+			if ($agentsNames -notcontains $token) { $agentsNames.Add($token) }
+		}
+	}
+	foreach ($name in $expectedNames) {
+		if ($agentsNames -notcontains $name) {
+			$violations.Add('AGENTS.md: the Out/run_<runid>/ listing is missing ' + $name + ' (declared in docs/06-delivery.md)')
+		}
+	}
+	foreach ($name in $agentsNames) {
+		if ($expectedNames -notcontains $name) {
+			$violations.Add('AGENTS.md: the Out/run_<runid>/ listing carries ' + $name + ' which docs/06-delivery.md does not declare')
+		}
+	}
+
+	$deliveryJsonPath = Join-Path $RepositoryRoot 'templates\DELIVERY.json'
+	if (Test-Path -LiteralPath $deliveryJsonPath -PathType Leaf) {
+		$deliveryData = Get-Content -Raw -LiteralPath $deliveryJsonPath -Encoding UTF8 | ConvertFrom-Json
+		$readmeReceipt = $deliveryData.PSObject.Properties['readme_receipt']
+		if ($null -eq $readmeReceipt) {
+			$violations.Add('templates/DELIVERY.json: readme_receipt is missing, so a delivery cannot name its README')
+		} else {
+			$receipt = $readmeReceipt.Value
+			if ([string]$receipt.filename -cne 'README.md') {
+				$violations.Add('templates/DELIVERY.json: readme_receipt.filename must be README.md')
+			}
+			foreach ($field in @('sha256', 'points_to', 'points_to_sha256')) {
+				if ($null -eq $receipt.PSObject.Properties[$field]) {
+					$violations.Add('templates/DELIVERY.json: readme_receipt.' + $field + ' is missing')
+				}
+			}
+		}
+		$kindVocabulary = $deliveryData.PSObject.Properties['artifact_kinds']
+		if ($null -eq $kindVocabulary) {
+			$violations.Add('templates/DELIVERY.json: artifact_kinds is missing, so kind stays an undefined vocabulary')
+		} elseif (-not (@($kindVocabulary.Value) -contains 'readme')) {
+			$violations.Add('templates/DELIVERY.json: artifact_kinds does not define readme')
+		}
+	}
+
+	$qaPath = Join-Path $RepositoryRoot 'templates\QA.md'
+	if (-not (Test-Path -LiteralPath $qaPath -PathType Leaf)) {
+		$violations.Add('templates/QA.md: the QA template is missing')
+	} else {
+		$qaText = [System.IO.File]::ReadAllText($qaPath)
+		if (-not ($qaText.Contains('readme_receipt') -and $qaText.Contains('README'))) {
+			$violations.Add('templates/QA.md: no row checks that the delivered README points at the same version')
+		}
+	}
+
+	return $violations.ToArray()
+}
+
 $suiteError = $null
 try {
 	$initialProductionResidue = @(Get-ProductionResidue)
@@ -339,6 +461,59 @@ try {
 	Assert-GeneratorFails { Invoke-Generator 'spectator-explore' $existingProjectName "$testId-preserved" @() } 'existing output is rejected'
 	Assert-True ([System.IO.File]::ReadAllText($sentinel) -ceq 'untouched') 'existing output content is not overwritten'
 	Write-Output 'PASS: exclusive output-directory creation preserves existing content'
+
+	# Delivery contract group: docs/06-delivery.md declares the delivery set once; every templates/
+	# file it names must exist, the Out/run_<runid>/ listing in AGENTS.md must carry the same file
+	# names, and the README operation sheet must have a receipt slot in DELIVERY.json and QA.md.
+	$deliveryViolations = @(Get-DeliveryContractViolations $repoRoot)
+	Assert-True ($deliveryViolations.Count -eq 0) ('docs/06-delivery.md, AGENTS.md, templates/ and templates/DELIVERY.json agree: ' + ($deliveryViolations -join '; '))
+	foreach ($deliveryTemplate in @('README.md', 'CREDITS.md', 'QA.md', 'DELIVERY.json')) {
+		Assert-True (Test-Path -LiteralPath (Join-Path $repoRoot ('templates\' + $deliveryTemplate)) -PathType Leaf) ("the delivery set resolves to templates/$deliveryTemplate")
+	}
+	$deliveryData = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'templates\DELIVERY.json') | ConvertFrom-Json
+	Assert-True (@($deliveryData.artifact_kinds) -contains 'readme') 'DELIVERY.json defines readme as an artifact kind instead of extending an undefined vocabulary'
+	Assert-True ($deliveryData.readme_receipt.filename -eq 'README.md' -and $deliveryData.readme_receipt.path -eq 'Out/run_<runid>/README.md') 'DELIVERY.json readme_receipt names the delivered README and its place in the run folder'
+	Assert-True (@(@('sha256', 'points_to', 'points_to_sha256') | Where-Object { $null -eq $deliveryData.readme_receipt.PSObject.Properties[$_] }).Count -eq 0) 'DELIVERY.json readme_receipt binds the README hash and the delivered version hash'
+	$agentsListing = ([System.IO.File]::ReadAllLines((Join-Path $repoRoot 'AGENTS.md')) | Where-Object { $_ -match 'QA\.md CREDITS\.md' })
+	Assert-True (@($agentsListing).Count -eq 1) 'AGENTS.md keeps exactly one Out/run_<runid>/ file listing line'
+	Assert-True ((@($agentsListing)[0] -split '\s+') -contains 'README.md') 'AGENTS.md lists README.md next to the other delivered files'
+	Write-Output 'PASS: delivery set resolves to templates/ files, AGENTS.md lists them, and DELIVERY.json carries a readme receipt'
+
+	# Negative case: the same contract check must name templates/README.md when the template is
+	# deleted, and must name docs/06-delivery.md when the contract document is deleted. It then has
+	# to go silent again after restore, so the gate cannot decay into an empty assertion.
+	$contractRepoRoot = Join-Path $fixtureRoot ('README-CONTRACT-' + $testId)
+	& git -C $repoRoot clone --quiet --local --no-hardlinks --no-tags --no-checkout $repoRoot $contractRepoRoot
+	if ($LASTEXITCODE -ne 0) { throw 'Could not create the isolated delivery-contract repository fixture.' }
+	& git -C $contractRepoRoot checkout --quiet --detach $templateRevision
+	if ($LASTEXITCODE -ne 0) { throw "Could not check out revision $templateRevision in the isolated delivery-contract repository fixture." }
+	[System.IO.Directory]::CreateDirectory((Join-Path $contractRepoRoot 'Production')) | Out-Null
+	$contractFiles = @('AGENTS.md', 'docs\06-delivery.md', 'templates\README.md', 'templates\DELIVERY.json', 'templates\QA.md')
+	foreach ($relative in $contractFiles) {
+		[System.IO.Directory]::CreateDirectory((Split-Path -Parent (Join-Path $contractRepoRoot $relative))) | Out-Null
+		Copy-Item -LiteralPath (Join-Path $repoRoot $relative) -Destination (Join-Path $contractRepoRoot $relative) -Force
+	}
+	Assert-True (@(Get-DeliveryContractViolations $contractRepoRoot).Count -eq 0) 'the copied contract files produce no violation in the isolated fixture'
+	$contractReadme = Join-Path $contractRepoRoot 'templates\README.md'
+	$contractDoc = Join-Path $contractRepoRoot 'docs\06-delivery.md'
+	Remove-Item -LiteralPath $contractReadme -Force
+	$readmeMissing = @(Get-DeliveryContractViolations $contractRepoRoot)
+	Assert-True (($readmeMissing -join '; ').Contains('templates/README.md')) 'deleting templates/README.md makes the contract check name that path instead of passing silently'
+	Copy-Item -LiteralPath (Join-Path $repoRoot 'templates\README.md') -Destination $contractReadme -Force
+	Assert-True (@(Get-DeliveryContractViolations $contractRepoRoot).Count -eq 0) 'restoring templates/README.md silences the contract check again'
+	Remove-Item -LiteralPath $contractDoc -Force
+	$docMissing = @(Get-DeliveryContractViolations $contractRepoRoot)
+	Assert-True (($docMissing -join '; ').Contains('docs/06-delivery.md')) 'deleting docs/06-delivery.md makes the contract check name the missing contract document'
+	Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\06-delivery.md') -Destination $contractDoc -Force
+	Assert-True (@(Get-DeliveryContractViolations $contractRepoRoot).Count -eq 0) 'restoring docs/06-delivery.md silences the contract check again'
+	$contractAgents = Join-Path $contractRepoRoot 'AGENTS.md'
+	$contractAgentsText = [System.IO.File]::ReadAllText($contractAgents)
+	[System.IO.File]::WriteAllText($contractAgents, ($contractAgentsText -replace ' SHA256SUMS\.txt README\.md', ' SHA256SUMS.txt'), [System.Text.UTF8Encoding]::new($false))
+	$agentsDrift = @(Get-DeliveryContractViolations $contractRepoRoot)
+	Assert-True (($agentsDrift -join '; ').Contains('AGENTS.md')) 'dropping README.md from the AGENTS.md listing makes the contract check name the folder contract'
+	[System.IO.File]::WriteAllText($contractAgents, $contractAgentsText, [System.Text.UTF8Encoding]::new($false))
+	Assert-True (@(Get-DeliveryContractViolations $contractRepoRoot).Count -eq 0) 'restoring the AGENTS.md listing silences the contract check again'
+	Write-Output 'PASS: deleting or drifting the README contract fails the suite by path and restoring it goes quiet'
 } catch {
 	# `$_` is not the in-flight error inside a bare `finally`; capture it here so a cleanup failure
 	# cannot hide the original assertion.

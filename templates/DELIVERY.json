@@ -10,6 +10,15 @@
   "lease_released_receipt": null,
   "artifacts": [],
   "artifact_required_fields": ["filename", "bytes", "sha256", "kind", "version", "test_receipt", "delivery_receipt"],
+  "artifact_kinds": ["executable_zip", "video", "source_zip", "readme", "thumbnail"],
+  "readme_receipt": {
+    "filename": "README.md",
+    "path": "Out/run_<runid>/README.md",
+    "sha256": null,
+    "points_to": null,
+    "points_to_sha256": null,
+    "notes": "README is listed in artifacts with kind=readme, and this receipt binds it to the delivered build/video by SHA-256."
+  },
   "rights_receipt": null,
   "qa_receipt": null,
   "unverified_scope": ["populate before delivery"],

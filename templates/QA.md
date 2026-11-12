@@ -20,7 +20,7 @@ writer/lease nonce・取得/解放receipt：
 | 映像と音のloop継ぎ目 | unverified | |
 | Shipping成功・ZIP別展開起動/操作 | unverified | |
 | Mac.app/architecture/署名/公証 | unverified | 必要な場合のみ |
-| CREDITS/権利・同一版manifest・SHA | unverified | |
+| CREDITS/権利・同一版manifest・SHA | unverified | 納品READMEが同一版を指すか（README操作表の対象版SHA-256 = `DELIVERY.json` の `readme_receipt.points_to_sha256`、README自身のhash = `readme_receipt.sha256`。両方とも実測値） |
 
 ## 画像列・通知・MP4・目視・音の独立判定
 

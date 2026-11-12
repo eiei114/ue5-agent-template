@@ -1,5 +1,24 @@
 # 変更履歴
 
+## Unreleased — DOT-3448
+
+- 納品セットが要求していた「README操作表」に、雛形・配置先・受領証欄・検証がどこにも無かった。`templates/README.md` を新規に追加し、同一版の識別（対象版SHA-256）、起動/再生手順、実キーの操作表、既定解像度/fps/尺、前提（UE/plugin版・必要素材）、非目標、既知の不具合を持つ雛形にした。
+- `docs/06-delivery.md` の納品セットは、雛形への解決が機械的に読める表へ置き換え、納品セットの正本をここ1箇所にした。`templates/` に無い項目は納品物と呼ばない。`AGENTS.md` の `Out/run_<runid>/` 列挙に `README.md` を加え、docsとの重複記述をやめた。
+- `templates/DELIVERY.json` に `readme_receipt`（`filename` / `path` / `sha256` / `points_to` / `points_to_sha256`）と、`kind` の語彙 `artifact_kinds`（`executable_zip` / `video` / `source_zip` / `readme` / `thumbnail`）を追加した。未定義語彙のまま `kind` を増やさないための定義で、既存 18 key は変更していない。`templates/QA.md` に「納品READMEが同一版を指すか」の1行を追加した。
+- README本文には自分のSHA-256を書かない（完成後のhashを自分の中へは書けないため）。READMEのhashと紐付け先は `DELIVERY.json` の `readme_receipt` とQAの該当行に記録する、という規則にした。
+- `scripts/Test-UETemplateScaffold.ps1` に、`docs/06-delivery.md` の『納品セット』sectionが名指す `templates/` 実ファイルの存在、`AGENTS.md` の `Out/` 列挙との双方向一致、`DELIVERY.json` の `readme_receipt` / `artifact_kinds`、`QA.md` の同一版行を検査する group を1つ追加した。既存 8 group は1件も削っていない（8 → 10 group）。
+- 同じ group に負例を置いた。`templates/README.md` を消すと `templates/README.md` を名指しで落ち、復旧すると沈黙する。`docs/06-delivery.md` を消すと同docを名指しで落ちる。`AGENTS.md` の列挙から `README.md` を落とすと `AGENTS.md` を名指しで落ちる。
+
+修正前後の実測（本host、Windows 11、`pwsh 7.6.9` / Windows PowerShell `5.1.26100.9711`）:
+
+- 変更前 HEAD `34f2cbb61c8e43901325376ea7c69cb9555f9e32` の使い捨て clone に同じ契約検査を当てると `VERDICT: fail` / exit 1。`templates/README.md` 不在、`docs/06-delivery.md` が `templates/` を名指さない、`AGENTS.md` の4項目が docs に宣言されない、`readme_receipt` / `artifact_kinds` / QA行が無い、の9件を path 付きで列挙した。
+- 変更後 `scripts/Test-UETemplateScaffold.ps1` は `pwsh 7.6.9` と Windows PowerShell 5.1 の両方で **10 group PASS / exit 0**。`scripts/Test-UERenderArtifacts.ps1` は **13 group PASS / exit 0**（回帰なし）。
+- `git status --porcelain --untracked-files=all` は suite 実行の前後で不変。
+
+移行: 既存の生成 project と `Production/` の生成物には触れない。既に納品済みの `Out/run_<runid>/` にREADMEが無い場合は、そのrunの版を閉じた後に本雛形から作り、`DELIVERY.json` の `readme_receipt` とQA行を埋める（過去の納品を遡って「合格」にしない）。ZIP/MP4を編集したらREADMEの対象版SHA-256も採り直す。
+
+Unverified Scope: README操作表の**内容が実機で正しいか**（実キー割当・起動引数・既定解像度）は本hostで検証していない。本変更が固定するのは「雛形があり、納品セットと一致し、消せば落ちる」という機械的事実だけ。UE Shipping ZIP / Mac `.app` の梱包物一覧と実exe起動も未実行。`kind` 語彙の追加が実案件の既存 `DELIVERY.json` と衝突しないかは、repoに実物が無いため未確認。追加の依存・外部コード・素材・`.uasset` は無い。
+
 ## Unreleased — 動画モーキャプ
 
 - `docs/09-video-mocap.md` を追加した。単眼のダンス動画から MediaPipe で体・手・顔の点を取り、VRM の骨の回転 → VRMA → UE（VRM4U）→ MV にする工程、単眼で取れない量の補い方、確認方法、1 本での実測、残る限界、権利の gate をまとめた。

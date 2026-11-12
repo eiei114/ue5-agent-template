@@ -42,9 +42,11 @@ Production/<Name>_<runid>/
   Tools/               # 当該project用。秘密なし
   Out/run_<runid>/
     preview/ frames/ final/ staging/ extracted-check/ evidence/
-    QA.md CREDITS.md DELIVERY.json SHA256SUMS.txt
+    QA.md CREDITS.md DELIVERY.json SHA256SUMS.txt README.md
   LEASE.json           # active所有者のみ。Git外
 ```
+
+納品セットの正本は `docs/06-delivery.md`。生成先では雛形（`templates/README.md` / `CREDITS.md` / `QA.md` / `DELIVERY.json`）を複製して記入する。規則はそちらに置き、ここでは重複記述しない。
 
 project identityの契約は1つだけ。`scripts/New-UETemplateScaffold.ps1`はインストール済みUE公式templateから生成し、**projectファイル名・`Modules[].Name`・`Source/<Module>`は常に互いに一致**していなければならない。`EngineAssociation`は`Engine/Build/Build.version`から導いた値（例`5.8`）を必ず書き込む。
 
