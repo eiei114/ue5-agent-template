@@ -310,8 +310,10 @@ $templateProjectFile = Join-Path $sourceTemplate ($templateName + '.uproject')
 if (-not (Test-Path -LiteralPath $templateProjectFile -PathType Leaf)) {
 	throw "The installed engine does not contain the selected official project template: $templateProjectFile"
 }
-# materialize_project: apply the template's own Config/TemplateDefs.ini rules (as the UE New Project
-# wizard does) so the output is <ProjectName>.uproject with renamed module/source, not TP_* names.
+# materialize_project: apply the subset of the template's own Config/TemplateDefs.ini rules that this
+# generator implements (see docs/07-architecture.md "TemplateDefs.ini契約") so the output is
+# <ProjectName>.uproject with renamed module/source, not TP_* names. Epic's official docs carry no
+# schema for these keys, so the claim is the generator's own scope, not the UE New Project wizard's.
 $materialize = ($null -ne $recipeData.PSObject.Properties['materialize_project']) -and [bool]$recipeData.materialize_project
 if ($materialize -and $ProjectName -notmatch '^[A-Za-z][A-Za-z0-9_]{0,39}$') {
 	throw 'Recipes that materialize a C++ project need a ProjectName that is a C++ identifier (letter first, letters/digits/underscore only).'
