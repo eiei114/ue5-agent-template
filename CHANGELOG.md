@@ -1,5 +1,17 @@
 # 変更履歴
 
+## Unreleased — DOT-3117
+
+- `templates/QA.md` が、repo 自身が要求する受入項目のうち10項目（起動map・Pawn・開始姿勢、座位/立位、host の session 作成、2 人目 client の join、score と player count の replication、client leave、reconnect、failed search、timeout）に対応する行を持っていなかった。行が無ければ検品者はその欄自体を書かないため、`docs/05-qa.md:36` の「合否・版/hash・実施者・日時・証拠・未確認をセットにする」を満たさないまま `Out/run_<runid>/` の QA が納品セットに入った。行を追加し、各行に機械検査用の `[QA-...]` ID を付けた。
+- online/LAN 行は `spectator-explore` 使用時のみ対象で、他の recipe は `non-goal` を記録することを雛形の冒頭と行本文の両方に明記した。実接続を実施していない `spectator-explore` の run は `unverified` のままとし、`non-goal` へ読み替えないことも書いた。
+- timeout は「timeout の発生」（`QA-NET-08`）と「timeout 後の後始末」（`QA-NET-09`）を別行にした。`docs/08-online-foundations.md` が遅延成功した create/join の cleanup を独立の主張として扱っているため、片方の pass でもう片方を埋めない。
+- `scripts/Test-UETemplateScaffold.ps1` に QA 雛形の行被覆 assertion を追加した。要求 24 行の存在、行 ID の重複なし、値が `pass`/`fail`/`unverified`/`non-goal` の 4 択であること、online 行が `spectator-explore` 限定と `non-goal` を明記していること、timeout の 2 行が別の主張であることを検査する。**負例**として fixture 内のコピーから `QA-NET-02`・`QA-NET-09`・`QA-PLAY-01`・`QA-BUILD-01` を 1 行ずつ削り、それぞれ欠けた行 ID を名指しで落ちることを同じ suite で固定した。`unverified` を `ok` へ書き換えた負例も追加した。
+- `docs/05-qa.md` の末尾に、QA 雛形の表の行が受入項目の正本であることと、recipe により `non-goal` になりうることを追記した。
+
+移行: 既存生成物の QA は書き換えない。旧 run の QA は当時の雛形のまま残し、新しい受入項目の行は次の run から使う。`templates/DELIVERY.json` の field、recipe の中身、online plugin の C++、UE Content には触れていない。
+
+実測（本 host、Windows、Windows PowerShell 5.1.26100.9711 と `pwsh 7.6.9` の両方、repo SHA `adfb5eebab9d1a3d90a60928ee31bfa35cb20b4a`、`templates/QA.md` の変更前 sha256 `AC1C02940CD6639C4CE451C4EF83A18E7E210D219D9031605F5C3D74470DC277` / 変更後 `D24FE74633EEC8649406C259B4E678177C177DCCF03BF28AF5511EEE1A72800D`）: `scripts/Test-UETemplateScaffold.ps1` は 11 group PASS / exit 0（既存 8 group を含む）。負例は 4 行それぞれ `required acceptance row <id> is missing` で exit 1、値の負例は `row QA-MRQ-01 uses 'ok' …` で exit 1 になることを、`a9e31bc` の clone に新 suite を当てて確認した（`QA template contract violated: … the table carries 11 data rows, fewer than the 24 required acceptance rows …` で exit 1）。suite 前後の `git status --porcelain --untracked-files=all` は同一（この変更の 4 ファイルのみ）。**UE install / compile / Editor / PIE / MRQ / render / Shipping / 実 LAN 接続は一切実行していない**（Unverified Scope）。行があることは 2-client 接続の実測ではない。
+
 ## Unreleased — DOT-3395
 
 - 画像列QA helperは、`FramesDirectory`またはreport親pathにjunction/symlink等のreparse pointが含まれる場合に、実効出力境界を確認できないため検査前に拒否する。reportがjunction経由で画像列へ書き込まれるのを防ぐ回帰fixtureを追加した。

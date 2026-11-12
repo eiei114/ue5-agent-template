@@ -93,10 +93,137 @@ function Assert-GeneratorFails([scriptblock]$Action, [string]$Message) {
 	Assert-True $failed $Message
 }
 
+# templates/QA.md is the only QA template a new run copies into Out/run_<runid>/ and the delivery
+# contract treats it as mandatory (AGENTS.md:14,45, docs/06-delivery.md:5). Rows that do not exist
+# cannot be filled, so a missing row silently removes an acceptance item: the reviewer records
+# nothing, no `unverified` cell is created, and docs/05-qa.md's "verdict + version/hash + operator +
+# timestamp + evidence + unverified" set is satisfied by a template that never asked. These rows are
+# therefore machine-checked here instead of trusted to reviewer discipline.
+$qaTemplateRelativePath = 'templates/QA.md'
+$qaRequiredRowIds = @(
+	'QA-BUILD-01', 'QA-MAP-01',
+	'QA-PLAY-01', 'QA-PLAY-02', 'QA-PLAY-03',
+	'QA-PERF-01', 'QA-AUDIO-01',
+	'QA-IMG-01', 'QA-MRQ-01', 'QA-MRQ-02',
+	'QA-VISUAL-01', 'QA-VISUAL-02',
+	'QA-SHIP-01', 'QA-MAC-01', 'QA-RIGHTS-01',
+	'QA-NET-01', 'QA-NET-02', 'QA-NET-03', 'QA-NET-04', 'QA-NET-05',
+	'QA-NET-06', 'QA-NET-07', 'QA-NET-08', 'QA-NET-09'
+)
+$qaOnlineRowIds = @('QA-NET-01', 'QA-NET-02', 'QA-NET-03', 'QA-NET-04', 'QA-NET-05', 'QA-NET-06', 'QA-NET-07', 'QA-NET-08', 'QA-NET-09')
+# Rows this contract added. Their evidence column has to state what proves the row, because the
+# missing acceptance item was a missing line to write into, not a missing sentence about it.
+$qaEvidenceRequiredRowIds = @('QA-PLAY-01', 'QA-PLAY-02') + $qaOnlineRowIds
+$qaAllowedVerdicts = @('pass', 'fail', 'unverified', 'non-goal')
+
+function Get-QaTemplateRows([string]$Path) {
+	$lines = @([System.IO.File]::ReadAllText($Path) -split "\r?\n")
+	$rows = New-Object System.Collections.Generic.List[object]
+	foreach ($line in $lines) {
+		$trimmed = $line.Trim()
+		if (-not $trimmed.StartsWith('|')) { continue }
+		$cells = @($trimmed.Trim('|') -split '\|' | ForEach-Object { $_.Trim() })
+		if ($cells.Count -ne 3) { continue }
+		if ($cells[1] -eq 'pass/fail/unverified/non-goal') { continue }
+		if ($cells[0] -match '^:?-{2,}$' -or $cells[1] -match '^:?-{2,}$') { continue }
+		$rows.Add([pscustomobject]@{ Id = ''; Item = $cells[0]; Verdict = $cells[1]; Evidence = $cells[2] })
+		$idMatch = [regex]::Match($cells[0], '^\[(QA-[A-Z]+-\d{2})\]\s*(.*)$')
+		if ($idMatch.Success) {
+			$rows[$rows.Count - 1].Id = $idMatch.Groups[1].Value
+			$rows[$rows.Count - 1].Item = $idMatch.Groups[2].Value
+		}
+	}
+	return $rows.ToArray()
+}
+
+function Get-QaTemplateViolations([string]$Path) {
+	$violations = New-Object System.Collections.Generic.List[string]
+	if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+		$violations.Add("$Path : the QA template is missing")
+		return $violations.ToArray()
+	}
+	$text = [System.IO.File]::ReadAllText($Path)
+	$lines = @($text -split "\r?\n")
+	$firstLine = $lines[0].Trim()
+	# The title keeps telling a reviewer that an empty cell is Unverified, and the preamble keeps
+	# scoping the online rows to the one recipe that enables the Null/LAN starter. Both are matched
+	# on ASCII fragments so the check stays readable to Windows PowerShell 5.1, which reads this
+	# repository's BOM-less UTF-8 files as ANSI.
+	if (-not ($firstLine.StartsWith('# QA') -and $firstLine.Contains('Unverified'))) {
+		$violations.Add('the title must keep stating that an empty cell is Unverified')
+	}
+	$headerIndex = -1
+	for ($i = 0; $i -lt $lines.Count; $i++) {
+		if ($lines[$i].Contains('pass/fail/unverified/non-goal')) { $headerIndex = $i; break }
+	}
+	if ($headerIndex -lt 0) {
+		$violations.Add('the table header row with the four allowed values is missing')
+	} else {
+		$preamble = ($lines[0..($headerIndex - 1)] -join "`n")
+		if (-not $preamble.Contains('`spectator-explore`')) { $violations.Add('the preamble must name the recipe that the online rows belong to') }
+		if (-not $preamble.Contains('non-goal')) { $violations.Add('the preamble must state that other recipes record non-goal') }
+	}
+	$rows = @(Get-QaTemplateRows $Path)
+	if ($rows.Count -lt $qaRequiredRowIds.Count) {
+		$violations.Add("the table carries $($rows.Count) data rows, fewer than the $($qaRequiredRowIds.Count) required acceptance rows")
+	}
+	$seen = @{}
+	foreach ($row in $rows) {
+		if ([string]::IsNullOrWhiteSpace($row.Id)) {
+			$violations.Add("row '$($row.Item)' has no [QA-...] identifier, so its acceptance item cannot be tracked")
+			continue
+		}
+		if ($seen.ContainsKey($row.Id)) { $violations.Add("duplicate row identifier $($row.Id)") } else { $seen[$row.Id] = $true }
+		if ([string]::IsNullOrWhiteSpace($row.Item)) { $violations.Add("row $($row.Id) has no item text") }
+		if (-not ($qaAllowedVerdicts -contains $row.Verdict)) {
+			$violations.Add("row $($row.Id) uses '$($row.Verdict)' instead of one of $($qaAllowedVerdicts -join '/') on a blank template")
+		}
+		if ($qaOnlineRowIds -contains $row.Id) {
+			if (-not $row.Item.Contains('spectator-explore')) { $violations.Add("online row $($row.Id) does not state that it is spectator-explore only") }
+			if (-not $row.Item.Contains('non-goal')) { $violations.Add("online row $($row.Id) does not state the non-goal value for other recipes") }
+		}
+	}
+	foreach ($requiredId in $qaRequiredRowIds) {
+		if (-not $seen.ContainsKey($requiredId)) { $violations.Add("required acceptance row $requiredId is missing") }
+	}
+	# The timeout report and the cleanup after a late success are separate claims (docs/08-online-
+	# foundations.md:27). One row must not cover both.
+	if ($seen.ContainsKey('QA-NET-08')) {
+		$timeoutRow = @($rows | Where-Object { $_.Id -eq 'QA-NET-08' })[0]
+		if (-not $timeoutRow.Item.Contains('timeout')) { $violations.Add('QA-NET-08 must record the timeout occurrence') }
+		if ($timeoutRow.Evidence.Contains('cleanup')) { $violations.Add('QA-NET-08 must not fold the post-timeout cleanup into the timeout occurrence row') }
+	}
+	if ($seen.ContainsKey('QA-NET-09')) {
+		$cleanupRow = @($rows | Where-Object { $_.Id -eq 'QA-NET-09' })[0]
+		if (-not $cleanupRow.Item.Contains('timeout')) { $violations.Add('QA-NET-09 must be scoped to the cleanup after a timeout') }
+		if (-not $cleanupRow.Evidence.Contains('cleanup')) { $violations.Add('QA-NET-09 must name the cleanup of a late create/join in its evidence column') }
+		if ($seen.ContainsKey('QA-NET-08')) {
+			$otherRow = @($rows | Where-Object { $_.Id -eq 'QA-NET-08' })[0]
+			if ($cleanupRow.Item -ceq $otherRow.Item) { $violations.Add('QA-NET-08 and QA-NET-09 must not share one item text; the timeout and its cleanup are separate claims') }
+		}
+	}
+	return $violations.ToArray()
+}
+
+function Assert-QaTemplateContract([string]$Path) {
+	$violations = @(Get-QaTemplateViolations $Path)
+	if ($violations.Count -gt 0) { throw ('QA template contract violated: ' + ($violations -join '; ')) }
+}
+
 $suiteError = $null
 try {
 	$initialProductionResidue = @(Get-ProductionResidue)
 	Assert-True ($initialProductionResidue.Count -eq 0) ("Production/ holds only the tracked placeholder before testing: " + ($initialProductionResidue -join '; '))
+
+	# Positive case: the shipped template carries every row the repository itself requires.
+	Assert-QaTemplateContract (Join-Path $repoRoot $qaTemplateRelativePath)
+	$qaRows = @(Get-QaTemplateRows (Join-Path $repoRoot $qaTemplateRelativePath))
+	Assert-True (@($qaRows | Where-Object { $qaOnlineRowIds -contains $_.Id }).Count -eq $qaOnlineRowIds.Count) "the QA template carries all $($qaOnlineRowIds.Count) online/LAN acceptance rows"
+	foreach ($required in $qaEvidenceRequiredRowIds) {
+		$row = @($qaRows | Where-Object { $_.Id -eq $required })[0]
+		Assert-True ([string]::IsNullOrWhiteSpace($row.Evidence) -eq $false) "QA row $required says what evidence proves it"
+	}
+	Write-Output 'PASS: QA template carries the repository-required acceptance rows for Play, online/LAN, and timeout cleanup'
 
 	[System.IO.Directory]::CreateDirectory($fixtureEngine) | Out-Null
 	Write-FixtureJson (Join-Path $fixtureEngine 'Engine\Build\Build.version') '{"MajorVersion":5,"MinorVersion":8,"PatchVersion":4,"Changelist":58902052}'
@@ -331,6 +458,40 @@ try {
 	Assert-True ($driftFailure.Contains('Source/TP_IdentityDrift/TP_IdentityDrift.Build.cs')) 'the stop names the unmatched source path instead of guessing'
 	Assert-True (-not (Test-Path -LiteralPath $driftOutput)) 'identity stop writes no raw-copied project'
 	Write-Output 'PASS: unresolvable project identity stops generation instead of emitting a raw copy'
+
+	# Negative case: the QA row check must fail when a row is dropped, so it cannot report PASS on a
+	# template that silently stopped asking for an acceptance item. The copy lives inside the fixture
+	# root, which the residue check already allows and the finally block removes.
+	$qaSource = Join-Path $repoRoot $qaTemplateRelativePath
+	$qaFixtureDirectory = Join-Path $fixtureRoot 'QaTemplate'
+	[System.IO.Directory]::CreateDirectory($qaFixtureDirectory) | Out-Null
+	$qaCopyPath = Join-Path $qaFixtureDirectory 'QA.md'
+	[System.IO.File]::WriteAllText($qaCopyPath, [System.IO.File]::ReadAllText($qaSource), [System.Text.UTF8Encoding]::new($false))
+	Assert-QaTemplateContract $qaCopyPath
+	Write-Output 'PASS: an unmodified QA template copy satisfies the row contract'
+
+	$qaMissingRowFailures = @()
+	foreach ($droppedId in @('QA-NET-02', 'QA-NET-09', 'QA-PLAY-01', 'QA-BUILD-01')) {
+		$mutated = @([System.IO.File]::ReadAllText($qaSource) -split "\r?\n" | Where-Object { $_ -notmatch ("\[" + $droppedId + "\]") })
+		[System.IO.File]::WriteAllText($qaCopyPath, ($mutated -join "`n"), [System.Text.UTF8Encoding]::new($false))
+		$droppedFailure = ''
+		try { Assert-QaTemplateContract $qaCopyPath } catch { $droppedFailure = $_.Exception.Message }
+		Assert-True ($droppedFailure.Contains($droppedId)) "dropping row $droppedId is reported by name instead of passing silently"
+		$qaMissingRowFailures += $droppedId
+	}
+	Assert-True ($qaMissingRowFailures.Count -eq 4) 'four independent required rows each fail the row check when dropped'
+
+	$mutated = @([System.IO.File]::ReadAllText($qaSource) -split "\r?\n" | ForEach-Object {
+		if ($_ -match '^\| \[QA-MRQ-01\]') { $_ -replace '\| unverified \|', '| ok |' } else { $_ }
+	})
+	[System.IO.File]::WriteAllText($qaCopyPath, ($mutated -join "`n"), [System.Text.UTF8Encoding]::new($false))
+	$verdictFailure = ''
+	try { Assert-QaTemplateContract $qaCopyPath } catch { $verdictFailure = $_.Exception.Message }
+	Assert-True ($verdictFailure.Contains("row QA-MRQ-01 uses 'ok'")) 'a value outside pass/fail/unverified/non-goal is rejected instead of counting as a recorded verdict'
+
+	[System.IO.File]::WriteAllText($qaCopyPath, [System.IO.File]::ReadAllText($qaSource), [System.Text.UTF8Encoding]::new($false))
+	Assert-QaTemplateContract $qaCopyPath
+	Write-Output 'PASS: dropping a QA acceptance row fails the row contract and names the missing row'
 
 	$existingOutput = $outputPaths[3]
 	[System.IO.Directory]::CreateDirectory($existingOutput) | Out-Null
