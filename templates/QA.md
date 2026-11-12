@@ -21,6 +21,7 @@ writer/lease nonce・取得/解放receipt：
 | Shipping成功・ZIP別展開起動/操作 | unverified | |
 | Mac.app/architecture/署名/公証 | unverified | 必要な場合のみ |
 | CREDITS/権利・同一版manifest・SHA | unverified | |
+| 納品READMEの操作表・起動方法・対象版SHA | unverified | `Out/run_<runid>/README.md`。実キー・起動引数は実機で確認し、未確認の行は`unverified`と書く。SHA-256は`DELIVERY.json`の`readme_receipt`と一致させる |
 
 ## 画像列・通知・MP4・目視・音の独立判定
 

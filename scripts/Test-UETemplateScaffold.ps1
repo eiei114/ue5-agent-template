@@ -93,6 +93,110 @@ function Assert-GeneratorFails([scriptblock]$Action, [string]$Message) {
 	Assert-True $failed $Message
 }
 
+function Add-SetDifference($Problems, $Actual, $Expected, [string]$MissingMessage, [string]$ExtraMessage) {
+	foreach ($item in $Expected) {
+		if (-not ($Actual -contains $item)) { $Problems.Add(($MissingMessage -f $item)) }
+	}
+	foreach ($item in $Actual) {
+		if (-not ($Expected -contains $item)) { $Problems.Add(($ExtraMessage -f $item)) }
+	}
+}
+
+function Get-DeliveryContractProblems {
+	# Resolves the delivery set that docs/06-delivery.md declares: every deliverable it names must appear
+	# in the AGENTS.md folder contract, every template it points at must exist, and the receipt fields that
+	# bind the delivered README to one build must be defined. The repository is passed in so the suite can
+	# point this gate at an isolated fixture and prove it fails when templates/README.md is removed.
+	param([Parameter(Mandatory = $true)][string]$RepositoryRoot)
+	$problems = New-Object System.Collections.Generic.List[string]
+	$requiredDeliverables = @('README.md', 'CREDITS.md', 'QA.md', 'DELIVERY.json', 'SHA256SUMS.txt')
+	$requiredTemplates = @('templates/README.md', 'templates/CREDITS.md', 'templates/QA.md', 'templates/DELIVERY.json')
+	$deliveryDoc = Join-Path $RepositoryRoot 'docs\06-delivery.md'
+	$agentsFile = Join-Path $RepositoryRoot 'AGENTS.md'
+	$qaTemplate = Join-Path $RepositoryRoot 'templates\QA.md'
+	$deliveryTemplate = Join-Path $RepositoryRoot 'templates\DELIVERY.json'
+	if (-not (Test-Path -LiteralPath $deliveryDoc -PathType Leaf)) {
+		$problems.Add('docs/06-delivery.md: the delivery set document is missing')
+		return $problems.ToArray()
+	}
+	$documentedNames = New-Object System.Collections.Generic.List[string]
+	$documentedTemplates = New-Object System.Collections.Generic.List[string]
+	foreach ($line in [System.IO.File]::ReadAllLines($deliveryDoc)) {
+		$trimmedLine = $line.Trim()
+		if (-not $trimmedLine.StartsWith('|')) { continue }
+		$cells = @($trimmedLine.Trim('|').Split('|') | ForEach-Object { $_.Trim() })
+		if ($cells.Count -lt 2) { continue }
+		$separatorOnly = $true
+		foreach ($cell in $cells) {
+			if ($cell -notmatch '^[-: ]{3,}$') { $separatorOnly = $false; break }
+		}
+		if ($separatorOnly) { continue }
+		foreach ($cell in $cells) {
+			foreach ($token in @([regex]::Matches($cell, '[^`\s]+') | ForEach-Object { $_.Value })) {
+				if ($token -match '^templates/[A-Za-z0-9._/-]+$') { $documentedTemplates.Add($token) }
+				elseif ($token -match '^[A-Za-z0-9_.-]+\.(md|json|txt)$') { $documentedNames.Add($token) }
+			}
+		}
+	}
+	Add-SetDifference $problems $documentedNames $requiredDeliverables 'docs/06-delivery.md: the delivery set does not name {0}' 'docs/06-delivery.md: names {0}, which is not part of the delivery set'
+	Add-SetDifference $problems $documentedTemplates $requiredTemplates 'docs/06-delivery.md: the delivery set does not point {0} at a template' 'docs/06-delivery.md: points at {0}, which is not a delivery template'
+	foreach ($templateRef in $requiredTemplates) {
+		$templatePath = Join-Path $RepositoryRoot ($templateRef.Replace('/', '\'))
+		if (-not (Test-Path -LiteralPath $templatePath -PathType Leaf)) {
+			$problems.Add(($templateRef + ': the delivery set names it but the file is missing'))
+		}
+	}
+	$listingTokens = $null
+	if (-not (Test-Path -LiteralPath $agentsFile -PathType Leaf)) {
+		$problems.Add('AGENTS.md: missing')
+	} else {
+		foreach ($line in [System.IO.File]::ReadAllLines($agentsFile)) {
+			$trimmedLine = $line.Trim()
+			if ($trimmedLine -match '^[A-Za-z0-9_.-]+\.md(\s+[A-Za-z0-9_.-]+\.(md|json|txt))*\s*$' -and $trimmedLine.Contains('SHA256SUMS.txt')) {
+				$listingTokens = @($trimmedLine -split '\s+')
+				break
+			}
+		}
+	}
+	if ($null -eq $listingTokens) {
+		$problems.Add('AGENTS.md: the Out/run_<runid>/ delivery listing is missing')
+	} else {
+		Add-SetDifference $problems $listingTokens $requiredDeliverables 'AGENTS.md: the Out/run_<runid>/ listing does not include {0}' 'AGENTS.md: the Out/run_<runid>/ listing includes {0}, which the delivery set does not name'
+	}
+	if (-not (Test-Path -LiteralPath $deliveryTemplate -PathType Leaf)) {
+		$problems.Add('templates/DELIVERY.json: the delivery manifest template is missing')
+	} else {
+		$deliveryData = $null
+		try { $deliveryData = [System.IO.File]::ReadAllText($deliveryTemplate) | ConvertFrom-Json } catch { $problems.Add('templates/DELIVERY.json: not valid JSON (' + $_.Exception.Message + ')') }
+		if ($null -ne $deliveryData) {
+			$requiredFields = @($deliveryData.artifact_required_fields)
+			if (-not ($requiredFields -contains 'kind')) { $problems.Add('templates/DELIVERY.json: artifact_required_fields does not require the kind field') }
+			$kinds = @($deliveryData.artifact_kind_vocabulary)
+			if ($kinds.Count -eq 0) { $problems.Add('templates/DELIVERY.json: artifact_kind_vocabulary does not define any kind value') }
+			elseif (-not ($kinds -contains 'readme')) { $problems.Add('templates/DELIVERY.json: artifact_kind_vocabulary does not define the readme kind') }
+			if ($null -eq $deliveryData.readme_receipt) {
+				$problems.Add('templates/DELIVERY.json: readme_receipt is missing')
+			} else {
+				$receiptFields = @($deliveryData.readme_receipt.PSObject.Properties.Name)
+				foreach ($receiptField in @('filename', 'sha256', 'version_sha256')) {
+					if (-not ($receiptFields -contains $receiptField)) { $problems.Add('templates/DELIVERY.json: readme_receipt does not carry ' + $receiptField) }
+				}
+			}
+		}
+	}
+	if (-not (Test-Path -LiteralPath $qaTemplate -PathType Leaf)) {
+		$problems.Add('templates/QA.md: the QA template is missing')
+	} else {
+		$readmeRow = $false
+		foreach ($line in [System.IO.File]::ReadAllLines($qaTemplate)) {
+			$trimmedLine = $line.Trim()
+			if ($trimmedLine.StartsWith('|') -and $trimmedLine.Contains('README')) { $readmeRow = $true; break }
+		}
+		if (-not $readmeRow) { $problems.Add('templates/QA.md: no row checks that the delivered README points at the same build') }
+	}
+	return $problems.ToArray()
+}
+
 $suiteError = $null
 try {
 	$initialProductionResidue = @(Get-ProductionResidue)
@@ -331,6 +435,51 @@ try {
 	Assert-True ($driftFailure.Contains('Source/TP_IdentityDrift/TP_IdentityDrift.Build.cs')) 'the stop names the unmatched source path instead of guessing'
 	Assert-True (-not (Test-Path -LiteralPath $driftOutput)) 'identity stop writes no raw-copied project'
 	Write-Output 'PASS: unresolvable project identity stops generation instead of emitting a raw copy'
+
+	# Delivery contract: docs/06-delivery.md defines the delivery set, AGENTS.md must enumerate the same
+	# files, and every template the set points at must exist. Without this gate an agent can finish a
+	# delivery that its own documentation forbids, or silently drop the README operation sheet.
+	$deliveryProblems = @(Get-DeliveryContractProblems -RepositoryRoot $repoRoot)
+	Assert-True ($deliveryProblems.Count -eq 0) ('the delivery set, the AGENTS.md folder contract and templates/ agree: ' + ($deliveryProblems -join '; '))
+	$contractRepoRoot = Join-Path $fixtureRoot 'DeliveryContractTemplate'
+	& git -C $repoRoot clone --quiet --local --no-hardlinks --no-tags --no-checkout $repoRoot $contractRepoRoot
+	if ($LASTEXITCODE -ne 0) { throw 'Could not create the isolated delivery-contract repository fixture.' }
+	& git -C $contractRepoRoot checkout --quiet --detach $templateRevision
+	if ($LASTEXITCODE -ne 0) { throw "Could not check out revision $templateRevision in the isolated delivery-contract repository fixture." }
+	# The gate is added in this change, so the revision under test can predate templates/README.md.
+	# Copy the changed files into the fixture so each mutation below is the only difference.
+	foreach ($relative in @('templates\README.md', 'templates\DELIVERY.json', 'templates\QA.md', 'docs\06-delivery.md', 'AGENTS.md')) {
+		Copy-Item -LiteralPath (Join-Path $repoRoot $relative) -Destination (Join-Path $contractRepoRoot $relative) -Force
+	}
+	$fixtureUtf8 = [System.Text.UTF8Encoding]::new($false)
+	Assert-True (@(Get-DeliveryContractProblems -RepositoryRoot $contractRepoRoot).Count -eq 0) 'the isolated delivery-contract fixture is quiet before mutation'
+	$fixtureReadme = Join-Path $contractRepoRoot 'templates\README.md'
+	$fixtureReadmeBody = [System.IO.File]::ReadAllText($fixtureReadme)
+	Remove-Item -LiteralPath $fixtureReadme -Force
+	$missingReadmeProblems = @(Get-DeliveryContractProblems -RepositoryRoot $contractRepoRoot)
+	Assert-True ((($missingReadmeProblems -join '; ').Contains('templates/README.md: the delivery set names it but the file is missing'))) 'deleting templates/README.md fails the gate and names the path'
+	[System.IO.File]::WriteAllText($fixtureReadme, $fixtureReadmeBody, $fixtureUtf8)
+	Assert-True (@(Get-DeliveryContractProblems -RepositoryRoot $contractRepoRoot).Count -eq 0) 'restoring templates/README.md returns the gate to silence'
+	$fixtureAgents = Join-Path $contractRepoRoot 'AGENTS.md'
+	$fixtureAgentsBody = [System.IO.File]::ReadAllText($fixtureAgents)
+	[System.IO.File]::WriteAllText($fixtureAgents, ($fixtureAgentsBody -creplace '(?m)^    README\.md QA\.md CREDITS\.md', '    QA.md CREDITS.md'), $fixtureUtf8)
+	Assert-True ((@(Get-DeliveryContractProblems -RepositoryRoot $contractRepoRoot) -join '; ').Contains('AGENTS.md: the Out/run_<runid>/ listing does not include README.md')) 'dropping README.md from the AGENTS.md folder contract fails the gate'
+	[System.IO.File]::WriteAllText($fixtureAgents, $fixtureAgentsBody, $fixtureUtf8)
+	$fixtureQa = Join-Path $contractRepoRoot 'templates\QA.md'
+	$fixtureQaBody = [System.IO.File]::ReadAllText($fixtureQa)
+	$fixtureQaRows = @([System.IO.File]::ReadAllLines($fixtureQa) | Where-Object { -not ($_.StartsWith('|') -and $_.Contains('README')) })
+	[System.IO.File]::WriteAllText($fixtureQa, ($fixtureQaRows -join "`r`n"), $fixtureUtf8)
+	Assert-True ((@(Get-DeliveryContractProblems -RepositoryRoot $contractRepoRoot) -join '; ').Contains('templates/QA.md: no row checks that the delivered README points at the same build')) 'dropping the README row from the QA template fails the gate'
+	[System.IO.File]::WriteAllText($fixtureQa, $fixtureQaBody, $fixtureUtf8)
+	$fixtureDelivery = Join-Path $contractRepoRoot 'templates\DELIVERY.json'
+	$fixtureDeliveryBody = [System.IO.File]::ReadAllText($fixtureDelivery)
+	$fixtureDeliveryData = $fixtureDeliveryBody | ConvertFrom-Json
+	$fixtureDeliveryData.PSObject.Properties.Remove('readme_receipt')
+	Write-FixtureJson $fixtureDelivery (ConvertTo-Json -InputObject $fixtureDeliveryData -Depth 10)
+	Assert-True ((@(Get-DeliveryContractProblems -RepositoryRoot $contractRepoRoot) -join '; ').Contains('templates/DELIVERY.json: readme_receipt is missing')) 'dropping readme_receipt from the delivery manifest fails the gate'
+	[System.IO.File]::WriteAllText($fixtureDelivery, $fixtureDeliveryBody, $fixtureUtf8)
+	Assert-True (@(Get-DeliveryContractProblems -RepositoryRoot $contractRepoRoot).Count -eq 0) 'every mutation restored leaves the delivery-contract gate silent'
+	Write-Output 'PASS: delivery set, AGENTS.md folder contract and templates agree, and each removal fails the gate'
 
 	$existingOutput = $outputPaths[3]
 	[System.IO.Directory]::CreateDirectory($existingOutput) | Out-Null

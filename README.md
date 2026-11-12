@@ -26,7 +26,7 @@ AIが短い映像または小さな鑑賞シーンを安全に作るための**�
 | 少人数online方式・費用・制約 | docs/08-online-foundations.md |
 | 動画モーキャプ（MediaPipe → VRMA → UE） | docs/09-video-mocap.md |
 
-`templates/` の記録を新規制作の `Out/run_<runid>/` へ複製して記入する。
+`templates/` の記録を新規制作の `Out/run_<runid>/` へ複製して記入する。納品セットの正本と各項目の配置先は[納品](docs/06-delivery.md)の表。`Out/run_<runid>/README.md`（操作表）は`templates/README.md`から作る。
 `Production/` は生成先の空プレースホルダ。通常Gitには制作物を入れない。
 
 ## 新規scaffold

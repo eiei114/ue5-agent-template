@@ -11,7 +11,7 @@ README → docs/01-start → 対象工程のdocs。現行Issue・owner指示・�
 3. 新規 `Production/<Name>_<runid>/` を排他的作成。既存なら停止。既存project再開は所有権照合後、LEASE.jsonをCreateNew相当で取得。
 4. 最初は追加素材なしの立方体・床・光・カメラ。小さいpreview→目視→調整→本番。UEテンプレートは当該hostの正規既存インストールから生成。
 5. 映像はフレーム・全編・継ぎ目・音を検査。実行版はShipping梱包後、別フォルダ展開から起動・操作・5分測定。
-6. CREDITS / QA / manifest / SHAを**同じ最終版**へ固定して納品。見た目未検品や旧版ZIPは完成でない。
+6. CREDITS / QA / manifest / SHA と`README.md`（操作表）を**同じ最終版**へ固定して納品。見た目未検品や旧版ZIPは完成でない。納品セットの正本と各項目の雛形は`docs/06-delivery.md`の表。
 7. 自分のrun所有processを同期回収し、自分のleaseだけ解放。共有Chromeは維持指示と所有権に従い触らない。
 
 ## セッション切断時も復旧・続行する
@@ -42,7 +42,7 @@ Production/<Name>_<runid>/
   Tools/               # 当該project用。秘密なし
   Out/run_<runid>/
     preview/ frames/ final/ staging/ extracted-check/ evidence/
-    QA.md CREDITS.md DELIVERY.json SHA256SUMS.txt
+    README.md QA.md CREDITS.md DELIVERY.json SHA256SUMS.txt
   LEASE.json           # active所有者のみ。Git外
 ```
 
