@@ -126,5 +126,16 @@ try {
 			Remove-Item -LiteralPath $root -Recurse -Force
 		}
 	}
-	if ($null -ne $suiteError) { throw $suiteError }
 }
+
+# The cases above deliberately run the gate in its failing shape, so $LASTEXITCODE is left at 1 on a
+# fully successful run. Every caller reads the exit code (CI throws when it is non-zero), so the
+# suite has to state its own result explicitly instead of inheriting the last gate invocation's.
+if ($null -ne $suiteError) {
+	$message = $suiteError.Exception.Message
+	if ($message -notlike 'ASSERT FAILED:*') { $message = "ASSERT FAILED: $message" }
+	Write-Output $message
+	exit 1
+}
+
+exit 0
