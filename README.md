@@ -6,7 +6,7 @@ AIが短い映像または小さな鑑賞シーンを安全に作るための**�
 ## 現在の範囲
 
 - UE5.8系の既存制作から手順を抽出。UE本体、Room Seven、Fab、Splice、Mixamo、NCSの素材実物は含まない。
-- 生成器はインストール済みUE公式`TP_FirstPerson` / `TP_BlankBP` / `TP_ThirdPerson` project templateから新規`.uproject`を排他的に作成する。`spectator-explore` / `vertical-loop`は生コピーでtemplateのprojectファイル名と`Modules[].Name`を維持し、`third-person-game`は`TemplateDefs.ini`によるmaterialize経路で`<ProjectName>.uproject`と同名moduleへ置換する。`EngineAssociation`は必ず非空で、生成後のprojectファイル名・module名・`EngineAssociation`は`template-lock.json`の`identity`に記録する（詳細は[構造と更新](docs/07-architecture.md)）。ソースrepoにはEngine由来Contentや`.uasset`を含めない。
+- 生成器はインストール済みUE公式`TP_FirstPerson` / `TP_BlankBP` / `TP_ThirdPerson` project templateから新規`.uproject`を排他的に作成する。3 recipeともtemplate自身の`Config/TemplateDefs.ini`を読み、`FoldersToIgnore` / `FilesToIgnore`を適用し、`SharedContentPacks`を`Templates/TemplateResources/<DetailLevel>/<Mount>/Content`から`Content/<Mount>`へ展開する。`spectator-explore` / `vertical-loop`はtemplateのprojectファイル名と`Modules[].Name`を維持し（生コピー経路）、`third-person-game`は`FolderRenames` / `ReplacementsInFiles`まで適用して`<ProjectName>.uproject`と同名moduleへ置換する（materialize経路）。`EngineAssociation`は必ず非空で、生成後のprojectファイル名・module名・`EngineAssociation`・展開した共有content pack一覧は`template-lock.json`に記録する（詳細は[構造と更新](docs/07-architecture.md)）。ソースrepoにはEngine由来Contentや`.uasset`を含めない。
 - `scripts/New-UETemplateScaffold.ps1`は共通set契約・recipe・`template-lock.json`を加える。実際のmap/Sequence/作品Contentは出力しない。
 - Null/LAN用の小さなC++ plugin scaffoldを同梱する。UE版ごとのbuild/PIE/MRQ結果はQAに記録し、未検証範囲を実装済み/検証済みと混同しない。
 - 追加インストール・課金・公開・Git pushは自動化しない。
@@ -41,7 +41,9 @@ cleanなtemplate checkoutと既存UE installを指定し、同じName/RunIdの�
   -ProjectDiff 'Shared map: /Game/EmberWatch/Maps/L_Environment'
 ```
 
-映像専用は`-Recipe vertical-loop`を選ぶ。三人称ゲーム（アクション・探索・街）は`-Recipe third-person-game`で、`<ProjectName>.uproject`／`Source/<ProjectName>`へ名前を置換した状態で生成する（ProjectNameはC++識別子）。`spectator-explore`と`vertical-loop`はtemplateを生コピーするのでprojectファイル名はtemplate名のまま（`TP_FirstPerson.uproject` / `TP_BlankBP.uproject`）で、`<ProjectName>.uproject`にはならない。どちらの場合も生成後の`template-lock.json`で`identity.project_file` / `identity.project_modules` / `identity.engine_association`、作品差分、`.uproject`のplugin設定を確認してからEditorで開く。templateのdescriptorと`Source/`が一致しない場合、generatorは生コピーを出さず停止する。更新で既存作品を再生成/上書きしない。
+映像専用は`-Recipe vertical-loop`を選ぶ。三人称ゲーム（アクション・探索・街）は`-Recipe third-person-game`で、`<ProjectName>.uproject`／`Source/<ProjectName>`へ名前を置換した状態で生成する（ProjectNameはC++識別子）。`spectator-explore`と`vertical-loop`はtemplateを生コピーするのでprojectファイル名はtemplate名のまま（`TP_FirstPerson.uproject` / `TP_BlankBP.uproject`）で、`<ProjectName>.uproject`にはならない。
+
+どのrecipeでも、出力`Content/`にはtemplate自身が宣言した共有content packが入る（`spectator-explore`なら`TP_FirstPerson`の`Characters` / `LevelPrototyping` / `Input` / `Weapons`）。既定mapが参照するassetを出力に持たない構成は成立しないので、`.uproject`ではなく`Config/DefaultEngine.ini`の`GameDefaultMap` / `EditorStartupMap`が`/Game/...`を指す場合は、その`.umap`が出力に存在することを生成時に確認する。無ければgeneratorは**停止**し、欠落pathを列挙する。生成後の`template-lock.json`で`identity.project_file` / `identity.project_modules` / `identity.engine_association`、`shared_content_packs`、`template_defs_ignore_rules`、作品差分、`.uproject`のplugin設定を確認してからEditorで開く。templateのdescriptorと`Source/`が一致しない場合、generatorは生コピーを出さず停止する。更新で既存作品を再生成/上書きしない。
 コード境界とNull/LAN手順は`templates/online/MulticaOnlineStarter/README.md`および[方式比較](docs/08-online-foundations.md)を参照。
 
 ## エンコード前の画像列検査
