@@ -2,7 +2,7 @@
   "schema_version": 1,
   "source_document": "docs/PROVENANCE.md",
   "guard": "scripts/Test-UETemplateProvenance.ps1",
-  "last_reviewed": "2026-11-03",
+  "last_reviewed": "2026-11-13",
   "bundled": [
     ".github/workflows/verify.yml",
     ".gitignore",

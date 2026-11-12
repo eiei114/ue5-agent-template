@@ -1,5 +1,10 @@
 # 変更履歴
 
+## Unreleased — 動画モーキャプ
+
+- `docs/09-video-mocap.md` を追加した。単眼のダンス動画から MediaPipe で体・手・顔の点を取り、VRM の骨の回転 → VRMA → UE（VRM4U）→ MV にする工程、単眼で取れない量の補い方、確認方法、1 本での実測、残る限界、権利の gate をまとめた。
+- 図は工程図・棒人間・腰の高さのグラフだけで、元動画・キャラの画像は入れていない。スクリプトは非公開の制作 repo にあり、本 repo には同梱しない。
+
 ## Unreleased — DOT-3122
 
 - `docs/PROVENANCE.md` は README の入口表で「実績と未確認点」の正本を名乗りながら、2026-10-31 の 15 ファイル時代で止まっていた。そのため `:18` の「UE生成/build/render/アセット取得scriptは同梱しない」が、同梱済みの `scripts/New-UETemplateScaffold.ps1`（generator）と `scripts/Test-UETemplateScaffold.ps1`、Null/LAN plugin、3 recipe、`docs/07` の 6 層と正面から矛盾していた。`:19` の「納品添付の検証記録を参照」は tracked file に解決せず、`2026-11-02` の実績（UE Editor build）も 1 件も無かった。
@@ -9,6 +14,7 @@
 - `docs/PROVENANCE.md` を現在の tree に合わせて書き直した。「script は同梱しない」を撤回し、同梱する層（generator・検品helper・回帰suite・3 recipe・用途部品・Null/LAN starter・CI）と同梱しないもの（UE 本体、build/render 本体、素材実物、生成物）を列挙した。`docs/07-architecture.md` の 6 層それぞれに「tracked での実体」「実装状態」「未検証範囲」の対応表を追加し、2026-11-02 の UE Editor build（実施者報告、exit 0 / 37 actions / 94.22 秒）を検証履歴に記録した。scope 日付は 2026-11-03 へ更新。`:19` の参照先を、実在する `docs/08-online-foundations.md` の「検証履歴」・`CHANGELOG.md`・各 Issue comment へ差し替えた。
 - `.github/workflows/verify.yml` に provenance guard とその回帰 suite の step を追加した。guard を CI に繋がないと、次の層追加で再び陳腐化する。
 - `docs/07-architecture.md` の継続改善節から guard を参照し、層・area の追加と同じ commit で inventory を更新する契約を明記した。
+- `origin/main` の取り込み時、`docs/09-video-mocap.md`（動画モーキャプ）を共通基盤の実体と検証履歴に取り込んだ。CHANGELOG の `Unreleased` 競合は両項目を並べて解消した（どちらも同じ `Unreleased` 行にすでに並んでいた既存項目の再編）。
 
 実測（本 host、2026-11-03、`pwsh 7.6.9` と Windows PowerShell 5.1 の両方）：修正前の tree に guard を当てると `FAIL: R1: not_bundled pattern 'scripts/*' matches tracked path 'scripts/New-UETemplateScaffold.ps1'` で exit 1、修正後 tree は `PASS: R1`〜`R4` で exit 0。`scripts/Test-UETemplateProvenance.Tests.ps1` は 10 の負例/正例 assert group と最終の網羅確認を合わせて 11 行 PASS・exit 0、`scripts/Test-UETemplateScaffold.ps1` は 8 assertion group PASS / exit 0（回帰なし）。`0` 件の `git status --porcelain --untracked-files=all` が実行前後で不変。
 

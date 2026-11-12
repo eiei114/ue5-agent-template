@@ -1,6 +1,6 @@
 # 根拠・検証範囲
 
-本ファイルは repo 自身の「**実績と未確認点**」の正本である（[README](../README.md) の入口表）。scope 日付は 2026-11-03（JST）。以後 tree が変わったら同じ PR で更新する。
+本ファイルは repo 自身の「**実績と未確認点**」の正本である（[README](../README.md) の入口表）。scope 日付は 2026-11-13（JST）。以後 tree が変わったら同じ PR で更新する。
 
 同梱物の有無は散文ではなく [PROVENANCE.inventory.json](PROVENANCE.inventory.json) を機械可読な正本とし、[scripts/Test-UETemplateProvenance.ps1](../scripts/Test-UETemplateProvenance.ps1) が tracked file と照合する。散文側の「同梱しない／する」は inventory の写しであり、判定は guard の結果で行う。
 
@@ -15,6 +15,7 @@
 | DOT-2935 / thread 01a18d63-d4e7-7770-b999-11416e304647 | CLI実体/RoomSeven map区別、Splice同期basename、play8/hitch | sync scriptフルpath/引数未確定。音の聴取なし |
 | DOT-2935 / thread 01a18d62-d52b-712c-ae6f-5c2f430671d9 | H264/AAC・10秒MP4、版ずれ防止、未所有credit gate | 当時の5分測定は旧版。素材実物を流用不可 |
 | DOT-2936本文 / DOT-2941記録 | Windows主導準備、Mac SDK・実行先不足、sourceと.app区別 | Windows単独.app成功なし。キット受入は実Mac完成でない |
+| 制作 repo `charakuru-dance-ue`（非公開）`docs/video-to-animation.md`・`docs/mediapipe-skeleton-workflow.md`、2026-11-11〜12 | 動画モーキャプの工程・補い方・実測（docs/09-video-mocap.md） | 1 本の動画・1 体のキャラ・UE 5.9 / VRM4U での実測。UE 5.8 系・別動画・別キャラは未検証 |
 | Epic公式docs（各工程のURL、2026-10-31参照） | packaging段階、MRQ前提、UE5.8 Xcode表 | 公式仕様は当該hostの実証でない |
 
 ## このrepo自体
@@ -29,7 +30,7 @@
 - **回帰suite**：`scripts/Test-UETemplateScaffold.ps1`、`scripts/Test-UERenderArtifacts.ps1`、`scripts/Test-UETemplateProvenance.ps1`
 - **ジャンルrecipe と用途部品**：`templates/recipes/common/SET.md`、`spectator-explore`（`Play.md`＋`Capture.md`＋`recipe.json`）、`vertical-loop`（`Capture.md`＋`recipe.json`）、`third-person-game`（`Play.md`＋`Capture.md`＋`recipe.json`）
 - **online 基盤（Null/LAN starter plugin）**：`templates/online/MulticaOnlineStarter/`（`.uplugin`、C++ module/Build.cs、GameMode/GameState/PlayerController/SessionSubsystem、UE automation test）
-- **CI**：`.github/workflows/verify.yml`（scaffold suite と render-artifact suite を windows-latest で実行）
+- **CI**：`.github/workflows/verify.yml`（provenance guard とその回帰 suite、scaffold suite、render-artifact suite を windows-latest で実行）
 - **生成先の空プレースホルダ**：`Production/PLACEHOLDER.md`、`.gitignore`
 
 ### 同梱しない
@@ -49,7 +50,7 @@
 
 | 層（07-architecture の宣言） | tracked での実体 | 実装状態 | 未検証範囲 |
 |---|---|---|---|
-| 共通基盤 | `docs/01`〜`docs/06`、`AGENTS.md`、記録テンプレート、検品helper | 文書・書式・画像列helper は実装済み。`Test-UERenderArtifacts.ps1` は合成PNG fixture で PASS | 実 MRQ 出力・ffprobe・映像/音/ループ継ぎ目の実測（Unverified Scope） |
+| 共通基盤 | `docs/01`〜`docs/06`・`docs/09`（動画モーキャプ）、`AGENTS.md`、記録テンプレート、検品helper | 文書・書式・画像列helper は実装済み。`Test-UERenderArtifacts.ps1` は合成PNG fixture で PASS | 実 MRQ 出力・ffprobe・映像/音/ループ継ぎ目の実測（Unverified Scope） |
 | ジャンルrecipe | `templates/recipes/spectator-explore/`、`third-person-game/` | `spectator-explore` は生コピー、`third-person-game` は `TemplateDefs.ini` による materialize で実装済み | 実 Engine install での materialize 結果、生成物の Editor build／Play（生成器 fixture までしか検証していない） |
 | 用途部品 | 各 recipe の `Play.md`／`Capture.md`、`templates/recipes/common/SET.md` | プレイ／撮影の差分を文書として分離済み | 実際に同一 set から両入口を開いた実測なし |
 | 映像専用 | `templates/recipes/vertical-loop/`（capture-only） | 生成器・docref とも実装済み | MRQ 実行、尺・縦解像度・fps・出力先の実測、ループ継ぎ目の目視 |
@@ -65,6 +66,7 @@
 | 2026-11-01 | `TP_FirstPersonEditor Win64 Development` compile | PASS（UE 5.8.4 / CL 58902052、MSVC 14.44、37 actions、58.62 秒） | 実施者報告（[docs/08](08-online-foundations.md) の検証履歴）。本 round 再実行なし |
 | 2026-11-02 | CodeRabbit 指摘の追加修復後の Editor build | 実施者報告では exit 0 / 37 actions / 94.22 秒、scaffold suite は通常・detached 両方で 5 assertion groups PASS | 実施者報告。`PROVENANCE.md` はこの実績を長く持っていなかったため本行で記録した。本 round で UE は起動していない |
 | 2026-11-02 | project identity 契約と負例 | PASS（7 assertion groups、合成 Engine fixture） | 実施者報告（[docs/08](08-online-foundations.md)） |
+| 2026-11-11〜12 | 動画モーキャプ（MediaPipe → VRMA → UE 5.9/VRM4U）、[docs/09](09-video-mocap.md) の実測 | 実施者報告。踊ってみた動画 1 本・571 フレーム・キャラ 1 体を UE 5.9 で通した。UE 5.8 系・別動画・別キャラは未検証 | 実施者報告（非公開の制作 repo `charakuru-dance-ue` の記録を抽出）。本 round で UE は起動していない |
 | 2026-11-03 | `docs/PROVENANCE.md` と tree の一致 | 本 round の実測。guard 追加前の `main`（`a9e31bc`）では R1 が `scripts/New-UETemplateScaffold.ps1` を検出して FAIL、修正後 tree では exit 0 | 本 round 実測（PowerShell と git のみ） |
 
 UE の install / compile / Editor / PIE / MRQ / render / Shipping / packaged build は本 round で一切実行していない。上の UE 行はすべて実施者報告の引用であり、本 round の受入ではない。
