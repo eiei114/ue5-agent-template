@@ -14,7 +14,7 @@
   - provenance群を追加。fixture remoteを持つ使い捨てrepoで「push済み / 未push / remote無し / bundle clone」の4状態を**実際に生成**し、既定の停止とlockの中身をassertする。
   - `template_commit`のassertは「40桁hexか」から**fixture remoteからそのSHAを実際に`git fetch`できること**へ置き換え、全ゼロSHAがkillされることを固定した（旧suiteはM6変異を見逃していた）。
   - `template_repository`のassertは0件だったため、実測origin・source kind・`published`の3値のassertを追加した。
-  - 既存群（dirty template / game+capture / vertical-loop / path traversal / engine build identity / 既存出力保護）は回帰で維持し、suiteは13群PASS。
+  - 既存群（dirty template / game+capture / vertical-loop / path traversal / engine build identity / 既存出力保護）は回帰で維持し、suiteは17群PASS（PR #20のbase時点13群＋provenance 4群。両shell実測、2026-11-12）。
 - `docs/07-architecture.md`: lockの`template_*`の意味と、`null` = 未検査で合格ではないことを明記。`docs/01-start.md` / `AGENTS.md` / `README.md`: 同じ契約と、lockを第三者へ渡す前の条件を記載。
 
 旧lockは**書き換えない**。`schema_version: 4`のlockが`template_commit_published: true`を持つ場合だけ、`template_commit`がlockの名指しするrepoから取得できると読める。`schema_version: 3`以下のlockはこの保証を持たないので、新契約が必要な作品は新RunIdで再生成し、旧lockとparse後のfieldで比較して採用する。
