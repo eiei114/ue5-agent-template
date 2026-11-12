@@ -29,6 +29,14 @@
 
 **Unverified Scope**: UE 実機（compile / PIE / MRQ / Shipping）は実行していない。本変更は UE を起動しない PowerShell 層のみで、実 UE 5.8 系 install を `-ProjectDirectory` にした実 project 生成は未実行。
 
+## Unreleased — DOT-3405
+
+- `MulticaOnlineSessionSubsystem.cpp` の `RegisterDeferredCreateCleanup` / `RegisterDeferredJoinCleanup` は、callbackの中で自分の `FDelegateHandle` をclearしていた。UE 5.8の `OnlineDelegateMacros` はBroadcast前にmulticast delegateをコピーせず、`MulticastDelegateBase::RemoveDelegateInstance` はinvocation listをbroadcast中にlockしていても該当entryを即 `Unbind()` して破棄する。そのためclearの瞬間に実行中のlambda（capturesごと）が消え、直後の `DestroySession(Name)` はuse-after-freeになっていた。
+- 両関数を `MulticaOnlineDeferredSessionCleanup.cpp` の `RegisterDeferredCreateSessionCleanup` / `RegisterDeferredJoinSessionCleanup` へ移し、DOT-3295の `MulticaOnlineDeferredDestroyCleanup.cpp` と同じ形（provider操作を `TSharedRef` のoperation surfaceに閉じ込め、callback内でcapturesをローカルへコピーし、その後はcaptureに触らない）に揃えた。`Deinitialize()` からの呼び出しはoperation surfaceを作って渡す形になる。
+- 回帰test `Multica.Online.Session.DeferredCreateJoinCleanup` を追加した。既存のdestroy用fakeはdelegateを値コピーしてから `ExecuteIfBound` するためこの欠陥を検出できない（clear後もコピー側のcapturesは生きている）。新しいfakeはprovider bindingをheap slotに置き、in-placeでbroadcastし、clearが「いま実行中のbinding」を消したことを記録する。あわせてdestroy要求時点のoperation surfaceの共有owner数が2（testの1 + callbackの1）であることをassertするので、clear後にcaptureを読むと落ちる。
+
+確認: `scripts/Test-UETemplateScaffold.ps1` と `scripts/Test-UERenderArtifacts.ps1` は本変更の対象外（C++のみ）。UE 5.8 build/automationの実測結果はPRに記載する。
+
 ## Unreleased — 動画モーキャプ
 
 - `docs/09-video-mocap.md` を追加した。単眼のダンス動画から MediaPipe で体・手・顔の点を取り、VRM の骨の回転 → VRMA → UE（VRM4U）→ MV にする工程、単眼で取れない量の補い方、確認方法、1 本での実測、残る限界、権利の gate をまとめた。
