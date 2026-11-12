@@ -1,5 +1,18 @@
 # 変更履歴
 
+## Unreleased — DOT-3208
+
+- 非materialize recipe（`spectator-explore` / `vertical-loop`）が生成projectのidentityを一度も書いていなかった。templateの`Config/DefaultGame.ini`をバイト単位でコピーするだけなので、別`ProjectName`・別RunIdの2つの生成物が同じ`ProjectID`を持ち、`ProjectName`は`First Person Template`のまま、`vertical-loop`はidentity block無しだった。materialize経路も`ProjectID=`/`ProjectName=`の**行だけ**を置換しており、templateが短い`[ProjectSettings]` headerで持つ場合はengineの読まないセクションに書いていた。
+- generatorは3 recipe すべてで`Config/DefaultGame.ini`のidentityを`[/Script/EngineSettings.GeneralProjectSettings]`配下に確定させる。短いheaderのidentity行は長い名前のセクションへ移し、identity以外を持たない短いheaderは落とす。`TP_BlankBP`のようにidentity blockが無いtemplateではセクションごと作る。同一keyが複数セクションに散在する等、一意に畳めない形では停止し、対象ファイル・セクション・keyを列挙する。書き込み後は実ファイルを読み戻して、長いheader配下に両keyがあることを確認する。
+- `ProjectID`は`-ProjectName`から導出する。同じ名前の再生成でlockが再現し、別名では異なるIDになる。生コピーrecipeもtemplateの値を引き継がない。
+- `template-lock.json`は`schema_version: 3`で`default_game_ini_identity`（`section` / `project_id` / `project_name` / `normalized_from_section` / `created_section`）を記録する。
+- `scripts/Test-UETemplateScaffold.ps1`のfixtureは`TP_FirstPerson`（短いheader）と`TP_BlankBP`（2 byte）に実在と同じ`Config/DefaultGame.ini`を持たせた。3 recipe すべてで「長いセクション名の下に`ProjectID`/`ProjectName`がある」「短いheader配下にidentityが残っていない」「別名で生成した2 projectの`ProjectID`が異なる」「同名再生成で`ProjectID`が一致する」「lockの`default_game_ini_identity`が実ファイルと一致する」をassertする。identityが2セクションに重複したtemplateは停止し、セクション名を列挙する負例も追加した。
+- `docs/01-start.md`（preflightの完了条件と生成後の照合）、`docs/07-architecture.md`（identity契約とlock）、`AGENTS.md`（フォルダ契約）を同じ契約へ揃えた。
+
+実測（本host、Windows 10.0.26300、pwsh 7.6.9、UE 5.8.4 CL 58902052。変更前のgeneratorは`8f586157`のcheckoutで再現し、engine installは既定の`C:/Program Files/Epic Games/UE_5.8`を使った）: 変更前のgeneratorに新しいsuiteを当てると `ASSERT FAILED: spectator-explore: ProjectID sits under /Script/EngineSettings.GeneralProjectSettings` で落ちる。変更後は9 group PASS / exit 0。実installの`TP_FirstPerson`から生成した`ScoutProbe`/`EmberWatch`は`DefaultGame.ini`のSHA256が`a0a66eda…`で一致し`[ProjectSettings]`のままで`ProjectID`も同一だったが、変更後は前者`d0cec520…` / 後者`d4d8a8fa…`と別のIDを持つ長いheaderになった。`vertical-loop`は変更前CRLFのみ（`7eb70257…`）で、変更後は`6d23a0da…`のidentity block付き。`third-person-game`は`db6237c5…`で`normalized_from_section: null`（templateが既に長いheader）。
+
+移行: 既存の生成projectは自動改名・自動移行しない。`default_game_ini_identity`が無い旧lockの作品は、必要なら同じ`ProjectName`で新しいRunIdへ再生成し、lock・`Config/DefaultGame.ini`・作品差分を比較してから差し替える。`ProjectID`重複がZen/DDC/crash reportingに与える実害、UE Editor/PIE/MRQ/Shipping、packaged buildは本変更でも未検証（Unverified）。
+
 ## Unreleased — 動画モーキャプ
 
 - `docs/09-video-mocap.md` を追加した。単眼のダンス動画から MediaPipe で体・手・顔の点を取り、VRM の骨の回転 → VRMA → UE（VRM4U）→ MV にする工程、単眼で取れない量の補い方、確認方法、1 本での実測、残る限界、権利の gate をまとめた。

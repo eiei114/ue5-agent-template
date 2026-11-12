@@ -3,6 +3,7 @@
 ## Preflightの完了条件
 
 `templates/QA.md`に日時、Issue/run、hostname/OS、UE実version、GPU/VRAM、disk/RAM、既存toolchain、モデル指定/実効値、利用枠の観測範囲を記録。不明を0や無料と扱わない。
+生成projectの`Config/DefaultGame.ini`には`ProjectID`/`ProjectName`が`[/Script/EngineSettings.GeneralProjectSettings]`配下にあることを`template-lock.json`の`default_game_ini_identity`と実ファイルで照合する。短い`[ProjectSettings]` headerのままの生成物を「完了」にしない（engineはそのheaderを読まない）。
 Multicaのissue runs / runtime activity（先に各--help）と現地UE/renderプロセス・project leaseを確認。onlineはbuild可能の証拠ではない。
 Windows offlineなら新規buildをqueueして成功扱いしない。MacBookは許可済みApple工程の候補、miniは軽い計画・文書確認のみ。
 
@@ -30,7 +31,7 @@ recipeの正本は各 [`recipe.json`](../templates/recipes/)、選択可能な�
 
 例の`RunId`は形式を示す値なので、実行時には新しい一意のrun IDへ置き換える。
 
-`-Recipe`には上表のいずれかを指定する。実行前に既存UEのversion/path、当該templateと必要なtoolchainを確認し、`Production/<ProjectName>_<runid>/`が未使用であることを確かめる。生成後は`template-lock.json`の`identity`と`.uproject`のplugin設定を照合してからEditorで開く。generatorはidentityの照合に失敗したら停止し、既存projectを上書きしない。実際のmap/Sequence/作品Contentは生成しない。
+`-Recipe`には上表のいずれかを指定する。実行前に既存UEのversion/path、当該templateと必要なtoolchainを確認し、`Production/<ProjectName>_<runid>/`が未使用であることを確かめる。生成後は`template-lock.json`の`identity`と`default_game_ini_identity`、`.uproject`のplugin設定を照合してからEditorで開く。generatorはidentityの照合に失敗したら停止し、既存projectを上書きしない。実際のmap/Sequence/作品Contentは生成しない。
 
 ### 手動fallback：Project Browserを使う場合
 
