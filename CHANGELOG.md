@@ -17,6 +17,11 @@
 
 **Unverified Scope**: 実 UE 5.8 系 install を `-EngineRoot` にした実 project 生成・Editor build・PIE・MRQ は本 turn で実行していない。根拠は合成 Engine fixture と PowerShell 実測のみ。`docs/06-delivery.md` の `SHA256SUMS.txt` 検証 cwd との整合（DOT-3065 の領域）は未検証。
 
+## Unreleased — 動画モーキャプ
+
+- `docs/09-video-mocap.md` を追加した。単眼のダンス動画から MediaPipe で体・手・顔の点を取り、VRM の骨の回転 → VRMA → UE（VRM4U）→ MV にする工程、単眼で取れない量の補い方、確認方法、1 本での実測、残る限界、権利の gate をまとめた。
+- 図は工程図・棒人間・腰の高さのグラフだけで、元動画・キャラの画像は入れていない。スクリプトは非公開の制作 repo にあり、本 repo には同梱しない。
+
 ## Unreleased — DOT-3395
 
 - 画像列QA helperは、`FramesDirectory`またはreport親pathにjunction/symlink等のreparse pointが含まれる場合に、実効出力境界を確認できないため検査前に拒否する。reportがjunction経由で画像列へ書き込まれるのを防ぐ回帰fixtureを追加した。
