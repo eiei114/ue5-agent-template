@@ -5,6 +5,7 @@
 - `scripts/New-UETemplateScaffold.ps1` の `Read-TemplateDefs` が `TemplateDefs.ini` の区切り文字の空白に依存していたのを直した。`FolderRenames` の `From=` / `To=` の間と `Extensions=(` / `MountName="` の直後に、任意個の空白・タブを許容する。
   - 実測: 本hostの実 install `UE_5.8`（`Engine/Build/Build.version` = 5.8.4 / CL 58902052）の `Templates/*` 34本のうち `Config/TemplateDefs.ini` を持つ32本を読み、うち**15本**が `FolderRenames=(From="…", To="…")`（カンマ直後に空白）形式で書いている。`Source/` を持つ spaced 形式の template は `TP_Blank` と `TP_SIM_Blank` の2本で、`TP_Blank` を `materialize_project: true` の recipe で実体化すると、宣言された改名規則が**無言で捨てられ**、`.uproject` が宣言する module 名と `Source/` の実ディレクトリ名が食い違った tree を exit 0 で出力していた（`aa11370`）。
   - 変更は**受理する形式を増やすだけで、既存の受理形式を狭めていない**。キー名・括弧内の照合は従来どおり PowerShell 既定の大文字小文字を区別しない比較を維持し（以前に読めた表記が今は読めない、という縮小を起こさない）、セクション見出しの外にある行も従来どおり適用する（以前に受理した file を落とさない）。
+  - パターン末尾の `$` を付けた版を一度入れたが、旧 reader は `$` を持っていなかったため、`FolderRenames=(…) ; note` のように**規則の後ろに trailing text が付いた行**は旧 reader が適用していたのに新 reader が捨てるという狭小化になっていた。末尾の `$` を外して旧と同じ「規則の終わりまでで一致、後続 text は無視」に戻してある（DOT-3552 の照合で検出、test で固定）。`EditDetailLevelPreference` の値も旧どおり「閉じ引用符までの任意文字列」に戻し、`"High Quality"` のような quoted multi-word が既定値に落ちる狭小化を防いでいる（値は path の一部になるので前後の空白だけ Trim する）。
 - 解釈できなかった既知キー行を無言で捨てるのを止めた。読者が適用すると称するキー（`FoldersToIgnore` / `FilesToIgnore` / `FolderRenames` / `ReplacementsInFiles` / `SharedContentPacks` / `EditDetailLevelPreference`）で、かつ \[/Script/GameProjectGeneration.TemplateProjectDefs\] セクション内にある行が規則を作らなかった場合、**警告して run を継続**する（停止ではなく警告を選んだ理由: 実 engine template には本 reader が未実装のキーや書式が残っており、停止にすると install 済み template を丸ごと拒否してしまう。「行が黙って捨てられる」ことを成功にしないのが本質で、誤った tree を出す歯止めは次項の不変条件検査が担う）。警告には file path と行番号・行内容を含める。
   - `FilenameReplacements` は警告対象に**含めない**。同キーの実装要否は materialization 忠実性の別 issue（DOT-3135）が持つ層で、ここでは適用も報告もしない（二重実装しない）。
 - test を両形式で回すようにした。`scripts/Test-UETemplateScaffold.ps1` は `", To="` 形式と `",To="` 形式の `FolderRenames` を1つの fixture に同居させ、両方で `Source/<ProjectName>/<ProjectName>.Build.cs` へ改名されること、`Source/` 以外の改名、spaced な `FoldersToIgnore` / `ReplacementsInFiles` / `SharedContentPacks` / `EditDetailLevelPreference` が効くこと、解釈不能な `SharedContentPacks` 行が警告になることを assert する。さらに、区切り記号を落とした `FolderRenames` 行を持つ fixture で (a) 警告が出る、(b) run が project identity 検査で**停止**する、(c) 停止 message が未一致 path を名指しすることを assert する。
@@ -17,10 +18,10 @@
 |---|---|
 | セクション | `[Section]` 行で切り替え。規則の適用は従来どおり全セクション。警告の報告だけを `[/Script/GameProjectGeneration.TemplateProjectDefs]` に限定 |
 | 区切り | `=` の前後、`(` の直後、`,` の前後、`)` の直前に任意個の空白・タブ |
-| `FolderRenames` | `(From="…", To="…")` / `(From="…",To="…")` / `( From = "…" , To = "…" )` |
+| `FolderRenames` | `(From="…", To="…")` / `(From="…",To="…")` / `( From = "…" , To = "…" )`。規則の後ろに trailing text が付いた行も旧どおり適用する |
 | `ReplacementsInFiles` | `(Extensions=("cpp","h"))` / `( Extensions = ( "cpp" , "h" ) )` |
 | `SharedContentPacks` | `(MountName="X",DetailLevels=(…))` / `( MountName = "X" , … )` |
-| `EditDetailLevelPreference` | `"High"` / `High` / `= "High"`（前後の空白つき） |
+| `EditDetailLevelPreference` | `"High"` / `High` / `= "High"`（前後の空白つき）。quoted な複数語の値も旧どおり受理 |
 | 解釈不能な既知行 | 警告（`TemplateDefs.ini rule was not understood …`）を出して run を継続。生成物が実際に壊れていれば project identity 検査が非 0 で停止する |
 
 本契約は Epic の `TemplateDefs.ini` 文法仕様に**基づかない**。公式 docs は `LocalizedDisplayNames` / `LocalizedDescriptions` / `Categories` しか記述しておらず、区切り空白の許容可否は公開されていない。根拠は「本hostの実 install の template が実際にその形式で書いており、本 repo の解析器がそれを捨てていた」ことだけである。

@@ -346,12 +346,14 @@ try {
 		'FilesToIgnore="Config/TemplateDefs.ini"',
 		'FolderRenames=(From="Source/%TEMPLATENAME%", To="Source/%PROJECTNAME%")',
 		'FolderRenames=(From="Content/Template",To="Content/Project")',
+		'FolderRenames=(From="Content/Template2",To="Content/Project2") ; trailing text the previous reader accepted',
 		'ReplacementsInFiles=(Extensions=("cpp","h","ini","cs"), From="%TEMPLATENAME%", To="%PROJECTNAME%", bCaseSensitive=false)',
 		'SharedContentPacks=( MountName = "SpacedPack" , DetailLevels=("Standard") )',
 		'SharedContentPacks=(MountName=Variant_Shooter, DetailLevels=("Standard"))',
 		'EditDetailLevelPreference = "Standard"'
 	) -join "`r`n")
 	Write-FixtureJson (Join-Path $formatTemplateRoot 'Content\Template\Lvl_Loose.umap') 'binary Content/Template'
+	Write-FixtureJson (Join-Path $formatTemplateRoot 'Content\Template2\Lvl_Trailing.umap') 'binary Content/Template2'
 	Write-FixtureJson (Join-Path $formatTemplateRoot 'Media\Ignored.png') 'ignored'
 	Write-FixtureJson (Join-Path $fixtureEngine 'Templates\TemplateResources\Standard\SpacedPack\Content\Packed\P.uasset') 'spaced pack'
 
@@ -373,12 +375,17 @@ try {
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $formatOutput "Source\$formatTemplateName"))) 'a spaced FolderRenames tuple leaves no template module directory behind'
 	Assert-True (Test-Path -LiteralPath (Join-Path $formatOutput 'Content\Project\Lvl_Loose.umap')) 'an unspaced FolderRenames tuple outside Source is also applied'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $formatOutput 'Content\Template'))) 'the unspaced FolderRenames source folder is gone'
+	# Parity guard: the previous reader accepted a rule followed by trailing text because its pattern
+	# was unanchored. Widening must not narrow, so that line still applies and is still not reported.
+	Assert-True (Test-Path -LiteralPath (Join-Path $formatOutput 'Content\Project2\Lvl_Trailing.umap')) 'a FolderRenames rule followed by trailing text is still applied'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $formatOutput 'Content\Template2'))) 'the trailing-text FolderRenames source folder is gone'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $formatOutput 'Media'))) 'spaced FoldersToIgnore is applied'
 	Assert-True (Test-Path -LiteralPath (Join-Path $formatOutput 'Content\SpacedPack\Packed\P.uasset')) 'spaced SharedContentPacks and spaced EditDetailLevelPreference are applied'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $formatOutput 'Content\Variant_Shooter'))) 'an uninterpretable SharedContentPacks line applies nothing'
 	$formatWarningText = @($formatWarnings) -join "`n"
 	Assert-True ($formatWarningText.Contains('not understood')) 'an uninterpretable known-key line is reported as a warning instead of being skipped silently'
 	Assert-True ($formatWarningText.Contains('MountName=Variant_Shooter')) 'the warning names the line that was dropped'
+	Assert-True (-not $formatWarningText.Contains('trailing text')) 'a rule the previous reader accepted is not reported as uninterpretable'
 	$formatDescriptor = [System.IO.File]::ReadAllText((Join-Path $formatOutput "$formatProjectName.uproject")) | ConvertFrom-Json
 	Assert-True ($formatDescriptor.Modules[0].Name -ceq $formatProjectName) 'a spaced FolderRenames tuple keeps descriptor and Source/ in agreement'
 	$formatLock = [System.IO.File]::ReadAllText((Join-Path $formatOutput 'template-lock.json')) | ConvertFrom-Json

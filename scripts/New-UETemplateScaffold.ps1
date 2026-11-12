@@ -42,7 +42,9 @@ function Read-TemplateDefs([string]$Path, [string]$TemplateName) {
 	# The installed engine templates write the same rule two ways — `FolderRenames=(From="...", To="...")`
 	# and the unspaced `,To="` form — so whitespace around `=` and between tuple fields is optional here.
 	# This only widens what parses: a rule this reader drops is applied by nobody, and the output then
-	# keeps the template's own module directory while the descriptor claims the project name.
+	# keeps the template's own module directory while the descriptor claims the project name. The two
+	# patterns therefore stay unanchored at the end, as before: a rule followed by trailing text was
+	# applied by the previous reader, and nobody can tell whether some installed template relies on it.
 	$ruleSection = '[/Script/GameProjectGeneration.TemplateProjectDefs]'
 	$parsedKeys = @('FoldersToIgnore', 'FilesToIgnore', 'FolderRenames', 'ReplacementsInFiles', 'SharedContentPacks', 'EditDetailLevelPreference')
 	$section = $null
@@ -75,7 +77,7 @@ function Read-TemplateDefs([string]$Path, [string]$TemplateName) {
 				}
 			}
 			'FolderRenames' {
-				if ($trimmed -match '^FolderRenames[ \t]*=[ \t]*\([ \t]*From[ \t]*=[ \t]*"([^"]+)"[ \t]*,[ \t]*To[ \t]*=[ \t]*"([^"]+)"[ \t]*\)[ \t]*$') {
+				if ($trimmed -match '^FolderRenames[ \t]*=[ \t]*\([ \t]*From[ \t]*=[ \t]*"([^"]+)"[ \t]*,[ \t]*To[ \t]*=[ \t]*"([^"]+)"[ \t]*\)') {
 					$defs.FolderRenames += ,@($Matches[1].Replace('%TEMPLATENAME%', $TemplateName), $Matches[2])
 					$wasRead = $true
 				}
@@ -93,8 +95,11 @@ function Read-TemplateDefs([string]$Path, [string]$TemplateName) {
 				}
 			}
 			'EditDetailLevelPreference' {
-				if ($trimmed -match '^EditDetailLevelPreference[ \t]*=[ \t]*"?([^"\s]+)"?[ \t]*$') {
-					$defs.DetailLevel = $Matches[1]
+				# The value stays any run of characters up to the closing quote, as before, so a quoted
+				# multi-word preference ("High Quality") is still read instead of silently reverting to
+				# the default; surrounding spaces are trimmed because the value becomes a path segment.
+				if ($trimmed -match '^EditDetailLevelPreference[ \t]*=[ \t]*"?([^"]+)"?$') {
+					$defs.DetailLevel = $Matches[1].Trim()
 					$wasRead = $true
 				}
 			}
