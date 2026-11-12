@@ -1,5 +1,19 @@
 # 変更履歴
 
+## Unreleased — DOT-3462
+
+- 画像列QA helper `scripts/Measure-UERenderArtifacts.ps1` に、期待indexの**格子**を宣言する入力を追加した。`-FrameStep`（既定1、`ValidateRange(1, …)`）と `-FrameNumberOffset`（既定0）。期待indexは`StartNumber + FrameNumberOffset + k*FrameStep`（`EndNumberExclusive + FrameNumberOffset`未満）で組む。**既定は従来挙動と完全に同一**（step=1/offset=0 は連番）。
+- MRQの`Output Frame Step`>1で描いた正当なrenderは連番ではない。従来のhelperにはその宣言手段が無く、宣言rangeをどう選んでもPASS 0件（69通り総当りで全てfail）、「120枚欠番」という誤診になった。`-FrameStep 2 -EndNumberExclusive 240`は、120枚（`0,2,…,238`）の格子でpass（exit 0）する。
+- 宣言していない格子を「欠番」と呼ばない。実ファイルが公差>1の等差数列で、宣言stepと一致しない場合、failの主因を`missing_frames`ではなく**`index_lattice_mismatch`**とし、観測公差と宣言stepと「では`-FrameStep <公差>`を宣言せよ」を併記する。reportに`input.frame_step` / `input.frame_number_offset` / `input.index_lattice`、`expectations.first_index` / `last_index` / `frame_step` / `index_lattice`、`index_lattice.declared_step` / `observed_stride` / `mismatch`を追加した。`StartNumber`と`EndNumberExclusive`の意味は変えていない（MRQのrender範囲＝元のframe番号、終端排他）。`-FrameNumberOffset`は期待indexとrange判定の基準を両方とも`FrameNumberOffset`だけずらす（宣言rangeの幅は変わらない）。
+- 逆方向も同じ扱い：連番の列を`-FrameStep 2`で宣言すれば`index_lattice_mismatch`。handle相当（宣言range外の連続index）はstepの不一致ではなく`out_of_range_frames`のまま。
+- `scripts/Test-UERenderArtifacts.ps1` にgroup 13（lattice）を追加した。step格子120枚の宣言pass、同じ格子の未宣言=**`missing_frames`ではない**`index_lattice_mismatch`、offset 10の格子（`10,12,…,248`）、連番をstep=2で宣言した逆方向、handle相当のout-of-rangeの5ケース。既存13 groupは1つも削っていない。fixtureは4件増（17→21、入力不変gateのassertも21に更新）。
+- `docs/05-qa.md`: helper例に`-FrameStep` / `-FrameNumberOffset`を追加し、MRQの実値をQAに記録して同じ値を渡す順序を明記。独立判定表に「成果物の不備」と「宣言格子の不一致」の区別を追加。encode例を連番用と格子用に分け、**格子を`%06d`連番templateに渡すとffmpegがexit 0のまま1frameのMP4を作る**こと（`nb_read_frames=1` / `duration=0.033333`の実測）と、格子は新しい連番へ振り直してからencodeする手順を書いた。`-pattern_type glob`や`concat`を格子のencode手段に使わない旨も実測付きで書いた。
+- `templates/QA.md`: 画像列検査の記録欄にMRQの`Output Frame Step` / `Frame Number Offset` / `Handle Frame Count` / `Zero Pad Frame Numbers` / `File Name Format`の実値と、helperへ渡した値の記録を追加（1行）。
+
+本 host（Windows 10.0.26300、`pwsh 7.6.9`、`ffprobe` / `ffmpeg` 8.1.2-full_build-www.gyan.dev）の実測：baseline（変更前）ではstep-2格子（120枚、`0,2,…,238`）が宣言range 9 start × 11 end = 69通りすべてexit 1 / PASS 0件、同じ120枚を連番`0..119`に置くとpass、`docs/05-qa.md`の旧encode例は`FFMPEG_EXIT=0` / `nb_read_frames=1` / `duration=0.033333`。修正後：`Test-UERenderArtifacts.ps1` 15 group PASS / `EXIT=0`（既存13＋新2）、`Test-UETemplateScaffold.ps1` 8 group PASS / `EXIT=0`。
+
+移行: 既存runのreportは再取得する（新しい`frame_step` / `index_lattice`欄は既存reportに無い）。`schema_version`は1のまま（追加のみで、既存の欄の意味は変わらない）。消費者は`frame_step` / `index_lattice`の存在を仮定せず、無ければstep未宣言として扱う。helper既定はstep=1/offset=0で従来と同一のため、stepを使っていない既存手順の判定は変わらない。既存`Production/`の生成物・既存reportは上書きしない。UE実機のMRQ render（`OutputFrameStep=2`の実出力のindex格子）、compile、PIE、Shipping、MP4のffprobe実測・目視は未実行（Unverified）。公式Epic docsの`Output Frame Step`定義と、本host実installのengine source（`MoviePipelineTiming.cpp`の`bSkipRendering`がoutput merger前にreturn）のread-only参照からの推論であり、実MRQ出力の観測ではない。
+
 ## Unreleased — 動画モーキャプ
 
 - `docs/09-video-mocap.md` を追加した。単眼のダンス動画から MediaPipe で体・手・顔の点を取り、VRM の骨の回転 → VRMA → UE（VRM4U）→ MV にする工程、単眼で取れない量の補い方、確認方法、1 本での実測、残る限界、権利の gate をまとめた。
