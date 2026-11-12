@@ -15,7 +15,7 @@ param(
 # writes anywhere except an explicit, previously unused report path. A missing observation stays
 # `unverified`; it is never rounded into `pass`.
 #
-# Rules (docs/04-package.md, "UE 5.8 の Mac host 要件"):
+# Rules (docs/04-package.md, section "UE 5.8 Mac host requirements"):
 #   - Epic's UE 5.8 table sets a minimum OS, processor, memory, Metal and Xcode.
 #   - Epic's minimum Xcode (26.0) and Epic's minimum OS (Sonoma 14.5) do not agree with Apple's
 #     Xcode support table, which requires macOS 15.6 for Xcode 26.0-26.3.
@@ -40,6 +40,35 @@ $epicMinimumMemoryGB = 16
 $sourceEpic = 'https://dev.epicgames.com/documentation/en-us/unreal-engine/macos-development-requirements-for-unreal-engine'
 $sourceApple = 'https://developer.apple.com/support/xcode/'
 $sourceReferencedOn = '2026-11-05'
+
+# Windows PowerShell 5.1 decodes a BOM-less UTF-8 script as ANSI, so a Japanese string literal in this
+# file turns into mojibake and the parser stops before -SelfTest can run. Every other script in this
+# repository is pure ASCII and is never re-encoded, so the Japanese text this tool has to match inside
+# the documents is spelled from code points here instead. Do not paste the decoded text back into this
+# file, and do not add a BOM: the suite runs under both PowerShell 5.1 and pwsh from the same bytes.
+function ConvertFrom-CodePointText {
+	param([uint32[]]$CodePoint)
+
+	$builder = New-Object System.Text.StringBuilder
+	foreach ($point in $CodePoint) { [void]$builder.Append([char]$point) }
+	return $builder.ToString()
+}
+
+# "intersection of both tables"
+$docCrossTable = ConvertFrom-CodePointText -CodePoint @(0x4E21, 0x8868, 0x306E, 0x4EA4, 0x5DEE)
+# "Mac host eligible" (the QA row label)
+$qaMacHostRow = ConvertFrom-CodePointText -CodePoint @(0x004D, 0x0061, 0x0063, 0x0020, 0x0068, 0x006F, 0x0073, 0x0074, 0x9069, 0x683C)
+# "intersection"
+$qaCross = ConvertFrom-CodePointText -CodePoint @(0x4EA4, 0x5DEE)
+# "macOS version", "Xcode version", "processor", "source reference date"
+$qaRequiredFields = @(
+	(ConvertFrom-CodePointText -CodePoint @(0x006D, 0x0061, 0x0063, 0x004F, 0x0053, 0x7248)),
+	(ConvertFrom-CodePointText -CodePoint @(0x0058, 0x0063, 0x006F, 0x0064, 0x0065, 0x7248)),
+	(ConvertFrom-CodePointText -CodePoint @(0x30D7, 0x30ED, 0x30BB, 0x30C3, 0x30B5)),
+	'Memory',
+	'Metal',
+	(ConvertFrom-CodePointText -CodePoint @(0x51FA, 0x5178, 0x53C2, 0x7167, 0x65E5))
+)
 
 $macOsNameBases = [ordered]@{
 	ventura = [version]'13.0'
@@ -561,6 +590,24 @@ function Invoke-SelfTest {
 		Write-Output "FAIL: $($_.Exception.Message)"
 	}
 
+	# Windows PowerShell 5.1 reads a BOM-less UTF-8 script as ANSI: one non-ASCII byte anywhere in this
+	# file turns its Japanese literals into mojibake and the parser aborts before -SelfTest can run, so
+	# a green pwsh run would hide a suite that never starts under 5.1. The tool therefore keeps every
+	# literal ASCII and spells the Japanese document text from code points. Both shells must start.
+	$groups++
+	try {
+		$ownBytes = [System.IO.File]::ReadAllBytes($PSCommandPath)
+		$nonAsciiCount = @($ownBytes | Where-Object { $_ -ge 0x80 }).Count
+		Assert-True ($nonAsciiCount -eq 0) "the tool stays pure ASCII so Windows PowerShell 5.1 can parse it; found $nonAsciiCount non-ASCII byte(s)"
+		Assert-True (-not ($ownBytes.Length -ge 3 -and $ownBytes[0] -eq 0xEF -and $ownBytes[1] -eq 0xBB -and $ownBytes[2] -eq 0xBF)) 'the tool carries no UTF-8 BOM'
+		Assert-True ((ConvertFrom-CodePointText -CodePoint @(0x4E21, 0x8868, 0x306E, 0x4EA4, 0x5DEE)) -ceq $docCrossTable) 'the code-point helper reproduces the document text it matches'
+		Assert-True ($qaRequiredFields.Count -eq 6) 'the QA row field list keeps all six required fields'
+		Write-Output 'PASS: the tool is pure ASCII with no BOM and spells the Japanese document text from code points'
+	} catch {
+		$failures++
+		Write-Output "FAIL: $($_.Exception.Message)"
+	}
+
 	# The docs the tool's rules come from must keep carrying every row the verdict relies on, at the
 	# same versions and with the sources attached. A trimmed doc or a drifted version number fails here.
 	$groups++
@@ -579,15 +626,15 @@ function Invoke-SelfTest {
 		Assert-True ($packageText.Contains($sourceEpic)) 'docs/04-package.md links the Epic macOS requirements page'
 		Assert-True ($packageText.Contains($sourceApple)) 'docs/04-package.md links the Apple Xcode support table'
 		Assert-True ($packageText.Contains($sourceReferencedOn)) 'docs/04-package.md records the source reference date'
-		Assert-True ($packageText.Contains('両表の交差')) 'docs/04-package.md states the intersection rule'
+		Assert-True ($packageText.Contains($docCrossTable)) 'docs/04-package.md states the intersection rule'
 		Assert-True ($packageText.Contains('scripts/Test-UEMacHostRequirements.ps1')) 'docs/04-package.md points at the verdict tool'
 
-		Assert-True ($qaText.Contains('Mac host適格')) 'templates/QA.md has a Mac host pass/fail row'
-		foreach ($required in @('macOS版', 'Xcode版', 'プロセッサ', 'Memory', 'Metal', '出典参照日')) {
+		Assert-True ($qaText.Contains($qaMacHostRow)) 'templates/QA.md has a Mac host pass/fail row'
+		foreach ($required in $qaRequiredFields) {
 			Assert-True ($qaText.Contains($required)) "templates/QA.md Mac host row records '$required'"
 		}
 		Assert-True ($qaText.Contains('evidence/mac-host.json')) 'templates/QA.md names the verdict report path'
-		Assert-True ($qaText.Contains('交差')) 'templates/QA.md states that the Mac host verdict uses both vendor tables'
+		Assert-True ($qaText.Contains($qaCross)) 'templates/QA.md states that the Mac host verdict uses both vendor tables'
 		# The documented versions must be the ones this tool enforces, not a stale copy.
 		Assert-True ($packageText.Contains($epicMinimumMacOS.ToString())) 'docs/04-package.md records the minimum macOS this tool enforces'
 		Assert-True ($packageText.Contains($epicMinimumMemoryGB.ToString())) 'docs/04-package.md records the minimum memory this tool enforces'
