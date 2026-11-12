@@ -65,6 +65,48 @@ function Invoke-Generator([string]$RecipeName, [string]$Name, [string]$Run, [str
 	& $generator -Recipe $RecipeName -ProjectName $Name -RunId $Run -EngineRoot $fixtureEngine -ProjectDiff $Diff -AllowDirtyTemplate | Out-Null
 }
 
+function Invoke-ScaffoldGenerator {
+	# Same invocation, but keeps the warning stream and the thrown message so a group can assert on what
+	# the generator reported instead of only on exit 0.
+	param(
+		[string]$GeneratorPath,
+		[string]$RecipeName,
+		[string]$Name,
+		[string]$RunId,
+		[string]$EngineRoot,
+		[string[]]$Diff = @()
+	)
+	$found = @()
+	$failure = ''
+	try {
+		# 3>&1 keeps warning records as objects so a group can assert on what the generator reported;
+		# without it the warning stream is only displayed.
+		$found = @(& $GeneratorPath -Recipe $RecipeName -ProjectName $Name -RunId $RunId -EngineRoot $EngineRoot -ProjectDiff $Diff -AllowDirtyTemplate 3>&1)
+	} catch {
+		$failure = $_.Exception.Message
+	}
+	return [pscustomobject]@{
+		Failure  = $failure
+		Output   = @($found | Where-Object { $_ -is [string] } | ForEach-Object { [string]$_ })
+		Warnings = @($found | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message })
+	}
+}
+
+function Write-FixtureRulesTemplate([string]$TemplateRoot, [string]$TemplateName, [string[]]$DefsLines) {
+	# A materialize fixture with real Modules/Source shape, one C++ module, a .ini whose file name and
+	# contents are distinguishable, and a .cfg the rules never declare.
+	[System.IO.Directory]::CreateDirectory($TemplateRoot) | Out-Null
+	Write-FixtureJson (Join-Path $TemplateRoot ($TemplateName + '.uproject')) ('{"FileVersion":3,"EngineAssociation":"","Modules":[{"Name":"' + $TemplateName + '","Type":"Runtime"}],"Plugins":[]}')
+	[System.IO.Directory]::CreateDirectory((Join-Path $TemplateRoot 'Config')) | Out-Null
+	[System.IO.File]::WriteAllText((Join-Path $TemplateRoot 'Config\TemplateDefs.ini'), (($DefsLines -join "`r`n") + "`r`n"), [System.Text.UTF8Encoding]::new($false))
+	Write-FixtureJson (Join-Path $TemplateRoot ('Source\' + $TemplateName + '\' + $TemplateName + '.Build.cs')) ('public class {0} : ModuleRules {{ }} // {0}_API' -f $TemplateName)
+	Write-FixtureJson (Join-Path $TemplateRoot ('Source\' + $TemplateName + '\Private\' + $TemplateName + '.cpp')) ('// {0} module impl' -f $TemplateName)
+	Write-FixtureJson (Join-Path $TemplateRoot ('Config\' + $TemplateName + '.ini')) ('Setting={0} {1} {2}' -f $TemplateName, $TemplateName.ToUpperInvariant(), $TemplateName.ToLowerInvariant())
+	Write-FixtureJson (Join-Path $TemplateRoot 'Config\Extra.cfg') 'Marker=Zzz_NoSuchSymbol'
+	Write-FixtureJson (Join-Path $TemplateRoot 'Config\DefaultEngine.ini') "[/Script/EngineSettings.GameMapsSettings]`r`nGameDefaultMap=/Engine/Maps/Templates/Template_Default.Template_Default`r`n"
+	Write-FixtureJson (Join-Path $TemplateRoot 'Config\DefaultGame.ini') "[/Script/EngineSettings.GeneralProjectSettings]`r`nProjectID=(A=1,B=2,C=3,D=4)`r`nProjectName=Rules Template`r`n"
+}
+
 function Write-FixtureTemplate([string]$TemplateRoot, [string]$TemplateName, [string]$ModuleName) {
 	# Builds an installed-engine template fixture with real Modules/Source shape so the previous
 	# `Modules: []` shortcut cannot hide an unresolved project identity.
@@ -116,7 +158,11 @@ try {
 		'FilesToIgnore="Config/TemplateDefs.ini"',
 		'FilesToIgnore="Config/config.ini"',
 		'FolderRenames=(From="Source/%TEMPLATENAME%",To="Source/%PROJECTNAME%")',
+		'FilenameReplacements=(Extensions=("cpp","h","ini","cs"),From="%TEMPLATENAME_UPPERCASE%",To="%PROJECTNAME_UPPERCASE%",bCaseSensitive=true)',
+		'FilenameReplacements=(Extensions=("cpp","h","ini","cs"),From="%TEMPLATENAME_LOWERCASE%",To="%PROJECTNAME_LOWERCASE%",bCaseSensitive=true)',
 		'FilenameReplacements=(Extensions=("cpp","h","ini","cs"),From="%TEMPLATENAME%",To="%PROJECTNAME%",bCaseSensitive=false)',
+		'ReplacementsInFiles=(Extensions=("cpp","h","ini","cs"),From="%TEMPLATENAME_UPPERCASE%",To="%PROJECTNAME_UPPERCASE%",bCaseSensitive=true)',
+		'ReplacementsInFiles=(Extensions=("cpp","h","ini","cs"),From="%TEMPLATENAME_LOWERCASE%",To="%PROJECTNAME_LOWERCASE%",bCaseSensitive=true)',
 		'ReplacementsInFiles=(Extensions=("cpp","h","ini","cs"),From="%TEMPLATENAME%",To="%PROJECTNAME%",bCaseSensitive=false)',
 		'SharedContentPacks=(MountName="Characters",DetailLevels=("High"))',
 		'EditDetailLevelPreference="High"'
@@ -270,7 +316,173 @@ try {
 	Assert-True ((([System.IO.File]::ReadAllText((Join-Path $tpOutput 'template-lock.json'))) | ConvertFrom-Json).engine_template -eq 'TP_ThirdPerson') 'lock records the third-person engine template'
 	Assert-GeneratorFails { Invoke-Generator 'third-person-game' 'Bad-Name' "$testId-bad" @() } 'materialized recipe rejects non-identifier project names'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $productionRoot "Bad-Name_$testId-bad"))) 'invalid materialized project name creates no output'
-	Write-Output 'PASS: third-person recipe materializes the official template like the New Project wizard'
+	Write-Output 'PASS: third-person recipe materializes the installed template into <ProjectName>.uproject and Source/<ProjectName>'
+
+	# --- TemplateDefs.ini rule engine (DOT-3135) -----------------------------------------------
+	# Each group below runs the materialize path in an isolated clone, because the fixture recipe has to
+	# name the fixture template and the developer checkout must stay untouched.
+	$rulesRepoRoot = Join-Path $fixtureRoot 'RulesTemplate'
+	& git -C $repoRoot clone --quiet --local --no-hardlinks --no-tags --no-checkout $repoRoot $rulesRepoRoot
+	if ($LASTEXITCODE -ne 0) { throw 'Could not create the isolated rules-repository fixture.' }
+	& git -C $rulesRepoRoot checkout --quiet --detach $templateRevision
+	if ($LASTEXITCODE -ne 0) { throw "Could not check out revision $templateRevision in the isolated rules-repository fixture." }
+	[System.IO.Directory]::CreateDirectory((Join-Path $rulesRepoRoot 'Production')) | Out-Null
+	$rulesGenerator = Join-Path $rulesRepoRoot 'scripts\New-UETemplateScaffold.ps1'
+	Copy-Item -LiteralPath $generator -Destination $rulesGenerator -Force
+	$rulesEngine = Join-Path $fixtureRoot 'RulesEngineRoot'
+	Write-FixtureJson (Join-Path $rulesEngine 'Engine\Build\Build.version') '{"MajorVersion":5,"MinorVersion":8,"PatchVersion":4,"Changelist":58902052}'
+	Write-FixtureJson (Join-Path $rulesEngine 'Engine\Plugins\MovieScene\MovieRenderPipeline\MovieRenderPipeline.uplugin') '{"FileVersion":3,"Version":1,"VersionName":"1.0"}'
+	$rulesTemplateRoot = Join-Path $rulesEngine 'Templates'
+	function Invoke-RulesCase {
+		# One fixture template + one isolated run. Returns the generator's report and the output path
+		# whether the run succeeded or stopped.
+		param(
+			[string]$TemplateName,
+			[string[]]$DefsLines,
+			[string]$ProjectName,
+			[string]$RunId
+		)
+		Write-FixtureRulesTemplate (Join-Path $rulesTemplateRoot $TemplateName) $TemplateName $DefsLines
+		Set-FixtureRecipeTemplate $rulesRepoRoot 'third-person-game' $TemplateName
+		$report = Invoke-ScaffoldGenerator -GeneratorPath $rulesGenerator -RecipeName 'third-person-game' -Name $ProjectName -RunId $RunId -EngineRoot $rulesEngine -Diff @('Variant: Rules')
+		return [pscustomobject]@{
+			Report = $report
+			Output = Join-Path (Join-Path $rulesRepoRoot 'Production') ("{0}_{1}" -f $ProjectName, $RunId)
+		}
+	}
+
+	# FilenameReplacements and ReplacementsInFiles carry different extension lists here. A .cpp file name
+	# must follow the first list (renamed), a .cpp body must follow the second (not rewritten), and a .ini
+	# is in the second list only, so its body is rewritten while its file name is kept. The .ini body also
+	# carries all three template-name spellings, which the declared case-sensitive UPPERCASE/lowercase
+	# tuples must replace in declaration order.
+	$asymTemplate = 'TP_AsymRules'
+	$asymName = "Asym_$testId"
+	$asym = Invoke-RulesCase -TemplateName $asymTemplate -ProjectName $asymName -RunId 'asym' -DefsLines @(
+		'[/Script/GameProjectGeneration.TemplateProjectDefs]',
+		'FoldersToIgnore=Media',
+		'FilesToIgnore="%TEMPLATENAME%.uproject"',
+		'FilesToIgnore="Config/TemplateDefs.ini"',
+		'FolderRenames=(From="Source/%TEMPLATENAME%",To="Source/%PROJECTNAME%")',
+		'FilenameReplacements=(Extensions=("cpp","cs"),From="%TEMPLATENAME%",To="%PROJECTNAME%",bCaseSensitive=false)',
+		'ReplacementsInFiles=(Extensions=("ini","cs"),From="%TEMPLATENAME_UPPERCASE%",To="%PROJECTNAME_UPPERCASE%",bCaseSensitive=true)',
+		'ReplacementsInFiles=(Extensions=("ini","cs"),From="%TEMPLATENAME_LOWERCASE%",To="%PROJECTNAME_LOWERCASE%",bCaseSensitive=true)',
+		'ReplacementsInFiles=(Extensions=("ini","cs"),From="%TEMPLATENAME%",To="%PROJECTNAME%",bCaseSensitive=false)'
+	)
+	Assert-True ($asym.Report.Failure -eq '') ('asymmetric FilenameReplacements/ReplacementsInFiles lists generate: ' + $asym.Report.Failure)
+	$asymBuildCs = Join-Path $asym.Output "Source\$asymName\$asymName.Build.cs"
+	Assert-True (Test-Path -LiteralPath $asymBuildCs) 'FilenameReplacements renames the .Build.cs file name'
+	$asymBuildText = [System.IO.File]::ReadAllText($asymBuildCs)
+	Assert-True ($asymBuildText.Contains("class $asymName ") -and -not $asymBuildText.Contains($asymTemplate)) 'ReplacementsInFiles rewrites the .cs body (case-insensitive tuple)'
+	$asymCpp = Join-Path $asym.Output "Source\$asymName\Private\$asymName.cpp"
+	Assert-True (Test-Path -LiteralPath $asymCpp) 'FilenameReplacements renames the .cpp file name'
+	Assert-True ([System.IO.File]::ReadAllText($asymCpp) -ceq "// $asymTemplate module impl") 'a .cpp outside ReplacementsInFiles keeps its body unreplaced'
+	$asymIni = Join-Path $asym.Output "Config\$asymTemplate.ini"
+	Assert-True (Test-Path -LiteralPath $asymIni) 'a .ini outside FilenameReplacements keeps its file name'
+	$asymIniText = [System.IO.File]::ReadAllText($asymIni)
+	Assert-True ($asymIniText -ceq ('Setting={0} {1} {2}' -f $asymName, $asymName.ToUpperInvariant(), $asymName.ToLowerInvariant())) 'a .ini inside ReplacementsInFiles has UPPERCASE, lowercase and any-case replaced in declaration order'
+	Assert-True (-not $asymIniText.Contains($asymTemplate) -and -not $asymIniText.Contains($asymTemplate.ToUpperInvariant()) -and -not $asymIniText.Contains($asymTemplate.ToLowerInvariant())) 'no template-name spelling survives the declared case tuples'
+	$asymCfg = Join-Path $asym.Output 'Config\Extra.cfg'
+	Assert-True ([System.IO.File]::ReadAllText($asymCfg) -ceq 'Marker=Zzz_NoSuchSymbol') 'an extension neither rule declares is copied byte for byte'
+	$asymLock = [System.IO.File]::ReadAllText((Join-Path $asym.Output 'template-lock.json')) | ConvertFrom-Json
+	Assert-True (@($asymLock.template_defs.applied_keys) -contains 'FilenameReplacements' -and @($asymLock.template_defs.applied_keys) -contains 'ReplacementsInFiles') 'lock records both rule keys as applied'
+	Write-Output 'PASS: FilenameReplacements renames file names while ReplacementsInFiles rewrites bodies, from separate extension lists'
+
+	# From that matches nothing must replace nothing. The declared folder rename still applies, so the
+	# run must stop at the identity check instead of publishing a tree whose module name no longer matches
+	# its Build.cs. The partial output is left in place, which is where the unreplaced body is observed.
+	$fromTemplate = 'TP_FromMismatch'
+	$fromName = "From_$testId"
+	$fromCase = Invoke-RulesCase -TemplateName $fromTemplate -ProjectName $fromName -RunId 'frommiss' -DefsLines @(
+		'[/Script/GameProjectGeneration.TemplateProjectDefs]',
+		'FilesToIgnore="Config/TemplateDefs.ini"',
+		'FolderRenames=(From="Source/%TEMPLATENAME%",To="Source/%PROJECTNAME%")',
+		'FilenameReplacements=(Extensions=("cpp","cs"),From="%TEMPLATENAME%",To="%PROJECTNAME%",bCaseSensitive=false)',
+		'ReplacementsInFiles=(Extensions=("cpp","cs","ini"),From="Zzz_NoSuchSymbol",To="%PROJECTNAME%",bCaseSensitive=true)'
+	)
+	Assert-True ($fromCase.Report.Failure.Contains('Project identity check stopped')) 'a From that occurs nowhere does not rewrite the module name, so generation stops instead of publishing a mismatched tree'
+	Assert-True ($fromCase.Report.Failure.Contains("Source/$fromName/$fromName.Build.cs")) 'the stop names the unmatched module path'
+	Assert-True ([System.IO.File]::ReadAllText((Join-Path $fromCase.Output "Source\$fromName\Private\$fromName.cpp")) -ceq "// $fromTemplate module impl") 'a From that occurs nowhere replaces nothing in the file body'
+	Write-Output 'PASS: a From that matches nothing replaces nothing and the identity mismatch stops the run'
+
+	# Keys this generator does not implement (wizard metadata) are reported instead of dropped. The chosen
+	# behaviour is warn-and-continue, because a real engine template carries them and a hard stop would
+	# reject every installed template; the lock keeps the record of what was applied and what was ignored.
+	$keysTemplate = 'TP_UnknownKeys'
+	$keysName = "Keys_$testId"
+	$keysCase = Invoke-RulesCase -TemplateName $keysTemplate -ProjectName $keysName -RunId 'keys' -DefsLines @(
+		'[/Script/GameProjectGeneration.TemplateProjectDefs]',
+		'Categories=Games',
+		'LocalizedDisplayNames=(Language="en",Text="Rules Template")',
+		'LocalizedDescriptions=(Language="en",Text="Rules Template description")',
+		'bThumbnailAsIcon=true',
+		'ClassTypes=Character, PlayerController',
+		'AssetTypes=Animation Sequence, Skeleton',
+		'SortKey=50',
+		'Variants=(VariantName="Basic",Path="Maps/Basic")',
+		'FilesToIgnore="Config/TemplateDefs.ini"',
+		'FolderRenames=(From="Source/%TEMPLATENAME%",To="Source/%PROJECTNAME%")',
+		'FilenameReplacements=(Extensions=("cpp","cs"),From="%TEMPLATENAME%",To="%PROJECTNAME%",bCaseSensitive=false)',
+		'ReplacementsInFiles=(Extensions=("cpp","cs","ini"),From="%TEMPLATENAME%",To="%PROJECTNAME%",bCaseSensitive=false)'
+	)
+	Assert-True ($keysCase.Report.Failure -eq '') ('unknown TemplateDefs keys warn and continue: ' + $keysCase.Report.Failure)
+	foreach ($unimplementedKey in @('Categories', 'LocalizedDisplayNames', 'Variants', 'bThumbnailAsIcon')) {
+		Assert-True (@($keysCase.Report.Warnings | Where-Object { $_ -like "*$unimplementedKey*" }).Count -gt 0) "an unimplemented TemplateDefs key ($unimplementedKey) is reported, not dropped quietly"
+	}
+	$keysLock = [System.IO.File]::ReadAllText((Join-Path $keysCase.Output 'template-lock.json')) | ConvertFrom-Json
+	foreach ($unimplementedKey in @('Categories', 'LocalizedDisplayNames', 'LocalizedDescriptions', 'bThumbnailAsIcon', 'ClassTypes', 'AssetTypes', 'SortKey', 'Variants')) {
+		Assert-True (@($keysLock.template_defs.ignored_keys) -contains $unimplementedKey) "lock records $unimplementedKey as ignored"
+	}
+	foreach ($appliedKey in @('FolderRenames', 'FilenameReplacements', 'ReplacementsInFiles', 'FilesToIgnore')) {
+		Assert-True (@($keysLock.template_defs.applied_keys) -contains $appliedKey) "lock records $appliedKey as applied"
+		Assert-True (@($keysLock.template_defs.ignored_keys) -notcontains $appliedKey) "lock does not record the applied key $appliedKey as ignored"
+	}
+	Assert-True (@($keysLock.template_defs.unreadable_lines).Count -eq 0) 'every implemented key produced a rule in the unknown-key fixture'
+	Write-Output 'PASS: unimplemented TemplateDefs.ini keys are warned about and recorded in the lock instead of being dropped'
+
+	# A per-mount DetailLevel that differs from EditDetailLevelPreference must decide the search path. The
+	# pack exists at Low only, so a generator using the template preference (High) would report it missing.
+	$lowTemplate = 'TP_PerMountLow'
+	$lowName = "Low_$testId"
+	Write-FixtureJson (Join-Path $rulesEngine 'Templates\TemplateResources\Low\Characters\Content\Mannequins\SK_Low.uasset') 'low pack'
+	$lowCase = Invoke-RulesCase -TemplateName $lowTemplate -ProjectName $lowName -RunId 'perlow' -DefsLines @(
+		'[/Script/GameProjectGeneration.TemplateProjectDefs]',
+		'FilesToIgnore="Config/TemplateDefs.ini"',
+		'FolderRenames=(From="Source/%TEMPLATENAME%",To="Source/%PROJECTNAME%")',
+		'FilenameReplacements=(Extensions=("cpp","cs"),From="%TEMPLATENAME%",To="%PROJECTNAME%",bCaseSensitive=false)',
+		'ReplacementsInFiles=(Extensions=("cpp","cs","ini"),From="%TEMPLATENAME%",To="%PROJECTNAME%",bCaseSensitive=false)',
+		'SharedContentPacks=(MountName="Characters",DetailLevels=("Low"))',
+		'EditDetailLevelPreference="High"'
+	)
+	Assert-True ($lowCase.Report.Failure -eq '') ('a pack declared at Low is found when only Low exists: ' + $lowCase.Report.Failure)
+	Assert-True (Test-Path -LiteralPath (Join-Path $lowCase.Output 'Content\Characters\Mannequins\SK_Low.uasset')) 'the Low pack content reaches Content/Characters'
+	Assert-True (@($lowCase.Report.Warnings | Where-Object { $_ -like '*was declared for detail level*' }).Count -eq 0) 'a declared level that exists needs no fall back warning'
+	$lowLock = [System.IO.File]::ReadAllText((Join-Path $lowCase.Output 'template-lock.json')) | ConvertFrom-Json
+	$lowPack = @($lowLock.template_defs.shared_content_packs | Where-Object { $_.mount -eq 'Characters' })[0]
+	Assert-True ($lowPack.detail_level -eq 'Low' -and $lowPack.declared -eq $true) 'lock records the declared Low level as the one actually used'
+	Write-Output 'PASS: a per-mount DetailLevels declaration decides the search path instead of EditDetailLevelPreference'
+
+	# A declared level that the installed engine does not have must fall back explicitly: the pack is found
+	# at another level, the run continues, and both the warning and the lock say the level was not declared.
+	$fallbackTemplate = 'TP_PerMountFallback'
+	$fallbackName = "Fall_$testId"
+	Write-FixtureJson (Join-Path $rulesEngine 'Templates\TemplateResources\High\Input\Content\Input_Action.uasset') 'input pack'
+	$fallbackCase = Invoke-RulesCase -TemplateName $fallbackTemplate -ProjectName $fallbackName -RunId 'perfall' -DefsLines @(
+		'[/Script/GameProjectGeneration.TemplateProjectDefs]',
+		'FilesToIgnore="Config/TemplateDefs.ini"',
+		'FolderRenames=(From="Source/%TEMPLATENAME%",To="Source/%PROJECTNAME%")',
+		'FilenameReplacements=(Extensions=("cpp","cs"),From="%TEMPLATENAME%",To="%PROJECTNAME%",bCaseSensitive=false)',
+		'ReplacementsInFiles=(Extensions=("cpp","cs","ini"),From="%TEMPLATENAME%",To="%PROJECTNAME%",bCaseSensitive=false)',
+		'SharedContentPacks=(MountName="Input",DetailLevels=("Low"))',
+		'EditDetailLevelPreference="High"'
+	)
+	Assert-True ($fallbackCase.Report.Failure -eq '') ('a declared level that is absent falls back instead of failing: ' + $fallbackCase.Report.Failure)
+	Assert-True (@($fallbackCase.Report.Warnings | Where-Object { $_ -like '*was declared for detail level*Low*' }).Count -gt 0) 'the fall back from the declared detail level is reported'
+	$fallbackLock = [System.IO.File]::ReadAllText((Join-Path $fallbackCase.Output 'template-lock.json')) | ConvertFrom-Json
+	$fallbackPack = @($fallbackLock.template_defs.shared_content_packs | Where-Object { $_.mount -eq 'Input' })[0]
+	Assert-True ($fallbackPack.detail_level -eq 'High' -and $fallbackPack.declared -eq $false) 'lock records the fall back level and that it was not the declared one'
+	Write-Output 'PASS: a declared detail level that the engine lacks is replaced by an explicit, recorded fall back'
+
 
 	Assert-GeneratorFails { Invoke-Generator 'spectator-explore' "..\escape_$testId" 'path-test' @() } 'path traversal project name is rejected'
 	Assert-GeneratorFails { Invoke-Generator 'spectator-explore' "TestExplore_$testId" '..\escape' @() } 'path traversal run ID is rejected'

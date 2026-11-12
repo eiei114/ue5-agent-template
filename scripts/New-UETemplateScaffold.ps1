@@ -22,37 +22,171 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-function Convert-TemplateName([string]$Text, [string]$TemplateName, [string]$Name) {
-	# Same order as TemplateDefs.ini: UPPERCASE and lowercase (case-sensitive), then any case.
-	$Text = $Text.Replace($TemplateName.ToUpperInvariant(), $Name.ToUpperInvariant())
-	$Text = $Text.Replace($TemplateName.ToLowerInvariant(), $Name.ToLowerInvariant())
-	return [regex]::Replace($Text, [regex]::Escape($TemplateName), $Name.Replace('$', '$$'), [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+function Expand-TemplateTokens([string]$Value, [string]$TemplateName, [string]$Name) {
+	# The installed engine templates write the two names through tokens instead of a fixed string, so
+	# a declared rule is expanded before it is applied. A token this generator does not know is left as
+	# written and reported: the rule would otherwise be applied to a literal '%SOMETHING%' and look
+	# like it had run.
+	$unknown = [System.Collections.Generic.List[string]]::new()
+	$builder = [System.Text.StringBuilder]::new()
+	$cursor = 0
+	foreach ($match in [regex]::Matches($Value, '%([A-Za-z0-9_]+)%')) {
+		$null = $builder.Append($Value.Substring($cursor, $match.Index - $cursor))
+		$cursor = $match.Index + $match.Length
+		$replacement = switch ($match.Groups[1].Value) {
+			'TEMPLATENAME' { $TemplateName }
+			'TEMPLATENAME_UPPERCASE' { $TemplateName.ToUpperInvariant() }
+			'TEMPLATENAME_LOWERCASE' { $TemplateName.ToLowerInvariant() }
+			'PROJECTNAME' { $Name }
+			'PROJECTNAME_UPPERCASE' { $Name.ToUpperInvariant() }
+			'PROJECTNAME_LOWERCASE' { $Name.ToLowerInvariant() }
+			default { $null }
+		}
+		if ($null -eq $replacement) {
+			$unknown.Add($match.Value)
+			$null = $builder.Append($match.Value)
+		} else {
+			$null = $builder.Append($replacement)
+		}
+	}
+	$null = $builder.Append($Value.Substring($cursor))
+	return [pscustomobject]@{ Text = $builder.ToString(); UnknownTokens = @($unknown) }
 }
 
-function Read-TemplateDefs([string]$Path, [string]$TemplateName) {
-	$defs = [ordered]@{ FoldersToIgnore = @(); FilesToIgnore = @(); FolderRenames = @(); Extensions = @(); SharedContentPacks = @(); DetailLevel = 'High' }
-	foreach ($line in [System.IO.File]::ReadAllLines($Path)) {
-		$trimmed = $line.Trim()
-		if ($trimmed -match '^FoldersToIgnore=(.+)$') { $defs.FoldersToIgnore += $Matches[1].Trim('"').Replace('%TEMPLATENAME%', $TemplateName).Replace('\', '/') }
-		elseif ($trimmed -match '^FilesToIgnore=(.+)$') { $defs.FilesToIgnore += $Matches[1].Trim('"').Replace('%TEMPLATENAME%', $TemplateName).Replace('\', '/') }
-		elseif ($trimmed -match '^FolderRenames=\(From="([^"]+)",To="([^"]+)"\)') { $defs.FolderRenames += ,@($Matches[1].Replace('%TEMPLATENAME%', $TemplateName), $Matches[2]) }
-		elseif ($trimmed -match '^ReplacementsInFiles=\(Extensions=\(([^)]*)\)') { $defs.Extensions += @($Matches[1].Split(',') | ForEach-Object { $_.Trim().Trim('"').ToLowerInvariant() }) }
-		elseif ($trimmed -match '^SharedContentPacks=\(MountName="([^"]+)"') { $defs.SharedContentPacks += $Matches[1] }
-		elseif ($trimmed -match '^EditDetailLevelPreference="?([^"]+)"?$') { $defs.DetailLevel = $Matches[1] }
+function New-TemplateRule([string]$Line, [string]$Kind, [string]$TemplateName, [string]$Name) {
+	# One FilenameReplacements / ReplacementsInFiles tuple. Field order is not fixed. A tuple this
+	# reader cannot read is returned as $null so the caller reports it instead of applying a rule the
+	# template author did not write.
+	$extensionsMatch = [regex]::Match($Line, 'Extensions[ \t]*=[ \t]*\(([^)]*)\)')
+	$fromMatch = [regex]::Match($Line, 'From[ \t]*=[ \t]*"([^"]*)"')
+	$toMatch = [regex]::Match($Line, 'To[ \t]*=[ \t]*"([^"]*)"')
+	$caseMatch = [regex]::Match($Line, 'bCaseSensitive[ \t]*=[ \t]*(true|false)')
+	if (-not $extensionsMatch.Success -or -not $fromMatch.Success -or -not $toMatch.Success -or -not $caseMatch.Success) { return $null }
+	$extensions = @($extensionsMatch.Groups[1].Value.Split(',') | ForEach-Object { $_.Trim().Trim('"').ToLowerInvariant() } | Where-Object { $_ -ne '' })
+	if ($extensions.Count -eq 0) { return $null }
+	$from = Expand-TemplateTokens -Value $fromMatch.Groups[1].Value -TemplateName $TemplateName -Name $Name
+	$to = Expand-TemplateTokens -Value $toMatch.Groups[1].Value -TemplateName $TemplateName -Name $Name
+	if (@($from.UnknownTokens).Count -gt 0 -or @($to.UnknownTokens).Count -gt 0) { return $null }
+	if ([string]::IsNullOrEmpty([string]$from.Text)) { return $null }
+	return [pscustomobject]@{
+		Kind          = $Kind
+		Extensions    = $extensions
+		From          = [string]$from.Text
+		To            = [string]$to.Text
+		CaseSensitive = ($caseMatch.Groups[1].Value -eq 'true')
 	}
-	$defs.Extensions = @($defs.Extensions | Select-Object -Unique)
-	$defs.SharedContentPacks = @($defs.SharedContentPacks | Select-Object -Unique)
+}
+
+function Invoke-TemplateRules([string]$Text, $Rules, [string]$Extension, [switch]$AnyExtension) {
+	# Rules apply in declaration order, which is how the installed templates encode UPPERCASE /
+	# lowercase / any-case as three separate tuples. Case sensitivity comes from the tuple, not from a
+	# fixed three-pass order.
+	foreach ($rule in @($Rules)) {
+		if (-not $AnyExtension -and $null -ne $Extension -and -not (@($rule.Extensions) -contains $Extension.ToLowerInvariant())) { continue }
+		if ($rule.CaseSensitive) {
+			$Text = $Text.Replace($rule.From, $rule.To)
+		} else {
+			$Text = [regex]::Replace($Text, [regex]::Escape($rule.From), $rule.To.Replace('$', '$$'), [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+		}
+	}
+	return $Text
+}
+
+function Read-TemplateDefs([string]$Path, [string]$TemplateName, [string]$Name) {
+	$defs = [ordered]@{
+		FoldersToIgnore    = @()
+		FilesToIgnore      = @()
+		FolderRenames      = @()
+		FilenameRules      = @()
+		ContentRules       = @()
+		SharedContentPacks = @()
+		DetailLevel        = 'High'
+		AppliedKeys        = @()
+		IgnoredKeys        = @()
+		UnreadableLines    = @()
+	}
+	# File-name renaming and in-file replacement are separate declarations with separate extension
+	# lists: read them separately so a template that renames .cpp file names without rewriting .cpp
+	# contents gets exactly that. Whitespace around `=` and inside the tuple is optional because the
+	# installed templates write both `From="...",To="..."` and `From="...", To="..."`.
+	# A key this reader does not implement is recorded, never dropped quietly. The installed templates
+	# carry wizard metadata (LocalizedDisplayNames, Categories, Variants, ClassTypes, ...) that cannot
+	# be applied here, so warning and continuing is the fixed behaviour: stopping would reject every
+	# real engine template. What was applied and what was ignored is written to template-lock.json.
+	$implemented = @('FoldersToIgnore', 'FilesToIgnore', 'FolderRenames', 'FilenameReplacements', 'ReplacementsInFiles', 'SharedContentPacks', 'EditDetailLevelPreference')
+	$applied = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+	$ignored = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+	$problems = [System.Collections.Generic.List[string]]::new()
+	$lineNumber = 0
+	foreach ($line in [System.IO.File]::ReadAllLines($Path)) {
+		$lineNumber++
+		$trimmed = $line.Trim()
+		if ($trimmed -eq '' -or $trimmed.StartsWith(';') -or $trimmed -match '^\[.+\]$') { continue }
+		$keyMatch = [regex]::Match($trimmed, '^([A-Za-z][A-Za-z0-9_]*)[ \t]*=')
+		if (-not $keyMatch.Success) { continue }
+		$key = $keyMatch.Groups[1].Value
+		$value = $trimmed.Substring($keyMatch.Length).Trim()
+		$read = $false
+		if ($key -eq 'FoldersToIgnore' -or $key -eq 'FilesToIgnore') {
+			$entry = Expand-TemplateTokens -Value $value.Trim('"') -TemplateName $TemplateName -Name $Name
+			if (@($entry.UnknownTokens).Count -eq 0) {
+				$normalized = ([string]$entry.Text).Replace('\', '/')
+				if ($key -eq 'FoldersToIgnore') { $defs.FoldersToIgnore += $normalized } else { $defs.FilesToIgnore += $normalized }
+				$read = $true
+			}
+		} elseif ($key -eq 'FolderRenames') {
+			$renameMatch = [regex]::Match($value, '^\([ \t]*From[ \t]*=[ \t]*"([^"]+)"[ \t]*,[ \t]*To[ \t]*=[ \t]*"([^"]+)"[ \t]*\)')
+			if ($renameMatch.Success) {
+				$from = Expand-TemplateTokens -Value $renameMatch.Groups[1].Value -TemplateName $TemplateName -Name $Name
+				$to = Expand-TemplateTokens -Value $renameMatch.Groups[2].Value -TemplateName $TemplateName -Name $Name
+				if (@($from.UnknownTokens).Count -eq 0 -and @($to.UnknownTokens).Count -eq 0) {
+					$defs.FolderRenames += ,@([string]$from.Text, [string]$to.Text)
+					$read = $true
+				}
+			}
+		} elseif ($key -eq 'FilenameReplacements' -or $key -eq 'ReplacementsInFiles') {
+			$kind = if ($key -eq 'FilenameReplacements') { 'Filename' } else { 'Content' }
+			$rule = New-TemplateRule -Line $value -Kind $kind -TemplateName $TemplateName -Name $Name
+			if ($null -ne $rule) {
+				if ($kind -eq 'Filename') { $defs.FilenameRules += $rule } else { $defs.ContentRules += $rule }
+				$read = $true
+			}
+		} elseif ($key -eq 'SharedContentPacks') {
+			$mountMatch = [regex]::Match($value, 'MountName[ \t]*=[ \t]*"([^"]+)"')
+			if ($mountMatch.Success) {
+				$levels = @()
+				$levelMatch = [regex]::Match($value, 'DetailLevels[ \t]*=[ \t]*\(([^)]*)\)')
+				if ($levelMatch.Success) { $levels = @($levelMatch.Groups[1].Value.Split(',') | ForEach-Object { $_.Trim().Trim('"') } | Where-Object { $_ -ne '' }) }
+				$defs.SharedContentPacks += [pscustomobject]@{ Mount = [string]$mountMatch.Groups[1].Value; DetailLevels = @($levels) }
+				$read = $true
+			}
+		} elseif ($key -eq 'EditDetailLevelPreference') {
+			$preferenceMatch = [regex]::Match($value, '^"?([^"\s]+)"?$')
+			if ($preferenceMatch.Success) {
+				$defs.DetailLevel = [string]$preferenceMatch.Groups[1].Value
+				$read = $true
+			}
+		}
+		if ($read) { $null = $applied.Add($key) }
+		elseif ($implemented -contains $key) { $problems.Add(('line {0}: {1} was not understood and was not applied: {2}' -f $lineNumber, $key, $trimmed)) }
+		else { $null = $ignored.Add($key) }
+	}
+	$defs.AppliedKeys = @($applied)
+	[Array]::Sort($defs.AppliedKeys, [System.StringComparer]::OrdinalIgnoreCase)
+	$defs.IgnoredKeys = @($ignored)
+	[Array]::Sort($defs.IgnoredKeys, [System.StringComparer]::OrdinalIgnoreCase)
+	$defs.UnreadableLines = @($problems)
 	return $defs
 }
 
-function Copy-TextWithReplacement([string]$From, [string]$To, [string]$TemplateName, [string]$Name) {
+function Copy-TextWithReplacement([string]$From, [string]$To, $Rules, [string]$Extension) {
 	$reader = [System.IO.StreamReader]::new($From, [System.Text.UTF8Encoding]::new($false), $true)
 	try { $text = $reader.ReadToEnd(); $encoding = $reader.CurrentEncoding } finally { $reader.Dispose() }
 	$hadBom = $false
 	$bytes = [System.IO.File]::ReadAllBytes($From)
 	if ($bytes.Length -ge 2 -and (($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB) -or ($bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) -or ($bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF))) { $hadBom = $true }
 	if (-not $hadBom -and $encoding -is [System.Text.UTF8Encoding]) { $encoding = [System.Text.UTF8Encoding]::new($false) }
-	[System.IO.File]::WriteAllText($To, (Convert-TemplateName -Text $text -TemplateName $TemplateName -Name $Name), $encoding)
+	[System.IO.File]::WriteAllText($To, (Invoke-TemplateRules -Text $text -Rules $Rules -Extension $Extension), $encoding)
 }
 
 function Set-OnlineSessionProjectIdentifier([string]$ProjectConfigPath, [string]$Identifier) {
@@ -84,10 +218,43 @@ function Set-OnlineSessionProjectIdentifier([string]$ProjectConfigPath, [string]
 	[System.IO.File]::WriteAllText($ProjectConfigPath, $configText, [System.Text.UTF8Encoding]::new($false))
 }
 
+function Resolve-SharedContentPack([string]$EngineTemplateRoot, $Pack, [string]$PreferredDetailLevel) {
+	# A template may declare a different detail level per mount (TP_FirstPerson declares Weapons at
+	# "Standard" while its EditDetailLevelPreference is "High"). The declared levels are tried first,
+	# then the template preference, then the installed levels in a fixed order, so a mount that exists
+	# is copied from the level the template asked for. A fall back to a level the template did not
+	# declare is reported to the caller instead of passing as declared behaviour.
+	$declared = @(@($Pack.DetailLevels) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+	$fallBack = @(@($PreferredDetailLevel, 'High', 'Standard') | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+	$candidates = @($declared + $fallBack | Select-Object -Unique)
+	foreach ($level in $candidates) {
+		$packContent = Join-Path $EngineTemplateRoot ("TemplateResources\{0}\{1}\Content" -f $level, $Pack.Mount)
+		if (Test-Path -LiteralPath $packContent -PathType Container) {
+			return [pscustomobject]@{
+				Mount               = [string]$Pack.Mount
+				DetailLevel         = $level
+				DeclaredDetailLevel = ($declared -contains $level)
+				Path                = $packContent
+			}
+		}
+	}
+	throw ("Shared content pack is missing from the installed engine: {0} (declared detail levels {1}, tried {2}, below {3})" -f $Pack.Mount, $(if ($declared.Count -gt 0) { $declared -join ', ' } else { 'none' }), ($candidates -join ', '), $EngineTemplateRoot)
+}
+
 function Copy-MaterializedTemplate([string]$SourceTemplate, [string]$Destination, [string]$TemplateName, [string]$Name, [string]$EngineTemplateRoot) {
 	$defsPath = Join-Path $SourceTemplate 'Config\TemplateDefs.ini'
 	if (-not (Test-Path -LiteralPath $defsPath -PathType Leaf)) { throw "The template has no Config/TemplateDefs.ini to materialize from: $defsPath" }
-	$defs = Read-TemplateDefs -Path $defsPath -TemplateName $TemplateName
+	$defs = Read-TemplateDefs -Path $defsPath -TemplateName $TemplateName -Name $Name
+	foreach ($unreadable in @($defs.UnreadableLines)) {
+		Write-Warning ('TemplateDefs.ini rule was not understood and was not applied ({0}): {1}' -f $defsPath, $unreadable)
+	}
+	foreach ($ignoredKey in @($defs.IgnoredKeys)) {
+		# The installed templates carry wizard metadata that this generator cannot apply
+		# (LocalizedDisplayNames, Categories, Variants, ...). Reporting it keeps a declared key from
+		# disappearing silently, while continuing keeps a real engine template usable. What was
+		# applied and what was ignored is also written to template-lock.json.
+		Write-Warning ('TemplateDefs.ini key {0} is not implemented by this generator and was not applied ({1})' -f $ignoredKey, $defsPath)
+	}
 	$sourceRoot = [System.IO.Path]::GetFullPath($SourceTemplate).TrimEnd('\', '/')
 	foreach ($file in Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Force) {
 		$relative = $file.FullName.Substring($sourceRoot.Length + 1).Replace('\', '/')
@@ -101,27 +268,42 @@ function Copy-MaterializedTemplate([string]$SourceTemplate, [string]$Destination
 		foreach ($rename in $defs.FolderRenames) {
 			$from = $rename[0].TrimEnd('/') + '/'
 			if ($target.StartsWith($from, [System.StringComparison]::OrdinalIgnoreCase)) {
-				$target = $rename[1].Replace('%PROJECTNAME%', $Name).TrimEnd('/') + '/' + $target.Substring($from.Length)
+				$target = $rename[1].TrimEnd('/') + '/' + $target.Substring($from.Length)
 			}
 		}
 		$extension = [System.IO.Path]::GetExtension($file.Name).TrimStart('.').ToLowerInvariant()
-		$isText = $defs.Extensions -contains $extension
-		if ($isText) {
-			$leaf = Convert-TemplateName -Text ([System.IO.Path]::GetFileName($target)) -TemplateName $TemplateName -Name $Name
-			$target = ([System.IO.Path]::GetDirectoryName($target.Replace('/', '\')) + '\' + $leaf).TrimStart('\')
+		# The file name is renamed by FilenameReplacements, the text by ReplacementsInFiles. They are
+		# different declarations and may carry different extension lists, so neither decides for the
+		# other: a template can rename .cpp file names without rewriting .cpp contents.
+		$newLeaf = [System.IO.Path]::GetFileName($target)
+		if (@($defs.FilenameRules).Count -gt 0) {
+			$newLeaf = Invoke-TemplateRules -Text $newLeaf -Rules $defs.FilenameRules -Extension $extension
+		}
+		if ($newLeaf -cne [System.IO.Path]::GetFileName($target)) {
+			$target = ([System.IO.Path]::GetDirectoryName($target.Replace('/', '\')) + '\' + $newLeaf).TrimStart('\')
 		}
 		$targetPath = Join-Path $Destination $target.Replace('/', '\')
 		[System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($targetPath)) | Out-Null
 		if (Test-Path -LiteralPath $targetPath) { throw "Materialized template paths collide: $target" }
-		if ($isText) { Copy-TextWithReplacement -From $file.FullName -To $targetPath -TemplateName $TemplateName -Name $Name }
-		else { Copy-Item -LiteralPath $file.FullName -Destination $targetPath }
+		# A declared ReplacementsInFiles extension list decides which files are rewritten as text;
+		# everything else is byte-copied so binary content is never decoded.
+		$textRule = @($defs.ContentRules | Where-Object { $_.Extensions -contains $extension }) | Select-Object -First 1
+		if ($null -ne $textRule) {
+			Copy-TextWithReplacement -From $file.FullName -To $targetPath -Rules $defs.ContentRules -Extension $extension
+		} else {
+			Copy-Item -LiteralPath $file.FullName -Destination $targetPath
+		}
 	}
-	foreach ($mount in $defs.SharedContentPacks) {
-		$packContent = Join-Path $EngineTemplateRoot ("TemplateResources\{0}\{1}\Content" -f $defs.DetailLevel, $mount)
-		if (-not (Test-Path -LiteralPath $packContent -PathType Container)) { throw "Shared content pack is missing from the installed engine: $packContent" }
-		$packTarget = Join-Path $Destination ("Content\" + $mount)
+	$copiedPacks = [System.Collections.Generic.List[object]]::new()
+	foreach ($pack in $defs.SharedContentPacks) {
+		$resolved = Resolve-SharedContentPack -EngineTemplateRoot $EngineTemplateRoot -Pack $pack -PreferredDetailLevel $defs.DetailLevel
+		if (-not $resolved.DeclaredDetailLevel) {
+			Write-Warning ('Shared content pack {0} was declared for detail level(s) {1} but was copied from {2}; EditDetailLevelPreference={3}' -f $resolved.Mount, $(if (@($pack.DetailLevels).Count -gt 0) { @($pack.DetailLevels) -join ', ' } else { 'none' }), $resolved.DetailLevel, $defs.DetailLevel)
+		}
+		$packTarget = Join-Path $Destination ("Content\" + $resolved.Mount)
 		[System.IO.Directory]::CreateDirectory($packTarget) | Out-Null
-		Get-ChildItem -LiteralPath $packContent -Force | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $packTarget $_.Name) -Recurse }
+		Get-ChildItem -LiteralPath $resolved.Path -Force | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $packTarget $_.Name) -Recurse }
+		$copiedPacks.Add($resolved)
 	}
 	# Blueprints in the template Content were saved against /Script/<TemplateName>.
 	$engineIni = Join-Path $Destination 'Config\DefaultEngine.ini'
@@ -134,6 +316,14 @@ function Copy-MaterializedTemplate([string]$SourceTemplate, [string]$Destination
 		$gameText = [regex]::Replace($gameText, '(?m)^ProjectID=.*$', ('ProjectID=(A={0},B={1},C={2},D={3})' -f $parts[0], $parts[1], $parts[2], $parts[3]))
 		$gameText = [regex]::Replace($gameText, '(?m)^ProjectName=.*$', ('ProjectName={0}' -f $Name))
 		[System.IO.File]::WriteAllText($gameIni, $gameText, [System.Text.UTF8Encoding]::new($false))
+	}
+	return [pscustomobject]@{
+		ContentRules              = @($defs.ContentRules)
+		AppliedKeys               = @($defs.AppliedKeys)
+		IgnoredKeys               = @($defs.IgnoredKeys)
+		UnreadableLines           = @($defs.UnreadableLines)
+		SharedContentPacks        = @($copiedPacks)
+		EditDetailLevelPreference = $defs.DetailLevel
 	}
 }
 
@@ -191,8 +381,9 @@ $templateProjectFile = Join-Path $sourceTemplate ($templateName + '.uproject')
 if (-not (Test-Path -LiteralPath $templateProjectFile -PathType Leaf)) {
 	throw "The installed engine does not contain the selected official project template: $templateProjectFile"
 }
-# materialize_project: apply the template's own Config/TemplateDefs.ini rules (as the UE New Project
-# wizard does) so the output is <ProjectName>.uproject with renamed module/source, not TP_* names.
+# materialize_project: apply the template's own Config/TemplateDefs.ini rules so the output is
+# <ProjectName>.uproject with renamed module/source, not TP_* names. Only the keys listed in
+# Read-TemplateDefs are implemented; anything else is warned about and recorded in the lock.
 $materialize = ($null -ne $recipeData.PSObject.Properties['materialize_project']) -and [bool]$recipeData.materialize_project
 if ($materialize -and $ProjectName -notmatch '^[A-Za-z][A-Za-z0-9_]{0,39}$') {
 	throw 'Recipes that materialize a C++ project need a ProjectName that is a C++ identifier (letter first, letters/digits/underscore only).'
@@ -292,9 +483,10 @@ if (-not [MulticaTemplateDirectory]::CreateDirectory($destinationPath, [IntPtr]:
 }
 
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+$materializedRules = $null
 try {
 	if ($materialize) {
-		Copy-MaterializedTemplate -SourceTemplate $sourceTemplate -Destination $destinationPath -TemplateName $templateName -Name $ProjectName -EngineTemplateRoot $engineTemplateRoot
+		$materializedRules = Copy-MaterializedTemplate -SourceTemplate $sourceTemplate -Destination $destinationPath -TemplateName $templateName -Name $ProjectName -EngineTemplateRoot $engineTemplateRoot
 	} else {
 		Get-ChildItem -LiteralPath $sourceTemplate -Force | ForEach-Object {
 			Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $destinationPath $_.Name) -Recurse
@@ -311,9 +503,19 @@ try {
 	# checked after its module rename, so the descriptor and Source/ are compared in the shape the
 	# generated project actually has.
 	$projectDescriptor = Get-Content -Raw -LiteralPath $projectFile | ConvertFrom-Json
+	if ($null -eq $materializedRules) {
+		# The raw-copy path applies no replacement rules, so a materialize-only descriptor rewrite has
+		# nothing to apply.
+		$materializedRules = [pscustomobject]@{ ContentRules = @(); AppliedKeys = @(); IgnoredKeys = @(); UnreadableLines = @(); SharedContentPacks = @(); EditDetailLevelPreference = $null }
+	}
 	if ($materialize) {
+		# The descriptor is not covered by the extension lists a template writes (it is JSON), but
+		# its Modules[].Name has to follow the same declared replacements as the Source/ tree, otherwise
+		# the copied project would advertise a module whose Build.cs is not there. The declared rules are
+		# applied to the module name as text; if no declared rule changes it, the identity check below
+		# stops and names the unmatched paths instead of writing a descriptor nobody can explain.
 		foreach ($module in @($projectDescriptor.Modules | Where-Object { $null -ne $_ })) {
-			$module.Name = Convert-TemplateName -Text ([string]$module.Name) -TemplateName $templateName -Name $ProjectName
+			$module.Name = Invoke-TemplateRules -Text ([string]$module.Name) -Rules $materializedRules.ContentRules -AnyExtension
 		}
 	}
 	$copiedIdentity = Get-ScaffoldIdentityReport -Descriptor $projectDescriptor -SourceRoot (Join-Path $destinationPath 'Source') -ProjectFileName $projectFileName
@@ -407,6 +609,13 @@ try {
 		recipe = [string]$recipeData.recipe
 		purpose = [string]$recipeData.purpose
 		plugins = $pluginVersions
+		template_defs = [ordered]@{
+			applied_keys = @($materializedRules.AppliedKeys)
+			ignored_keys = @($materializedRules.IgnoredKeys)
+			unreadable_lines = @($materializedRules.UnreadableLines)
+			edit_detail_level_preference = $materializedRules.EditDetailLevelPreference
+			shared_content_packs = @($materializedRules.SharedContentPacks | ForEach-Object { [ordered]@{ mount = $_.Mount; detail_level = $_.DetailLevel; declared = $_.DeclaredDetailLevel } })
+		}
 		online_session_identifier = if (@($recipeData.required_plugins) -contains 'MulticaOnlineStarter') { 'eiei114.ue5-agent-template:{0}' -f $ProjectName } else { $null }
 		project_differences = $projectDifferences
 	}

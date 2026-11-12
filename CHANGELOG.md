@@ -1,5 +1,22 @@
 # 変更履歴
 
+## Unreleased — DOT-3135
+
+- `Read-TemplateDefs` は `FilenameReplacements`（ファイル名の置換）と `ReplacementsInFiles`（本文の置換）を別宣言として読み、それぞれの `Extensions` で判定する。`From` / `To` は tuple ごとに適用し、`bCaseSensitive` も tuple の値を尊重する（`%TEMPLATENAME%` / `%TEMPLATENAME_UPPERCASE%` / `%TEMPLATENAME_LOWERCASE%` / `%PROJECTNAME%` / `%PROJECTNAME_UPPERCASE%` / `%PROJECTNAME_LOWERCASE%` を展開する）。旧実装は両キーを区別せず、1つの extension list をファイル名 rename と本文置換の両方に使い、`From` / `To` / `bCaseSensitive` を無視して template 名を3段階で必ず置換していた。
+- 実装していない `TemplateDefs.ini` キーは**警告して継続**する（停止ではない）。実 engine template は `LocalizedDisplayNames` / `LocalizedDescriptions` / `Categories` / `ClassTypes` / `AssetTypes` / `bThumbnailAsIcon` / `Variants` 等の wizard metadata を必ず持つため、停止にすると install 済み template を丸ごと拒否する。適用したキー・捨てたキー・解釈できなかった行は `template-lock.json` の `template_defs`（`applied_keys` / `ignored_keys` / `unreadable_lines`）に記録する。無言の成功は 0 件。
+- `SharedContentPacks` の per-mount `DetailLevels` を探索 path に使う。宣言 level に実体が無い場合だけ `EditDetailLevelPreference` → `High` → `Standard` の順に fall back し、fall back したら警告する。実際に使った level と「宣言どおりか」を lock の `template_defs.shared_content_packs`（`mount` / `detail_level` / `declared`）に記録する。
+- 生成後の不変条件検査は既存の `Get-ScaffoldIdentityReport`（`.uproject` の `Modules[].Name` と `Source/<Name>/<Name>.Build.cs` の双方向照合、非 0 停止）をそのまま使う。module 名は宣言された `ReplacementsInFiles` で置換するため、宣言規則が module 名に届かない場合は**停止**し、未一致 path を列挙する。exit 0 のまま食い違った tree を返す経路は無い。
+- `scripts/Test-UETemplateScaffold.ps1` に 5 group 追加（既存 8 group → 13 group）。非対称 fixture（`FilenameReplacements=(cpp,cs)` / `ReplacementsInFiles=(ini,cs)`）で「ファイル名だけ改名・本文は据え置き」を固定し、`From` 不一致の負例、未対応キーの正例（警告 + lock 記録）、per-mount `DetailLevels` の正例（`Low` 宣言 + Low のみ存在）、宣言 level 欠落時の fall back 記録を追加した。
+- docs（`CHANGELOG.md` / `README.md` / `AGENTS.md` / `docs/07-architecture.md` / `templates/recipes/third-person-game/Play.md`）の「UEウィザードと同じ規則」を、実装しているキーの列挙と未実装キーの明示に置き換えた。
+
+実測（本 host: Windows 10.0.26300 / pwsh 7.6.9 / Windows PowerShell 5.1.26100.9711）:
+
+- 実 install `UE_5.8`（Build.version 5.8.4 / CL 58902052）の `Templates/TP_ThirdPerson` を read-only で参照し、`third-person-game` を1回生成。`Created …` / exit 0、`.uproject` の `Modules[0].Name = Rtp_1`、`Source/Rtp_1/Rtp_1.Build.cs` が存在し、`Source/TP_ThirdPerson/` は残らない。lock の `template_defs.applied_keys` は 7 キー（`EditDetailLevelPreference` / `FilenameReplacements` / `FilesToIgnore` / `FolderRenames` / `FoldersToIgnore` / `ReplacementsInFiles` / `SharedContentPacks`）、`ignored_keys` は 6 キー（`AssetTypes` / `bThumbnailAsIcon` / `Categories` / `ClassTypes` / `LocalizedDescriptions` / `LocalizedDisplayNames`）、`shared_content_packs` は 3 mount すべて `declared: true` / `High`。engine 同梱物は repo へコピーしていない（一時 clone は削除）。
+- 変更前 `aa113700` に同じ suite を当てると、新 group が `ASSERT FAILED: FilenameReplacements renames the .cpp file name` 等で落ちる（追加 assertion が盲目でない）。
+- `scripts/Test-UETemplateScaffold.ps1` は `pwsh 7.6.9` と Windows PowerShell 5.1 の両方で 13 group PASS / exit 0。suite 前後で `git status --porcelain --untracked-files=all` は不変。
+
+UE install / launch / UBT compile / Editor / PIE / cook / MRQ / render / Shipping は本変更で実行していない。`Source/<Name>/<Name>.Build.cs` と `Modules[].Name = <Name>` の静的一致だけを合格根拠にし、UBT がこの tree をどう読むかは Unverified。
+
 ## Unreleased — 動画モーキャプ
 
 - `docs/09-video-mocap.md` を追加した。単眼のダンス動画から MediaPipe で体・手・顔の点を取り、VRM の骨の回転 → VRMA → UE（VRM4U）→ MV にする工程、単眼で取れない量の補い方、確認方法、1 本での実測、残る限界、権利の gate をまとめた。
@@ -61,7 +78,7 @@ Migration: regenerate projects that need project-scoped Null/LAN sessions with t
 ## Unreleased — third-person-game recipe
 
 - 公式`TP_ThirdPerson`（C++・Combat/Platforming/SideScrolling variant同梱）を起点にする`third-person-game` recipeを追加。
-- recipeの`materialize_project: true`で、テンプレート自身の`Config/TemplateDefs.ini`（FoldersToIgnore / FilesToIgnore / FolderRenames / ReplacementsInFiles / SharedContentPacks）をUEウィザードと同じ規則で適用し、`<ProjectName>.uproject`・`Source/<ProjectName>`・`<PROJECTNAME>_API`へ実体化。共有content pack（Characters等）も`Content/`へ入れ、`/Script/TP_*`のCoreRedirectとProjectID/ProjectNameを書く。
+- recipeの`materialize_project: true`で、テンプレート自身の`Config/TemplateDefs.ini`（FoldersToIgnore / FilesToIgnore / FolderRenames / ReplacementsInFiles / SharedContentPacks）を適用し、`<ProjectName>.uproject`・`Source/<ProjectName>`・`<PROJECTNAME>_API`へ実体化。共有content pack（Characters等）も`Content/`へ入れ、`/Script/TP_*`のCoreRedirectとProjectID/ProjectNameを書く。（この行の「UEウィザードと同じ規則」という主張はDOT-3135で撤回した。実装しているキーは`[Unreleased — DOT-3135]`の7キーで、それ以外は警告して継続しlockに記録する。）
 - 実体化するrecipeではProjectNameをC++識別子に制限。既存2 recipeの出力は変更なし。
 
 移行: 既存projectは再生成しない。三人称の新作だけ`-Recipe third-person-game`で新RunIdから生成し、Editor build・Playは作品側QAで記録する。

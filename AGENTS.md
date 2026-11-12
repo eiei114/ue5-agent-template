@@ -48,7 +48,7 @@ Production/<Name>_<runid>/
 
 project identityの契約は1つだけ。`scripts/New-UETemplateScaffold.ps1`はインストール済みUE公式templateから生成し、**projectファイル名・`Modules[].Name`・`Source/<Module>`は常に互いに一致**していなければならない。`EngineAssociation`は`Engine/Build/Build.version`から導いた値（例`5.8`）を必ず書き込む。
 
-- `materialize_project: true`のrecipe（`third-person-game`）は、template自身の`Config/TemplateDefs.ini`をUEウィザードと同じ規則で適用するため、`<Name>.uproject` / `Source/<Name>` / `Modules[].Name = <Name>`になる。
+- `materialize_project: true`のrecipe（`third-person-game`）は、template自身の`Config/TemplateDefs.ini`のうち実装している7キー（`FoldersToIgnore` / `FilesToIgnore` / `FolderRenames` / `FilenameReplacements` / `ReplacementsInFiles` / `SharedContentPacks` / `EditDetailLevelPreference`）を適用するので、`<Name>.uproject` / `Source/<Name>` / `Modules[].Name = <Name>`になる。ファイル名のrenameは`FilenameReplacements`、本文の置換は`ReplacementsInFiles`で別の`Extensions`を持つ。`From` / `To` / `bCaseSensitive`はtupleごとに使い、`%TEMPLATENAME_UPPERCASE%`等のtokenも展開する。共有packの探索はmountごとの`DetailLevels`を優先する。実装していないキー（`LocalizedDisplayNames` / `Categories` / `Variants`等のwizard metadata）は**警告して継続**し、適用/未適用キーを`template-lock.json`の`template_defs`に記録する。"UEウィザードと同じ"とは書かない（公式文書にschemaが無く、engine実物との照合も限定的なので、実装範囲を列挙して示す）。
 - それ以外のrecipe（`spectator-explore` / `vertical-loop`）は生コピーするため、template名（`TP_FirstPerson` / `TP_BlankBP`）がそのまま残る。ここで`.uproject`だけrenameすると`Source/**/*.Build.cs`と食い違う。
 
 generatorはコピー前にdescriptorと`Source/`を照合し、既知パターンに一致しなければ**推測で続行せず停止**して未一致pathを列挙する。コピー後にもコピー物同士で同じ照合を行い、食い違えばdescriptorを書き換えずに停止する。生成後に`.uproject`を手でrenameしない。identityは`template-lock.json`の`identity`（`project_file` / `project_modules` / `engine_association`、`schema_version: 2`）に記録され、そこで確認できる。

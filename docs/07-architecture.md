@@ -7,7 +7,7 @@
 | 共通基盤 | host・lease・環境構築・素材権利・検品・納品 | 既存docsと記録書式 |
 | ジャンルrecipe | 鑑賞・探索等の固有設定、受入条件 | `spectator-explore` recipeを追加 |
 | 用途部品 | プレイ／撮影。ジャンル別は両対応が基本 | `Play.md` / `Capture.md`に差分を分離 |
-| 三人称ゲーム | 公式TP_ThirdPersonをウィザード同等に実体化（名前置換・共有pack・redirect） | `third-person-game` recipe（`materialize_project`） |
+| 三人称ゲーム | 公式TP_ThirdPersonの実体化（実装済みTemplateDefsキーによる名前置換・共有pack・redirect） | `third-person-game` recipe（`materialize_project`） |
 | 映像専用 | 縦動画・ループ等、操作不要の入口 | `vertical-loop` capture-only recipeを追加 |
 | オンライン | 小人数listen server、session、replication | Null/LAN starter pluginと方式比較を追加。実測範囲はQA参照 |
 | project generator | installed Engineの公式templateから新規project生成 | `scripts/New-UETemplateScaffold.ps1`。排他的作成/上書き禁止、project identity照合あり |
@@ -15,7 +15,25 @@
 
 作品のセットは正本1つをプレイと撮影から参照し、撮影のためにマップ全体を複製しない。用途別の画質・カメラ・照明・UIの差分は明示する。
 
-`spectator-explore`は公式`TP_FirstPerson`を起点にし、プレイと撮影を同じsetへ向ける。`vertical-loop`は公式`TP_BlankBP`を起点にしてゲーム操作を要求しない。この2つはtemplateを生コピーし、`<EngineTemplate>.uproject`と`Source/<EngineTemplate>`が互いに一致したまま残る。`third-person-game`だけが`materialize_project: true`で、`Config/TemplateDefs.ini`をウィザードと同じ規則で適用し`<Name>.uproject`へ実体化する。generatorはEngineの既存templateをコピーし、recipe文書・online plugin・`template-lock.json`を加える。generator自身がmap/Sequence/`.uasset`を捏造しない。
+`spectator-explore`は公式`TP_FirstPerson`を起点にし、プレイと撮影を同じsetへ向ける。`vertical-loop`は公式`TP_BlankBP`を起点にしてゲーム操作を要求しない。この2つはtemplateを生コピーし、`<EngineTemplate>.uproject`と`Source/<EngineTemplate>`が互いに一致したまま残る。`third-person-game`だけが`materialize_project: true`で、`Config/TemplateDefs.ini`の実装済みキーを適用し`<Name>.uproject`へ実体化する。generatorはEngineの既存templateをコピーし、recipe文書・online plugin・`template-lock.json`を加える。generator自身がmap/Sequence/`.uasset`を捏造しない。
+
+### TemplateDefs.ini の実装範囲（共通基盤）
+
+実装しているキーは次の7つだけである。ここに列挙しないキーは**適用せず、警告して継続**し、`template-lock.json`の`template_defs.ignored_keys`に記録する。
+
+| キー | 適用内容 | 判定単位 |
+|---|---|---|
+| `FoldersToIgnore` / `FilesToIgnore` | コピー対象から外す | 相対path（`%TEMPLATENAME%`を展開） |
+| `FolderRenames` | 出力先のディレクトリを改名 | `(From,To)` tuple。`%PROJECTNAME%`を展開 |
+| `FilenameReplacements` | **ファイル名**を置換 | キー固有の`Extensions`と`From`/`To`/`bCaseSensitive` |
+| `ReplacementsInFiles` | **ファイル本文**を置換 | キー固有の`Extensions`と`From`/`To`/`bCaseSensitive`（宣言順） |
+| `SharedContentPacks` | `Templates/TemplateResources/<Level>/<Mount>/Content` → `Content/<Mount>` | mountごとの`DetailLevels`（実体が無ければfall backを警告） |
+| `EditDetailLevelPreference` | pack探索の既定level | 単一値 |
+
+- `FilenameReplacements`と`ReplacementsInFiles`は別宣言であり、片方の`Extensions`をもう片方の判定に使わない。`From`が一致しない場合、そのtupleは何も置換しない。
+- 未実装キー（`LocalizedDisplayNames` / `LocalizedDescriptions` / `Categories` / `ClassTypes` / `AssetTypes` / `bThumbnailAsIcon` / `SortKey` / `Variants` 等）はウィザードの表示・選択metadataであり、本generatorは使わない。実engine templateはこれらを必ず含むため、停止ではなく警告とlock記録を選んでいる。
+- module名（`.uproject`の`Modules[].Name`）にも`ReplacementsInFiles`を適用する。宣言規則がmodule名に届かなければ生成後のidentity検査で非0停止し、未一致pathを列挙する。
+- `.uproject`はJSONであり`ReplacementsInFiles`の`Extensions`（`cpp`/`h`/`ini`/`cs`等）に含まれない。module名の書換はidentity契約を保つための別処理であり、本文置換の対象ではない。
 
 ### project identity契約（1つだけ）
 
