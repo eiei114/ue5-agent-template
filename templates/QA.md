@@ -17,6 +17,7 @@ writer/lease nonce・取得/解放receipt：
 | MRQ完了通知・exit code | unverified | 通知本文/exit。画像列検査とは別欄に記録 |
 | MRQ/ffprobe実測 | unverified | 幅/高さ/fps/frame数/秒数/codec/音声 |
 | 先頭/中間/末尾目視・全編再生 | unverified | |
+| run所有processの回収 | unverified | `-- 対象件数 -- 停止件数 -- 残存件数 -- 残存の帰属不明件数 -- 判定(free/held/unknown)`。`Stop-UETemplateRunProcesses.ps1`のdry-run planと実行後のverification、`Test-UETemplateLease.ps1`のreport pathを書く。`unknown`はpassにしない |
 | 映像と音のloop継ぎ目 | unverified | |
 | Shipping成功・ZIP別展開起動/操作 | unverified | |
 | Mac.app/architecture/署名/公証 | unverified | 必要な場合のみ |
@@ -34,5 +35,21 @@ writer/lease nonce・取得/解放receipt：
 
 検査対象の画像列・run専用出力先・実施SHA・tool版を記録する。旧runの同数frame混入はこの検査だけでは判定できないため、run所有権の照合結果を別途残す。
 
+## run所有processの回収（停止対象一覧→実行→検証）
+
+空欄・`unverified`のまま納品しない。4つの数と判定を、実測のreportから書き写す。
+
+```text
+停止対象件数（plan.stop_targets）              ：
+停止件数（verification.stopped_count）          ：
+残存件数（verification.residual_count）          ：
+残存の帰属不明件数（verification.gap_count）    ：
+判定（free / held / unknown）                    ：
+plan path / verification path / snapshot sha256  ：
+```
+
+- `unknown`は合格にしない。帰属不明のprocessは停止せず、理由（`live-process-not-in-snapshot` / `pid-reused-or-identity-mismatch` / `snapshot-hash-mismatch`等）を残す。
+- 他人のprocess・共有Chrome・writerの親は停止対象外。件数は`excluded`として別に数える。
+- `writer_pid`の生存だけを根拠に`free`と書かない（旧leaseは`unknown`になる）。
+
 残作業/次担当/再開条件：
-run所有process終了・他人のprocess非干渉：
