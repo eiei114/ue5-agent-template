@@ -7,6 +7,7 @@
 - timeout は「timeout の発生」（`QA-NET-08`）と「timeout 後の後始末」（`QA-NET-09`）を別行にした。`docs/08-online-foundations.md` が遅延成功した create/join の cleanup を独立の主張として扱っているため、片方の pass でもう片方を埋めない。
 - `scripts/Test-UETemplateScaffold.ps1` に QA 雛形の行被覆 assertion を追加した。要求 24 行の存在、行 ID の重複なし、値が `pass`/`fail`/`unverified`/`non-goal` の 4 択であること、online 行が `spectator-explore` 限定と `non-goal` を明記していること、timeout の 2 行が別の主張であることを検査する。**負例**として fixture 内のコピーから `QA-NET-02`・`QA-NET-09`・`QA-PLAY-01`・`QA-BUILD-01` を 1 行ずつ削り、それぞれ欠けた行 ID を名指しで落ちることを同じ suite で固定した。`unverified` を `ok` へ書き換えた負例も追加した。
 - `docs/05-qa.md` の末尾に、QA 雛形の表の行が受入項目の正本であることと、recipe により `non-goal` になりうることを追記した。
+- `scripts/Test-UETemplateScaffold.ps1` の QA 行パーサが `\|`（Markdown の escape された pipe）も列区切りとして扱っており、証拠欄に `\|` を書いた行だけが 3 列でなくなり、行検査から静かに外れていた。未エスケープの `|` だけで分割するよう直し、証拠欄に `\|` を入れた雛形が行として認識され続けることを suite の assertion にした。
 
 移行: 既存生成物の QA は書き換えない。旧 run の QA は当時の雛形のまま残し、新しい受入項目の行は次の run から使う。`templates/DELIVERY.json` の field、recipe の中身、online plugin の C++、UE Content には触れていない。
 

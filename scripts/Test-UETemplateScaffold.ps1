@@ -122,7 +122,11 @@ function Get-QaTemplateRows([string]$Path) {
 	foreach ($line in $lines) {
 		$trimmed = $line.Trim()
 		if (-not $trimmed.StartsWith('|')) { continue }
-		$cells = @($trimmed.Trim('|') -split '\|' | ForEach-Object { $_.Trim() })
+		# Split on column separators only: a Markdown escape (\|) inside an evidence cell is content,
+		# and splitting it away turned a complete row into a 4-cell line that the checks then ignored.
+		$inner = $trimmed.Substring(1)
+		if ($inner.EndsWith('|') -and -not $inner.EndsWith('\|')) { $inner = $inner.Substring(0, $inner.Length - 1) }
+		$cells = @([regex]::Split($inner, '(?<!\\)\|') | ForEach-Object { $_.Trim() })
 		if ($cells.Count -ne 3) { continue }
 		if ($cells[1] -eq 'pass/fail/unverified/non-goal') { continue }
 		if ($cells[0] -match '^:?-{2,}$' -or $cells[1] -match '^:?-{2,}$') { continue }
@@ -488,6 +492,18 @@ try {
 	$verdictFailure = ''
 	try { Assert-QaTemplateContract $qaCopyPath } catch { $verdictFailure = $_.Exception.Message }
 	Assert-True ($verdictFailure.Contains("row QA-MRQ-01 uses 'ok'")) 'a value outside pass/fail/unverified/non-goal is rejected instead of counting as a recorded verdict'
+
+	# A Markdown escape inside an evidence cell is cell content, not a column separator. Splitting on it
+	# turned a complete row into a wider line that the row checks then skipped, so a reviewer writing
+	# `a \| b` in the evidence column would have lost the row from the contract.
+	$escapedPipeCopy = @([System.IO.File]::ReadAllText($qaSource) -split "\r?\n" | ForEach-Object {
+		if ($_ -match '^\| \[QA-NET-02\]') { $_.TrimEnd().TrimEnd('|').TrimEnd() + ' escaped \| separator inside one cell |' } else { $_ }
+	})
+	[System.IO.File]::WriteAllText($qaCopyPath, ($escapedPipeCopy -join "`n"), [System.Text.UTF8Encoding]::new($false))
+	Assert-QaTemplateContract $qaCopyPath
+	$escapedRows = @(Get-QaTemplateRows $qaCopyPath)
+	Assert-True (@($escapedRows | Where-Object { $_.Id -eq 'QA-NET-02' }).Count -eq 1) 'an escaped pipe in an evidence cell does not remove the row from the row list'
+	Assert-True (@($escapedRows | Where-Object { $_.Id -eq 'QA-NET-02' })[0].Evidence.Contains('escaped \| separator')) 'the escaped pipe stays in the evidence cell'
 
 	[System.IO.File]::WriteAllText($qaCopyPath, [System.IO.File]::ReadAllText($qaSource), [System.Text.UTF8Encoding]::new($false))
 	Assert-QaTemplateContract $qaCopyPath
