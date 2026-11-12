@@ -75,6 +75,7 @@ leaseの取得・解放・所有権照合は `scripts/Lease-UETemplateProject.ps
 ## 最小smokeの証拠
 
 clone commit → preflight → lease → project生成 → Editor build → Playで床/cube/camera表示 → MRQ 2秒 → ffprobeと目視 → optional Shipping → 解放。
+MRQ 2秒の書き出しは`docs/05-qa.md`の経路A（画像列＋既存ffmpeg）と経路B（`H.264 MP4 [8bit]`で直接MP4）のどちらでもよいが、使った経路・MRQの出力設定名・元PNG列の有無を`templates/QA.md`へ記録する。
 各工程はpass/fail/unverified、exit code、実ファイルhashで記録する。文書リンク点検だけをUE smokeと呼ばない。
 
 ## 切断からの復旧・続行（既存制作にも適用）

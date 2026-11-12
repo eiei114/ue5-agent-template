@@ -15,6 +15,9 @@ writer/lease nonce・取得/解放receipt（`scripts/Lease-UETemplateProject.ps1
 | ゲーム実音の聴取 | unverified | |
 | エンコード前の画像列検査 | unverified | `evidence/frames-check.json`。start/end(exclusive)/命名/期待解像度、欠番・範囲外・曖昧名・0 byte・decode・解像度の各判定 |
 | MRQ完了通知・exit code | unverified | 通知本文/exit。画像列検査とは別欄に記録 |
+| [QA-ENC-01] `encode_path`（書き出し経路） | unverified | `mrq-image-sequence+external-ffmpeg` / `mrq-native-mp4`（他は自由記述）。`docs/05-qa.md`の経路A/Bに対応 |
+| [QA-ENC-02] `mrq_output_setting`（MRQの出力設定名） | unverified | 実際に選んだ表示名（例 `H.264 MP4 [8bit]`、`PNG image sequence`） |
+| [QA-ENC-03] `source_png_sequence`（元PNG列の有無） | unverified | 存在する／存在しない。経路B（direct-MRQ MP4）は「存在しない」と明記し、空欄にしない |
 | MRQ/ffprobe実測 | unverified | 幅/高さ/fps/frame数/秒数/codec/音声 |
 | 先頭/中間/末尾目視・全編再生 | unverified | |
 | 映像と音のloop継ぎ目 | unverified | |

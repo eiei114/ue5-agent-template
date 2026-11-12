@@ -1,5 +1,15 @@
 # 変更履歴
 
+## Unreleased — DOT-3232
+
+- `docs/05-qa.md` は MP4 への書き出し経路を **1 本（MRQ 画像列 → 既存 ffmpeg）しか書いておらず**、UE 5.8.4 の実インストールが同梱する MRQ の MP4 直接出力を encoder として数えていなかった。同ファイル `:7` の「既存 encoder がなければ勝手に導入しない」は、UE 自身が持つ encoder を「無い」と読ませる書き方で、ffmpeg の無い host の agent を停止させうる。加えて `templates/QA.md` には**どの経路で MP4 を作ったかを記録する欄が 0 行**だったため、direct-MRQ の MP4 と ffmpeg で組んだ MP4 が納品記録上で区別できなかった。
+- `docs/05-qa.md` に「書き出し経路（2つ）」節を追加し、**経路A（`mrq-image-sequence+external-ffmpeg`、元 PNG 列が存在し画像列検査が効く）** と **経路B（`mrq-native-mp4`、MRQ の出力設定 `H.264 MP4 [8bit]` で直接 MP4、元 PNG 列は存在しない）** を、元 PNG 列の有無つきで明示した。既定は経路A のままで、経路B を既定にしない。`:7` の文は「UE 同梱の MRQ 出力設定も encoder として数える。外部 ffmpeg の新規導入はしない」へ書き換えた（**新規導入禁止は維持**）。既存の ffmpeg 例は削除していない。独立判定表の「画像列」行にも、経路B では対象が存在しないことを追記した。
+- `templates/QA.md` に `encode_path` / `mrq_output_setting` / `source_png_sequence` の 3 行を `MRQ/ffprobe実測` 行の直前に追加した。direct-MRQ MP4 は「元 PNG 列が無いから unverified」ではなく「経路B として記録済み」と書ける。既存行の意味は変えていない。
+- `docs/01-start.md` の最小 smoke chain と、`templates/recipes/{vertical-loop,spectator-explore,third-person-game}/Capture.md` の ffprobe 前提の 1 行に、どちらの経路でもよいこと・経路と出力設定名を QA へ記録することを 1 文ずつ追記した。
+- 理由・出典: (a) Epic 公式 docs（UE 5.8 の MRQ 概要／高品質フレーム描画ガイド、2026-11-05 参照）の出力設定表に `.bmp`/`.jpg`/`.png`/`.exr`/`.wav` のみで **MP4 の記載が無い**（= 文書の不在。機能の不存在や非推奨の公式見解ではない）、(b) 実インストールの `Engine/Plugins/MovieScene/MovieRenderPipeline/MovieRenderPipeline.uplugin` に `MovieRenderPipelineMP4Encoder`（`PlatformAllowList` は Mac/Win64/Linux）と `Binaries/Win64/UnrealEditor-MovieRenderPipelineMP4Encoder.dll`、`Source/MovieRenderPipelineMP4Encoder/Public/MoviePipelineMP4EncoderOutput.h`（`GetFilenameExtension() == "mp4"`、`GetDisplayText() == "H.264 MP4 [8bit]"`）が実在し、PNG/EXR 出力と同じ `UMoviePipelineSetting` 系として登録されている、(c) 同梱 source の `Source/MovieRenderPipelineMP4Encoder/Private/Windows/MoviePipelineMP4Encoder.h:11` に `Experimental.` の明記がある。**このため既定経路を MP4 へ倒す提案はしない。**
+- 移行: 既存作品の `Out`・画像列・MP4 を再生成しない。既存 run の QA 記録は当時の経路が不明なら `encode_path` を空欄のまま `unverified` とし、遡って推測で埋めない。`MovieRenderPipelineMP4Encoder` を recipe の `required_plugins` へ追加していない（`.uplugin` の `MovieRenderPipeline` に同梱される）。ffmpeg / ffprobe の導入・更新・画質パラメータの変更も無い。
+- Unverified Scope: UE 5.8.4 で経路B（`H.264 MP4 [8bit]`）が実際に動くこと、direct-MRQ MP4 の画質・frame 数・音声同期・loop 継ぎ目が経路A と同等であること、`Experimental` 表記が将来の UE 版で外れること、Epic が MP4 出力を非推奨としていること、ffmpeg の無い host で agent が実際に停止すること（本 host には ffmpeg 8.1.2 がある）。本変更は UE を起動せず、engine 同梱物（`.dll` / `.uasset` / `TemplateDefs.ini`）を repo へ追加していない。
+
 ## Unreleased — DOT-3157
 
 - 生コピー経路（`materialize_project`を持たない`spectator-explore` / `vertical-loop`）がtemplateの`Config/TemplateDefs.ini`を一度も読まず、templateフォルダを丸ごとコピーしていた。出力`Content/`に`TP_FirstPerson`の既定mapが参照する共有content pack（`Characters` / `LevelPrototyping` / `Input` / `Weapons`）が入らず、逆にignore対象の`Media/`と`Config/TemplateDefs.ini`・`Config/config.ini`が残っていた。generatorはexit 0で`Created ...`を表示し、testは6群PASSしていたため、"assetが足りない"を出力から判別できなかった。
