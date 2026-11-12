@@ -28,6 +28,16 @@
 
 lockは`schema_version: 2`で、上記3項目を`identity`に持つ。単位は作品（`Production/<Name>_<runid>/template-lock.json`）であり、identityを手で書き換えない。
 
+## preflight・leaseの配置（正本）
+
+生成前に書くもの（preflight記録とlease）の置き場所は1つだけにし、生成先`Production/<Name>_<runid>/`と重ねない。
+
+`preflight-lease-placement: Production/.runs/run_<runid>/`
+
+- このpathは生成先project dirの外にある台帳dir。`Production/*`はgitignore対象なのでclean-tree gateを踏まない。
+- `Production/<Name>_<runid>/`を作るのはgeneratorだけで、lease工程はこのdirを作らない。中身が空でも`LEASE.json`だけでも`Out/`だけでも、generatorは「順序誤り」と判別できるメッセージで停止する（削除・上書きはしない）。
+- 上の1行を機械可読な正本とし、`scripts/Test-UETemplateScaffold.ps1`が`AGENTS.md`・`README.md`・`docs/01-start.md`が同じpathを指していることを照合する。文書を変えるときはこの行を先に変え、他文書を追随させる。
+
 ## lockと更新手順
 
 lockはtemplate commit SHA、clean/dirty状態、UE version/changelist、Engine/plugin version、recipe/use、作品差分、project identityを固定する。実作はcommit済み・cleanなtemplateから生成する。dirty時の生成は拒否し、テストだけ明示的な`-AllowDirtyTemplate`を使う。

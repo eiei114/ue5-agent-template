@@ -8,7 +8,7 @@ README → docs/01-start → 対象工程のdocs。現行Issue・owner指示・�
 
 1. Issueの納品種別（映像/実行版/ソース）と非目標、既存writerを確認。
 2. online Windows Pi優先。OS/GPU/空き容量/既存UE/SDK/モデル・effort/利用枠/active runsを現地照合。Mac miniでbuild/render/downloadしない。
-3. 新規 `Production/<Name>_<runid>/` を排他的作成。既存なら停止。既存project再開は所有権照合後、LEASE.jsonをCreateNew相当で取得。
+3. run台帳 `Production/.runs/run_<runid>/` を排他的mkdirし、preflight（`templates/QA.md`を複製した`preflight.md`）と`LEASE.json`（CreateNew相当）をその中へ書く。**生成先 `Production/<Name>_<runid>/` はlease工程で作らない**（ここを先に作ると手順4の生成が停止する）。生成先が未使用であることだけを確認する。
 4. 最初は追加素材なしの立方体・床・光・カメラ。小さいpreview→目視→調整→本番。UEテンプレートは当該hostの正規既存インストールから生成。
 5. 映像はフレーム・全編・継ぎ目・音を検査。実行版はShipping梱包後、別フォルダ展開から起動・操作・5分測定。
 6. CREDITS / QA / manifest / SHAを**同じ最終版**へ固定して納品。見た目未検品や旧版ZIPは完成でない。
@@ -36,15 +36,20 @@ README → docs/01-start → 対象工程のdocs。現行Issue・owner指示・�
 ## フォルダ
 
 ```text
-Production/<Name>_<runid>/
-  <ProjectFile>.uproject / Config/ / Content/ / Source/ [Plugins/]   # materialize_projectなら<Name>、それ以外は<EngineTemplate>
-  Art/                 # 許可済み取得物。Gitテンプレートへ入れない
-  Tools/               # 当該project用。秘密なし
-  Out/run_<runid>/
-    preview/ frames/ final/ staging/ extracted-check/ evidence/
-    QA.md CREDITS.md DELIVERY.json SHA256SUMS.txt
-  LEASE.json           # active所有者のみ。Git外
+Production/
+  .runs/run_<runid>/        # 生成前の台帳。Git外。生成先projectの外にある
+    preflight.md           # templates/QA.md の複製。生成後はproject内のQA.mdへ移す
+    LEASE.json             # active所有者のみ。CreateNew相当。Git外
+  <Name>_<runid>/          # generatorが排他的mkdirする生成先。手順3で先に作らない
+    <ProjectFile>.uproject / Config/ / Content/ / Source/ [Plugins/]   # materialize_projectなら<Name>、それ以外は<EngineTemplate>
+    Art/                 # 許可済み取得物。Gitテンプレートへ入れない
+    Tools/               # 当該project用。秘密なし
+    Out/run_<runid>/
+      preview/ frames/ final/ staging/ extracted-check/ evidence/
+      QA.md CREDITS.md DELIVERY.json SHA256SUMS.txt
 ```
+
+preflightとleaseの記録先は`Production/.runs/run_<runid>/`のみ。生成先`Production/<Name>_<runid>/`の内側（`Out/`・`LEASE.json`）に先行して書くと、generatorの排他的mkdirが既存扱いで停止する。生成後にpreflightの内容は`Out/run_<runid>/QA.md`へ移し、leaseの解放記録も台帳dirに残す。
 
 project identityの契約は1つだけ。`scripts/New-UETemplateScaffold.ps1`はインストール済みUE公式templateから生成し、**projectファイル名・`Modules[].Name`・`Source/<Module>`は常に互いに一致**していなければならない。`EngineAssociation`は`Engine/Build/Build.version`から導いた値（例`5.8`）を必ず書き込む。
 

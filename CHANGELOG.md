@@ -1,5 +1,22 @@
 # 変更履歴
 
+## Unreleased — DOT-3153
+
+- **文書どおりに最初の1回を実行すると必ず停止していた。** preflight 記録先（`docs/01-start.md:5`）・lease 取得先（`AGENTS.md:11` / `docs/01-start.md:21`）・生成先（`scripts/New-UETemplateScaffold.ps1` の排他的 mkdir）が同じ `Production/<Name>_<runid>/` を要求していたため、記録を先に書くと generator が `Output already exists; it was not modified` で停止した。
+- preflight と lease の正本を **`Production/.runs/run_<runid>/`**（生成先 project dir の外）へ一本化した。`Production/*` は `.gitignore:2` の対象なので clean-tree gate を踏まない。正本は `docs/07-architecture.md` の `preflight-lease-placement: Production/.runs/run_<runid>/` 1 行で、`AGENTS.md`・`README.md`・`docs/01-start.md` はそれを指す。
+- `docs/01-start.md:5` は「`templates/QA.md` に記録」から「`templates/QA.md` を複製して `Production/.runs/run_<runid>/preflight.md` に記録（生成後は project 内の `Out/run_<runid>/QA.md` へ移す）」へ改正。`templates/` を編集対象にしない。
+- `docs/01-start.md:21` の「新 project dir の排他的 mkdir と `LEASE.json` の排他的 create」を、台帳 dir の排他的 mkdir と `LEASE.json` の排他的 create に改め、**生成先 `Production/<Name>_<runid>/` は lease 工程で作らない**（作るのは generator だけ）と明記した。
+- generator の 183 分岐を原因別にした。中身が空、`LEASE.json` のみ、`Out/` のみなど、既知の先行生成物しか無い場合は「**順序誤りであり既存成果物ではない**」と、正しい配置とともに述べる。既存成果物がある場合は中身を列挙する。**削除・上書きは行わない**（破壊は別 gate）。
+- `scripts/Test-UETemplateScaffold.ps1` に順序契約の assertion を 5 group 追加（既存 8 group は不変）: 配置の一元性（`docs/07` の 1 行と 3 文書の一致）、`Production/.runs/run_<runid>/` に preflight と lease を置いたままでも生成が exit 0、空 dir / lease のみ / `Out/` のみが順序誤りとして判別できること、`templates/QA.md` 編集では従来どおり clean-tree gate で停止すること。
+
+**落ちる側（変更前 `adfb5ee` の repo 本文＋新しい suite）**: `ASSERT FAILED: docs/07-architecture.md states the single preflight/lease placement as a machine-readable line` で exit 1。順序の assertion は変更前 HEAD では成立しない。
+
+**検証（本 host, Windows 10.0.26300, `pwsh 7.6.9`）**: `scripts/Test-UETemplateScaffold.ps1` → 13 group PASS / exit 0（既存 8 + 新規 5）。suite が作る一時 dir は `Production/.runs/` のみで、cleanup 後に残骸 0・checkout 差分 0 を再確認している。
+
+移行: 既存 project と `Production/<Name>_<runid>/` の生成物には触れない。既存の生成済み project では preflight/lease を従来どおり `Out/run_<runid>/QA.md` と台帳へ移して続行できる。新規 run は `Production/.runs/run_<runid>/` に preflight と lease を書いてから生成する。
+
+**Unverified Scope**: 実 UE 5.8 系 install を `-EngineRoot` にした実 project 生成・Editor build・PIE・MRQ は本 turn で実行していない。根拠は合成 Engine fixture と PowerShell 実測のみ。`docs/06-delivery.md` の `SHA256SUMS.txt` 検証 cwd との整合（DOT-3065 の領域）は未検証。
+
 ## Unreleased — DOT-3395
 
 - 画像列QA helperは、`FramesDirectory`またはreport親pathにjunction/symlink等のreparse pointが含まれる場合に、実効出力境界を確認できないため検査前に拒否する。reportがjunction経由で画像列へ書き込まれるのを防ぐ回帰fixtureを追加した。

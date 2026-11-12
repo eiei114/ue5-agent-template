@@ -14,15 +14,25 @@ $projectPrefix = "Ex_$testId"
 $loopProjectName = "Lp_$testId"
 $existingProjectName = "No_$testId"
 $otherProjectName = "Alt_$testId"
+$ledgerRunId = "$testId-ledger"
+$ledgerProjectName = "Ld_$testId"
+$emptyRunId = "$testId-empty"
+$leaseRunId = "$testId-lease"
+$outRunId = "$testId-out"
 $outputNames = @(
 	"${projectPrefix}_$testId-a",
 	"${projectPrefix}_$testId-b",
 	"${loopProjectName}_$testId-a",
 	"${existingProjectName}_$testId-preserved",
 	"Tp_${testId}_$testId-a",
-	"${otherProjectName}_$testId-c"
+	"${otherProjectName}_$testId-c",
+	"${ledgerProjectName}_$ledgerRunId",
+	"${existingProjectName}_$emptyRunId",
+	"${existingProjectName}_$leaseRunId",
+	"${existingProjectName}_$outRunId"
 )
 $outputPaths = @($outputNames | ForEach-Object { Join-Path $productionRoot $_ })
+$ledgerRoot = Join-Path (Join-Path $productionRoot '.runs') ("run_$ledgerRunId")
 
 function Assert-True([bool]$Condition, [string]$Message) {
 	if (-not $Condition) { throw "ASSERT FAILED: $Message" }
@@ -38,7 +48,7 @@ function Get-ProductionResidue {
 	# negative-case outputs, for any test id) are reported, so a developer's own generated
 	# Production/<Name>_<runid>/ projects do not block the suite.
 	$violations = New-Object System.Collections.Generic.List[string]
-	$allowed = @('PLACEHOLDER.md') + @([System.IO.Path]::GetFileName($fixtureRoot)) + @($outputNames)
+	$allowed = @('PLACEHOLDER.md', '.runs') + @([System.IO.Path]::GetFileName($fixtureRoot)) + @($outputNames)
 	$suiteOwnedPattern = '^(?:\.scaffold-test-[0-9a-f]{32}|[A-Za-z]+_([0-9a-f]{32})_\1-.+|Bad-Name_[0-9a-f]{32}-bad|escape_[0-9a-f]{32})$'
 	if (-not (Test-Path -LiteralPath $productionRoot -PathType Container)) {
 		$violations.Add('Production/: the directory is missing')
@@ -51,6 +61,17 @@ function Get-ProductionResidue {
 		if ($allowed -contains $entry.Name) { continue }
 		if ($entry.Name -cnotmatch $suiteOwnedPattern) { continue }
 		$violations.Add("Production/$($entry.Name): unexpected entry (ignored by .gitignore, so git status does not report it)")
+	}
+	# The ledger directory is now part of the documented layout, so it is allowed to exist. Only a
+	# ledger this suite's own naming pattern owns (run_<32 hex digits>-ledger) must not survive
+	# cleanup; a developer's own run ledger is not reported.
+	$runsDir = Join-Path $productionRoot '.runs'
+	if (Test-Path -LiteralPath $runsDir -PathType Container) {
+		foreach ($ledgerEntry in @(Get-ChildItem -LiteralPath $runsDir -Force)) {
+			if ($ledgerEntry.Name -cmatch '^run_[0-9a-f]{32}-ledger$') {
+				$violations.Add("Production/.runs/$($ledgerEntry.Name): leftover run ledger from an earlier suite run")
+			}
+		}
 	}
 	return $violations.ToArray()
 }
@@ -91,6 +112,18 @@ function Assert-GeneratorFails([scriptblock]$Action, [string]$Message) {
 	$failed = $false
 	try { & $Action } catch { $failed = $true }
 	Assert-True $failed $Message
+}
+
+function Get-GeneratorFailure([scriptblock]$Action) {
+	# Returns the failure text instead of a bool so a negative case can assert what the agent reads.
+	try { & $Action | Out-Null } catch { return $_.Exception.Message }
+	return ''
+}
+
+function Assert-GeneratedProject([string]$ProjectName, [string]$Run, [string]$Message) {
+	$path = Join-Path $productionRoot ('{0}_{1}' -f $ProjectName, $Run)
+	Assert-True (Test-Path -LiteralPath $path -PathType Container) $Message
+	Assert-True (@(Get-ChildItem -LiteralPath $path -File -Force).Count -gt 0) ($Message + ' (the project directory is not empty)')
 }
 
 $suiteError = $null
@@ -339,6 +372,121 @@ try {
 	Assert-GeneratorFails { Invoke-Generator 'spectator-explore' $existingProjectName "$testId-preserved" @() } 'existing output is rejected'
 	Assert-True ([System.IO.File]::ReadAllText($sentinel) -ceq 'untouched') 'existing output content is not overwritten'
 	Write-Output 'PASS: exclusive output-directory creation preserves existing content'
+
+	# Ordering contract (UE-FIRSTRUN-001): the documented first run writes preflight and lease to
+	# Production/.runs/run_<runid>/, outside the generated project. Before the fix, every documented
+	# route occupied Production/<Name>_<runid>/ first and the generator stopped with one message that
+	# did not say why, so the first run could not finish at all.
+	$placement = 'preflight-lease-placement: Production/.runs/run_<runid>/'
+	$architectureText = [System.IO.File]::ReadAllText((Join-Path $repoRoot 'docs\07-architecture.md'))
+	Assert-True ($architectureText.Contains($placement)) 'docs/07-architecture.md states the single preflight/lease placement as a machine-readable line'
+	foreach ($docPath in @('AGENTS.md', 'README.md', 'docs\01-start.md')) {
+		$docText = [System.IO.File]::ReadAllText((Join-Path $repoRoot $docPath))
+		Assert-True ($docText.Contains('Production/.runs/run_<runid>/')) "$docPath points at the same preflight/lease placement as docs/07-architecture.md"
+		Assert-True ($docText.Contains('Production/<Name>_<runid>/')) "$docPath still names the generated project directory as a separate path"
+	}
+	$startText = [System.IO.File]::ReadAllText((Join-Path $repoRoot 'docs\01-start.md'))
+	# The suite must stay ASCII-only (Windows PowerShell 5.1 reads BOM-less scripts in the system
+	# code page), so the documents are checked through ASCII markers rather than their prose: every
+	# mention of the tracked QA template has to name the ledger destination on the same line, and the
+	# lease rule has to name the generated project directory it must not create.
+	$templateMentions = @($startText -split "`n" | Where-Object { $_.Contains('`templates/QA.md`') })
+	Assert-True ($templateMentions.Count -gt 0) 'docs/01-start.md still refers to templates/QA.md as the record template'
+	foreach ($mention in $templateMentions) {
+		Assert-True ($mention.Contains('Production/.runs/run_<runid>/preflight.md')) 'every templates/QA.md mention in docs/01-start.md names the copy destination Production/.runs/run_<runid>/preflight.md'
+	}
+	Assert-True ($startText.Contains('Production/<Name>_<runid>/') -and $startText.Contains('Production/.runs/run_<runid>/')) 'docs/01-start.md keeps the generated project directory and the ledger directory as different paths'
+	$agentsText = [System.IO.File]::ReadAllText((Join-Path $repoRoot 'AGENTS.md'))
+	$tree = [regex]::Match($agentsText, '(?s)```text\r?\n(.*?)```').Groups[1].Value
+	Assert-True ($tree.Contains('.runs/run_<runid>/')) 'AGENTS.md folder diagram has the ledger directory'
+	$treeLeaseLine = @($tree -split "`n" | Where-Object { $_.Contains('LEASE.json') })
+	Assert-True ($treeLeaseLine.Count -eq 1) 'AGENTS.md folder diagram lists the lease file exactly once'
+	$leaseIndent = $treeLeaseLine[0].Length - $treeLeaseLine[0].TrimStart().Length
+	$ledgerIndent = (@($tree -split "`n" | Where-Object { $_.Contains('.runs/run_<runid>/') })[0]).Length - (@($tree -split "`n" | Where-Object { $_.Contains('.runs/run_<runid>/') })[0]).TrimStart().Length
+	Assert-True ($leaseIndent -gt $ledgerIndent) 'AGENTS.md folder diagram nests LEASE.json inside Production/.runs/run_<runid>/, not inside the generated project'
+	$projectLine = @($tree -split "`n" | Where-Object { $_.Contains('<Name>_<runid>/') })
+	Assert-True ($projectLine.Count -eq 1) 'AGENTS.md folder diagram lists the generated project directory once'
+	Assert-True (@($tree -split "`n" | Where-Object { $_.Contains('Out/run_<runid>/') }).Count -eq 1) 'AGENTS.md folder diagram keeps Out/ inside the generated project'
+	$startLeaseLines = @($startText -split "`n" | Where-Object { $_.Contains('LEASE.json') })
+	foreach ($rule in $startLeaseLines) {
+		Assert-True ($rule.Contains('Production/.runs/run_<runid>/')) 'docs/01-start.md places the lease in Production/.runs/run_<runid>/, outside the generated project'
+	}
+	Assert-True (-not ($startText -split "`n" | Where-Object { $_.Contains('`templates/QA.md`') -and -not $_.Contains('Production/.runs/run_<runid>/preflight.md') }).Count -gt 0) 'docs/01-start.md never treats the tracked template as the record destination'
+	Write-Output 'PASS: preflight/lease placement is stated once and referenced by AGENTS.md, README.md and docs/01-start.md'
+
+	# The documented order actually completes: copy the QA template into the ledger directory, leave a
+	# lease there, then generate. The generated project directory is created only by the generator.
+	$ledgerProjectNameRun = $ledgerRunId
+	[System.IO.Directory]::CreateDirectory($ledgerRoot) | Out-Null
+	$preflightPath = Join-Path $ledgerRoot 'preflight.md'
+	[System.IO.File]::WriteAllText($preflightPath, [System.IO.File]::ReadAllText((Join-Path $repoRoot 'templates\QA.md')), [System.Text.UTF8Encoding]::new($false))
+	$leasePath = Join-Path $ledgerRoot 'LEASE.json'
+	$leaseCreate = [System.IO.File]::Open($leasePath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+	try {
+		$leaseBytes = [System.Text.UTF8Encoding]::new($false).GetBytes('{"run":"' + $ledgerProjectNameRun + '","host":"test","nonce":"fixture"}')
+		$leaseCreate.Write($leaseBytes, 0, $leaseBytes.Length)
+	} finally { $leaseCreate.Dispose() }
+	Assert-True (Test-Path -LiteralPath $preflightPath -PathType Leaf) 'the preflight record exists in the ledger directory before generation'
+	Assert-True (Test-Path -LiteralPath $leasePath -PathType Leaf) 'the lease exists in the ledger directory before generation'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $productionRoot ("${ledgerProjectName}_$ledgerProjectNameRun")))) 'the generated project directory does not exist before generation'
+	$statusBeforeLedgerRun = @(& git -C $repoRoot status --porcelain --untracked-files=all)
+	Assert-True (($statusBeforeLedgerRun -join '') -notmatch 'Production/') 'preflight and lease in Production/.runs/ keep the template working tree clean'
+	Invoke-Generator 'vertical-loop' $ledgerProjectName $ledgerProjectNameRun @()
+	Assert-GeneratedProject $ledgerProjectName $ledgerProjectNameRun 'the documented preflight -> lease -> generation order completes with a generated project'
+	Assert-True ([System.IO.File]::ReadAllText($preflightPath) -ceq [System.IO.File]::ReadAllText((Join-Path $repoRoot 'templates\QA.md'))) 'the ledger preflight record is left unchanged by generation'
+	Assert-True ([System.IO.File]::ReadAllText((Join-Path (Join-Path $productionRoot ("${ledgerProjectName}_$ledgerProjectNameRun")) 'template-lock.json')) -match '"engine_template":\s*"TP_BlankBP"') 'the generated project records its engine template'
+	Write-Output 'PASS: preflight and lease recorded outside the generated project still allow generation (exit 0)'
+
+	# Ordering errors must be distinguishable from a real existing project: an empty directory, a
+	# lease-only directory, and an Out/-only directory all used to produce the same message.
+	$emptyOutput = Join-Path $productionRoot ("${existingProjectName}_$emptyRunId")
+	[System.IO.Directory]::CreateDirectory($emptyOutput) | Out-Null
+	$emptyFailure = Get-GeneratorFailure { Invoke-Generator 'spectator-explore' $existingProjectName $emptyRunId @() }
+	Assert-True ($emptyFailure.Contains('Ordering error') -or $emptyFailure.Contains('ordering error')) 'an empty output directory is reported as an ordering error'
+	Assert-True ($emptyFailure.Contains('Production/.runs/run_<runid>/')) 'the empty-directory message names the correct preflight/lease placement'
+	Assert-True (-not $emptyFailure.Contains('An existing output is present')) 'the empty directory is not reported as an existing project'
+	Write-Output 'PASS: an empty generated-project directory is reported as an ordering error, not an existing project'
+
+	$leaseOnlyOutput = Join-Path $productionRoot ("${existingProjectName}_$leaseRunId")
+	[System.IO.Directory]::CreateDirectory($leaseOnlyOutput) | Out-Null
+	[System.IO.File]::WriteAllText((Join-Path $leaseOnlyOutput 'LEASE.json'), '{"run":"fixture"}', [System.Text.UTF8Encoding]::new($false))
+	$leaseOnlyFailure = Get-GeneratorFailure { Invoke-Generator 'spectator-explore' $existingProjectName $leaseRunId @() }
+	Assert-True ($leaseOnlyFailure.Contains('ordering error')) 'a lease-only output directory is reported as an ordering error'
+	Assert-True ($leaseOnlyFailure.Contains('LEASE.json')) 'the lease-only message lists the bookkeeping entry it found'
+	Assert-True ([System.IO.File]::ReadAllText((Join-Path $leaseOnlyOutput 'LEASE.json')) -ceq '{"run":"fixture"}') 'the ordering-error refusal leaves the lease file untouched'
+	Write-Output 'PASS: a lease-only generated-project directory is reported as an ordering error without deleting the lease'
+
+	$outOnlyOutput = Join-Path $productionRoot ("${existingProjectName}_$outRunId")
+	[System.IO.Directory]::CreateDirectory((Join-Path $outOnlyOutput 'Out\run_fixture')) | Out-Null
+	[System.IO.File]::WriteAllText((Join-Path $outOnlyOutput 'Out\run_fixture\QA.md'), 'fixture', [System.Text.UTF8Encoding]::new($false))
+	$outOnlyFailure = Get-GeneratorFailure { Invoke-Generator 'spectator-explore' $existingProjectName $outRunId @() }
+	Assert-True ($outOnlyFailure.Contains('ordering error')) 'an Out/-only output directory is reported as an ordering error'
+	Assert-True ($outOnlyFailure.Contains('Out')) 'the Out/-only message lists the bookkeeping entry it found'
+	Assert-True (Test-Path -LiteralPath (Join-Path $outOnlyOutput 'Out\run_fixture\QA.md') -PathType Leaf) 'the ordering-error refusal does not delete the existing Out/ content'
+	Write-Output 'PASS: an Out/-only generated-project directory is reported as an ordering error without deleting content'
+
+	# The clean-tree contract is unchanged: editing the tracked QA template still stops generation.
+	$cleanTreeRepoRoot = Join-Path $fixtureRoot 'CleanTreeTemplate'
+	& git -C $repoRoot clone --quiet --local --no-hardlinks --no-tags --no-checkout $repoRoot $cleanTreeRepoRoot
+	if ($LASTEXITCODE -ne 0) { throw 'Could not create the isolated clean-tree repository fixture.' }
+	& git -C $cleanTreeRepoRoot checkout --quiet --detach $templateRevision
+	if ($LASTEXITCODE -ne 0) { throw "Could not check out revision $templateRevision in the isolated clean-tree repository fixture." }
+	[System.IO.Directory]::CreateDirectory((Join-Path $cleanTreeRepoRoot 'Production')) | Out-Null
+	$cleanTreeGenerator = Join-Path $cleanTreeRepoRoot 'scripts\New-UETemplateScaffold.ps1'
+	Copy-Item -LiteralPath $generator -Destination $cleanTreeGenerator -Force
+	$qaTemplatePath = Join-Path $cleanTreeRepoRoot 'templates\QA.md'
+	[System.IO.File]::AppendAllText($qaTemplatePath, [Environment]::NewLine + 'preflight recorded in place (fixture)' + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
+	$cleanTreeProjectName = "QaEdit_$testId"
+	$cleanTreeOutput = Join-Path (Join-Path $cleanTreeRepoRoot 'Production') "${cleanTreeProjectName}_qatemplate"
+	$cleanTreeFailure = ''
+	try {
+		& $cleanTreeGenerator -Recipe 'vertical-loop' -ProjectName $cleanTreeProjectName -RunId 'qatemplate' -EngineRoot $fixtureEngine -ProjectDiff @() | Out-Null
+	} catch {
+		$cleanTreeFailure = $_.Exception.Message
+	}
+	Assert-True ($cleanTreeFailure.Contains('template working tree is dirty')) 'editing templates/QA.md still stops generation through the clean-tree gate'
+	Assert-True (-not (Test-Path -LiteralPath $cleanTreeOutput)) 'the clean-tree refusal writes no project'
+	Write-Output 'PASS: editing the tracked QA template still stops generation (clean-tree contract preserved)'
 } catch {
 	# `$_` is not the in-flight error inside a bare `finally`; capture it here so a cleanup failure
 	# cannot hide the original assertion.
@@ -351,6 +499,13 @@ try {
 	}
 	if (Test-Path -LiteralPath $fixtureRoot -PathType Container) {
 		Remove-Item -LiteralPath $fixtureRoot -Recurse -Force
+	}
+	if (Test-Path -LiteralPath $ledgerRoot -PathType Container) {
+		Remove-Item -LiteralPath $ledgerRoot -Recurse -Force
+	}
+	$runsRoot = Split-Path -Parent $ledgerRoot
+	if ((Test-Path -LiteralPath $runsRoot -PathType Container) -and (@(Get-ChildItem -LiteralPath $runsRoot -Force).Count -eq 0)) {
+		Remove-Item -LiteralPath $runsRoot -Force
 	}
 	$cleanupProblems = @(Get-ProductionResidue | ForEach-Object { "Production/ residual entry after cleanup: $_" })
 	if (Test-Path -LiteralPath $fixtureRoot) { $cleanupProblems += "fixture root still exists: $fixtureRoot" }
