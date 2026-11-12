@@ -1,5 +1,17 @@
 # 変更履歴
 
+## Unreleased — DOT-3156
+
+- `third-person-game`の実体化は、template自身の置換規則でコピーした**reflected ヘッダ**のうち、ファイル名が変わったもの（実測: `TP_ThirdPersonCharacter` / `TP_ThirdPersonGameMode` / `TP_ThirdPersonPlayerController`の3つ）について、`Config/DefaultEngine.ini`の`[/Script/Engine.Engine]`へ`+ActiveClassRedirects=(OldClassName="…",NewClassName="…")`を書くようになった。UEウィザードの`IsClassRename`（拡張子`h`かつ**コピー後**の内容に`.generated.h"`を含む）と同じ判定で、新旧名は実際に生成された名前を使う。
+- 従来は`[CoreRedirects] +PackageRedirects`しか書いておらず、これは`/Script` package部分だけを付け替えるため、改名済みクラスを指すBlueprint（既定`GlobalDefaultGameMode`と既定mapが依存する`BP_ThirdPersonGameMode`等）は存在しないクラス名を指したまま残っていた。**`+PackageRedirects`は残し、class redirectを追加する**（置き換えではない）。
+- 出力したredirectは生成時のstdoutに`Class redirects: <旧> -> <新>, ...`（0件なら`Class redirects: none (...)`）として出る。`template-lock.json`のprovenance契約（`UE-PROV-001` / `UE-LOCK-001`）は変えていない。
+- `scripts/Test-UETemplateScaffold.ps1`に回帰assertionを追加。fixtureのtemplateへ reflected ヘッダ3つ（改名され生成物に残る）、`h`だが`.generated.h`を含まないヘッダ（`TP_ThirdPerson.h`同等）、ファイル名が変わらない reflected ヘッダ（`Variant_Combat/CombatEnemy.h`同等）を置き、**改名した reflected ヘッダ数だけ**`+ActiveClassRedirects`が出ること、負例2件がredirectを出さないこと、`+PackageRedirects`が残ること、section配置とstdoutの報告をassertする。
+- `templates/recipes/third-person-game/Play.md`と`docs/07-architecture.md`の記述を実際の出力に合わせた。
+
+実測（本host: Windows 10.0.26300 / pwsh 7.6.9 / 実インストール済みUE 5.8.4 CL 58902052を`-EngineRoot`に指定）: `third-person-game`生成物の`Config/DefaultEngine.ini`は`+ActiveClassRedirects`3行と`+PackageRedirects`1行を持つ。`spectator-explore`（432ファイル）と`vertical-loop`（12ファイル）の生成物は、同一commit内で比較して**ファイル一覧も内容も不変**（`template-lock.json`の`template_commit`のみcommit差を反映）。`scripts/Test-UETemplateScaffold.ps1`は8群PASS / exit 0で、前後の`git status --porcelain --untracked-files=all`は一致。
+
+移行: 旧版で生成済みの`third-person-game`projectは、同じ`-ProjectName`で再生成するか、`Config/DefaultEngine.ini`の`[/Script/Engine.Engine]`へ同等の`+ActiveClassRedirects`を手で追記してからEditorで開く。`.uasset`は書き換えない。**UE Editor起動・Blueprint compile・PIE・MRQ・renderは未実行**で、redirectによる解決は実機確認していない（Unverified）。
+
 ## Unreleased — 動画モーキャプ
 
 - `docs/09-video-mocap.md` を追加した。単眼のダンス動画から MediaPipe で体・手・顔の点を取り、VRM の骨の回転 → VRMA → UE（VRM4U）→ MV にする工程、単眼で取れない量の補い方、確認方法、1 本での実測、残る限界、権利の gate をまとめた。
@@ -61,7 +73,7 @@ Migration: regenerate projects that need project-scoped Null/LAN sessions with t
 ## Unreleased — third-person-game recipe
 
 - 公式`TP_ThirdPerson`（C++・Combat/Platforming/SideScrolling variant同梱）を起点にする`third-person-game` recipeを追加。
-- recipeの`materialize_project: true`で、テンプレート自身の`Config/TemplateDefs.ini`（FoldersToIgnore / FilesToIgnore / FolderRenames / ReplacementsInFiles / SharedContentPacks）をUEウィザードと同じ規則で適用し、`<ProjectName>.uproject`・`Source/<ProjectName>`・`<PROJECTNAME>_API`へ実体化。共有content pack（Characters等）も`Content/`へ入れ、`/Script/TP_*`のCoreRedirectとProjectID/ProjectNameを書く。
+- recipeの`materialize_project: true`で、テンプレート自身の`Config/TemplateDefs.ini`（FoldersToIgnore / FilesToIgnore / FolderRenames / ReplacementsInFiles / SharedContentPacks）を適用し、`<ProjectName>.uproject`・`Source/<ProjectName>`・`<PROJECTNAME>_API`へ実体化。共有content pack（Characters等）も`Content/`へ入れ、`/Script/TP_*`の`[CoreRedirects] +PackageRedirects`とProjectID/ProjectNameを書く。ウィザードとの一致は置換規則の適用範囲に限られ、改名クラスのclass redirectはこの時点では未実装（DOT-3156で追加）。
 - 実体化するrecipeではProjectNameをC++識別子に制限。既存2 recipeの出力は変更なし。
 
 移行: 既存projectは再生成しない。三人称の新作だけ`-Recipe third-person-game`で新RunIdから生成し、Editor build・Playは作品側QAで記録する。

@@ -55,6 +55,35 @@ function Copy-TextWithReplacement([string]$From, [string]$To, [string]$TemplateN
 	[System.IO.File]::WriteAllText($To, (Convert-TemplateName -Text $text -TemplateName $TemplateName -Name $Name), $encoding)
 }
 
+function Test-IsReflectedHeader([string]$Path) {
+	# The UE New Project wizard treats a renamed header as a UObject class only when the *copied*
+	# file's contents contain the UHT include (DefaultTemplateProjectDefs.cpp IsClassRename).
+	# Log-category headers, interfaces without that include, and everything that is not a header
+	# must not produce a class redirect.
+	# IndexOf rather than Contains(string, StringComparison): the latter needs .NET Core and the
+	# suite is also run under Windows PowerShell 5.1.
+	return [System.IO.File]::ReadAllText($Path).IndexOf('.generated.h"', [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+}
+
+function Add-IniSectionEntries([string]$IniPath, [string]$SectionName, [string[]]$Entries = @()) {
+	# Writes `+Key=(...)` entries into `SectionName`, creating the section at the end of the file when
+	# it is absent. The wizard's SaveConfigValues() appends these values to the generated project's
+	# DefaultEngine.ini, so the generator uses the same owner and placement instead of inventing a
+	# second redirect mechanism.
+	if ($Entries.Count -eq 0) { return }
+	$newLine = [Environment]::NewLine
+	$text = if (Test-Path -LiteralPath $IniPath -PathType Leaf) { [System.IO.File]::ReadAllText($IniPath) } else { '' }
+	$block = ($Entries -join $newLine) + $newLine
+	$sectionPattern = '(?im)^\[' + [regex]::Escape($SectionName) + '\][ \t]*\r?\n'
+	if ([regex]::IsMatch($text, $sectionPattern)) {
+		$sectionRegex = [regex]::new($sectionPattern)
+		$text = $sectionRegex.Replace($text, [System.Text.RegularExpressions.MatchEvaluator]{ param($match) $match.Value + $block }, 1)
+	} else {
+		$text = $text.TrimEnd("`r", "`n") + $newLine + $newLine + $SectionName + $newLine + $block
+	}
+	[System.IO.File]::WriteAllText($IniPath, $text, [System.Text.UTF8Encoding]::new($false))
+}
+
 function Set-OnlineSessionProjectIdentifier([string]$ProjectConfigPath, [string]$Identifier) {
 	# The switch has to live in the project's Config/DefaultEngine.ini: a plugin's own
 	# Config/DefaultEngine.ini is never merged, because engine and project branches take
@@ -89,6 +118,7 @@ function Copy-MaterializedTemplate([string]$SourceTemplate, [string]$Destination
 	if (-not (Test-Path -LiteralPath $defsPath -PathType Leaf)) { throw "The template has no Config/TemplateDefs.ini to materialize from: $defsPath" }
 	$defs = Read-TemplateDefs -Path $defsPath -TemplateName $TemplateName
 	$sourceRoot = [System.IO.Path]::GetFullPath($SourceTemplate).TrimEnd('\', '/')
+	$classRenames = [System.Collections.Generic.List[object]]::new()
 	foreach ($file in Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Force) {
 		$relative = $file.FullName.Substring($sourceRoot.Length + 1).Replace('\', '/')
 		if ($relative -ieq "$TemplateName.uproject") {
@@ -113,7 +143,19 @@ function Copy-MaterializedTemplate([string]$SourceTemplate, [string]$Destination
 		$targetPath = Join-Path $Destination $target.Replace('/', '\')
 		[System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($targetPath)) | Out-Null
 		if (Test-Path -LiteralPath $targetPath) { throw "Materialized template paths collide: $target" }
-		if ($isText) { Copy-TextWithReplacement -From $file.FullName -To $targetPath -TemplateName $TemplateName -Name $Name }
+		if ($isText) {
+			Copy-TextWithReplacement -From $file.FullName -To $targetPath -TemplateName $TemplateName -Name $Name
+			# Mirror GameProjectUtils.cpp: record a class rename when the copied header's base name
+			# changed and the copied contents declare a UObject. The pair is formed from the names that
+			# were actually produced, never from a guessed class name.
+			if ($extension -eq 'h') {
+				$sourceBaseName = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
+				$targetBaseName = [System.IO.Path]::GetFileNameWithoutExtension($targetPath)
+				if (-not $sourceBaseName.Equals($targetBaseName, [System.StringComparison]::OrdinalIgnoreCase) -and (Test-IsReflectedHeader -Path $targetPath)) {
+					$classRenames.Add([pscustomobject]@{ OldClassName = $sourceBaseName; NewClassName = $targetBaseName })
+				}
+			}
+		}
 		else { Copy-Item -LiteralPath $file.FullName -Destination $targetPath }
 	}
 	foreach ($mount in $defs.SharedContentPacks) {
@@ -123,8 +165,14 @@ function Copy-MaterializedTemplate([string]$SourceTemplate, [string]$Destination
 		[System.IO.Directory]::CreateDirectory($packTarget) | Out-Null
 		Get-ChildItem -LiteralPath $packContent -Force | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $packTarget $_.Name) -Recurse }
 	}
-	# Blueprints in the template Content were saved against /Script/<TemplateName>.
+	# Blueprints in the template Content were saved against /Script/<TemplateName>. A package redirect
+	# only rewrites the /Script package, and source headers that were renamed (Character, GameMode,
+	# PlayerController, ...) keep their old class name inside those Blueprints, so the wizard's
+	# +ActiveClassRedirects are required in addition -- never instead of -- the package redirect.
 	$engineIni = Join-Path $Destination 'Config\DefaultEngine.ini'
+	$orderedClassRenames = @($classRenames | Sort-Object -Property OldClassName)
+	$classRedirectEntries = @($orderedClassRenames | ForEach-Object { '+ActiveClassRedirects=(OldClassName="{0}",NewClassName="{1}")' -f $_.OldClassName, $_.NewClassName })
+	Add-IniSectionEntries -IniPath $engineIni -SectionName '[/Script/Engine.Engine]' -Entries $classRedirectEntries
 	[System.IO.File]::AppendAllText($engineIni, [Environment]::NewLine + '[CoreRedirects]' + [Environment]::NewLine + ('+PackageRedirects=(OldName="/Script/{0}",NewName="/Script/{1}")' -f $TemplateName, $Name) + [Environment]::NewLine)
 	$gameIni = Join-Path $Destination 'Config\DefaultGame.ini'
 	if (Test-Path -LiteralPath $gameIni -PathType Leaf) {
@@ -135,6 +183,7 @@ function Copy-MaterializedTemplate([string]$SourceTemplate, [string]$Destination
 		$gameText = [regex]::Replace($gameText, '(?m)^ProjectName=.*$', ('ProjectName={0}' -f $Name))
 		[System.IO.File]::WriteAllText($gameIni, $gameText, [System.Text.UTF8Encoding]::new($false))
 	}
+	return [object[]]$orderedClassRenames
 }
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -293,8 +342,9 @@ if (-not [MulticaTemplateDirectory]::CreateDirectory($destinationPath, [IntPtr]:
 
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 try {
+	$classRedirects = @()
 	if ($materialize) {
-		Copy-MaterializedTemplate -SourceTemplate $sourceTemplate -Destination $destinationPath -TemplateName $templateName -Name $ProjectName -EngineTemplateRoot $engineTemplateRoot
+		$classRedirects = @(Copy-MaterializedTemplate -SourceTemplate $sourceTemplate -Destination $destinationPath -TemplateName $templateName -Name $ProjectName -EngineTemplateRoot $engineTemplateRoot)
 	} else {
 		Get-ChildItem -LiteralPath $sourceTemplate -Force | ForEach-Object {
 			Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $destinationPath $_.Name) -Recurse
@@ -444,6 +494,11 @@ try {
 	$writtenDescriptor = Get-Content -Raw -LiteralPath $projectFile | ConvertFrom-Json
 	if ([string]$writtenDescriptor.EngineAssociation -ne $engineAssociationValue) {
 		throw "Project identity check stopped: $projectFileName was written without the expected EngineAssociation '$engineAssociationValue'."
+	}
+	if ($classRedirects.Count -gt 0) {
+		Write-Output ('Class redirects: ' + (@($classRedirects | ForEach-Object { '{0} -> {1}' -f $_.OldClassName, $_.NewClassName }) -join ', '))
+	} elseif ($materialize) {
+		Write-Output 'Class redirects: none (no copied reflected header was renamed)'
 	}
 	Write-Output "Created $destinationName from the installed $templateName template ($projectFileName, EngineAssociation '$engineAssociationValue', UE $engineVersion, recipe $Recipe)."
 } catch {

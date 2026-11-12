@@ -7,7 +7,7 @@
 | 共通基盤 | host・lease・環境構築・素材権利・検品・納品 | 既存docsと記録書式 |
 | ジャンルrecipe | 鑑賞・探索等の固有設定、受入条件 | `spectator-explore` recipeを追加 |
 | 用途部品 | プレイ／撮影。ジャンル別は両対応が基本 | `Play.md` / `Capture.md`に差分を分離 |
-| 三人称ゲーム | 公式TP_ThirdPersonをウィザード同等に実体化（名前置換・共有pack・redirect） | `third-person-game` recipe（`materialize_project`） |
+| 三人称ゲーム | 公式TP_ThirdPersonをウィザード同等に実体化（名前置換・共有pack・package redirect + 改名済みclass redirect） | `third-person-game` recipe（`materialize_project`） |
 | 映像専用 | 縦動画・ループ等、操作不要の入口 | `vertical-loop` capture-only recipeを追加 |
 | オンライン | 小人数listen server、session、replication | Null/LAN starter pluginと方式比較を追加。実測範囲はQA参照 |
 | project generator | installed Engineの公式templateから新規project生成 | `scripts/New-UETemplateScaffold.ps1`。排他的作成/上書き禁止、project identity照合あり |
@@ -16,6 +16,17 @@
 作品のセットは正本1つをプレイと撮影から参照し、撮影のためにマップ全体を複製しない。用途別の画質・カメラ・照明・UIの差分は明示する。
 
 `spectator-explore`は公式`TP_FirstPerson`を起点にし、プレイと撮影を同じsetへ向ける。`vertical-loop`は公式`TP_BlankBP`を起点にしてゲーム操作を要求しない。この2つはtemplateを生コピーし、`<EngineTemplate>.uproject`と`Source/<EngineTemplate>`が互いに一致したまま残る。`third-person-game`だけが`materialize_project: true`で、`Config/TemplateDefs.ini`をウィザードと同じ規則で適用し`<Name>.uproject`へ実体化する。generatorはEngineの既存templateをコピーし、recipe文書・online plugin・`template-lock.json`を加える。generator自身がmap/Sequence/`.uasset`を捏造しない。
+
+### redirect契約（素材を書き換えずに旧名を解決する）
+
+Blueprintなどの`.uasset`はtemplateのままbyte単位でコピーする。生成物が旧クラス名を解決できるよう、generatorはウィザードと同じく2種類のredirectを`Config/DefaultEngine.ini`へ書く。
+
+| 出力 | 対象 | 判定 |
+|---|---|---|
+| `[/Script/Engine.Engine] +ActiveClassRedirects=(OldClassName=...,NewClassName=...)` | コピーでファイル名が変わった reflected ヘッダ | 拡張子が`h`、**コピー後**の内容が`.generated.h"`を含む、元と生成後でベース名が違う（`GameProjectUtils.cpp` / `DefaultTemplateProjectDefs.cpp` の`IsClassRename`相当）。新旧名は置換規則から実際に生成された名前を使う |
+| `[CoreRedirects] +PackageRedirects=(OldName="/Script/<Template>",NewName="/Script/<Name>")` | `/Script` package部分だけ | 常に出力。クラス名は変換しないため、上のclass redirectを置き換えてはならない |
+
+どちらが何件出たかは生成時のstdout（`Class redirects: ...`行）で確認でき、`template-lock.json`は変更しない。`Test-UETemplateScaffold.ps1`は「改名した reflected ヘッダ数だけclass redirectが出る」「`h`だが`.generated.h`を含まないヘッダは出さない」「ファイル名が変わらない reflected ヘッダは出さない」「`+PackageRedirects`が残る」をassertする。
 
 ### project identity契約（1つだけ）
 
