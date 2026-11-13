@@ -67,6 +67,7 @@ writer/lease nonce・取得/解放receipt（`scripts/Lease-UETemplateProject.ps1
 | [QA-ENC-03] `source_png_sequence`（元PNG列の有無） | unverified | 存在する／存在しない。経路B（direct-MRQ MP4）は「存在しない」と明記し、空欄にしない |
 
 
+
 ## 画像列・通知・MP4・目視・音の独立判定
 
 1項目のpassを他項目へ読み替えない。特に次を守る。

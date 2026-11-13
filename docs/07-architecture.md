@@ -176,6 +176,8 @@ lockはtemplate commit SHA、clean/dirty状態、UE version/changelist、Engine/
 
 lockはtemplate commit SHA、clean/dirty状態、engine template、UE version、engine build identity（`engine_changelist` / `engine_changelist_raw` / `engine_compatible_changelist` / `engine_is_licensee_version` / `engine_is_promoted_build` / `engine_branch_name`）、Engine/plugin version、recipe/use、作品差分、project identityを固定する。実作はcommit済み・cleanなtemplateから生成する。dirty時の生成は拒否し、テストだけ明示的な`-AllowDirtyTemplate`を使う。
 
+lockはtemplate commit SHA、clean/dirty状態、UE version/changelist、Engine/plugin version、recipe/use、作品差分、project identity、適用した共有content packを固定する。`shared_content_packs`（展開したmount名）と`shared_content_pack_detail_levels`（mount → 実際に展開元としたdetail level）が「何を入れたか」の記録であり、packの宣言が無いrecipe（`TP_BlankBP`）では空配列になる。packのコピー挙動は変えない。実作はcommit済み・cleanなtemplateから生成する。dirty時の生成は拒否し、テストだけ明示的な`-AllowDirtyTemplate`を使う。
+
 共通更新は新RunIdの空Production directoryへ生成し、既存projectを上書きせず、lock・作品差分・移行手順・対象版の検品結果を比較する。UE/Plugin更新の自動伝播はしない。
 
 **変更理由:** 共通環境の二重管理を避けながら、同じsetのプレイ/撮影と映像専用入口を小さく始める。生成時のdependency driftをlockで可視化し、template更新で制作中作品を壊さない。
@@ -184,6 +186,8 @@ lockはtemplate commit SHA、clean/dirty状態、engine template、UE version、
 
 初期は1repoで共通文書を参照し、再利用が実証された部品のみPlugin化する。深いBlueprint継承、ジャンルごとの全量fork、submoduleの大量追加は避ける。
 作品には共通commit SHA・UE/Plugin版・レシピ・ローカル差分を記録する。lockの`template_commit`は「その値をlockが名指しするrepoから取得できると確認済み」の意味でしか使わない。確認できていないlockを配布しない。制作中の作品は固定版を使い、自動更新・上書きをしない。更新時は差分、移行方法、検品結果を残す。
+
+納品記録（`CREDITS.md` / `DELIVERY.json`）は、作品の`Content/`を構成するasset群の**出所**を保持する。`DELIVERY.json`は`template_repository` / `template_commit` / `template_lock_sha256` / `recipe` / `engine_template` / `engine_version` / `engine_changelist` / `shared_content_packs` / `content_inventory`を持つ（既存fieldは削除・改名しない。未記入は`null`）。監査: `scripts/Measure-UECreditsInventory.ps1`（回帰: `scripts/Test-UECreditsInventory.ps1`）。
 
 ## 継続改善
 

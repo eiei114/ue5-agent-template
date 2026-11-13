@@ -32,3 +32,13 @@ preview/searchで消費しなかった過去記録は将来の無料保証では
 ## templateへ入れないもの
 
 Fab/Splice/Mixamo/NCS/UE同梱素材の原本・派生uasset・cache・ダウンロードZIP。価格0でも再配布可とは限らない。必要素材は各利用者の許可済み経路で取得し、templateには用途を示すtext placeholderだけを置く。CREDITSの記入は権利許諾の代わりではない。
+
+### UE同梱素材（engine template / shared content pack）の条件
+
+UE同梱 contentはrepoへ入れず、生成物の`Content/`にだけ置き、出所をCREDITSへ書く。`materialize_project`のrecipe（`third-person-game`）は`Templates/<template>`と`Templates/TemplateResources/<DetailLevel>/<MountName>`から複製するので、生成物の`Content/`には数百件の`.uasset`/`.umap`が入る（実測: `TP_ThirdPerson` 587 + `Characters` 128 + `Input` 9 + `LevelPrototyping` 29 = 753）。
+
+1. `templates/CREDITS.md`を`Out/run_<runid>/`へ複製し、`Content/`の**先頭ディレクトリごと**に1行書く。template自身のContentは`engine-template`、共有packのmountは`shared-content-pack`で、別行（`同梱形態`は`generated-only`）。
+2. mount名とdetail levelは推測しない。`template-lock.json`の`shared_content_packs`（実際に展開したmount名の配列）と`shared_content_pack_detail_levels`（mount → 実展開元level）を正本にして転記する。
+3. 書いたら`scripts/Measure-UECreditsInventory.ps1`で監査する（`docs/04-package.md`の「記入と監査」）。project rootと納品dirの両方から実行し、同じ結論になることを確認する。
+4. **再配布可否の判断はこの記録の対象外**。Epicのtemplate機構文書はengine同梱contentの再配布条件を述べておらず、これは記載の不在であって許可でも禁止でもない。公開・第三者配布は別gate。
+5. `.uasset`/`.umap`をfixtureとしてrepoへ置かない（回帰も自作のplaceholder bytesで行う）。
