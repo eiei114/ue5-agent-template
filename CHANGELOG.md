@@ -356,6 +356,20 @@ Migration: **existing generated projects are not moved, renamed or regenerated.*
 - `docs/05-qa.md` の入力不変記載を18 fixtureへ合わせ、2つのguardを片方ずつ外す負例fixtureの存在を明記した。fixture総数は17→18。
 - 移行: helper（`Measure-UERenderArtifacts.ps1`）の判定ロジックは変更していない。本変更は回帰suiteと文書に閉じる。
 
+## Unreleased — DOT-3405
+
+- `MulticaOnlineSessionSubsystem.cpp` の `RegisterDeferredCreateCleanup` / `RegisterDeferredJoinCleanup` は、callbackの中で自分の `FDelegateHandle` をclearしていた。UE 5.8の `OnlineDelegateMacros` はBroadcast前にmulticast delegateをコピーせず、`MulticastDelegateBase::RemoveDelegateInstance` はinvocation listをbroadcast中にlockしていても該当entryを即 `Unbind()` して破棄する。そのためclearの瞬間に実行中のlambda（capturesごと）が消え、直後の `DestroySession(Name)` はuse-after-freeになっていた。
+- 両関数を `MulticaOnlineDeferredSessionCleanup.cpp` の `RegisterDeferredCreateSessionCleanup` / `RegisterDeferredJoinSessionCleanup` へ移し、DOT-3295の `MulticaOnlineDeferredDestroyCleanup.cpp` と同じ形（provider操作を `TSharedRef` のoperation surfaceに閉じ込め、callback内でcapturesをローカルへコピーし、その後はcaptureに触らない）に揃えた。`Deinitialize()` からの呼び出しはoperation surfaceを作って渡す形になる。
+- 回帰test `Multica.Online.Session.DeferredCreateJoinCleanup` を追加した。既存のdestroy用fakeはdelegateを値コピーしてから `ExecuteIfBound` するためこの欠陥を検出できない（clear後もコピー側のcapturesは生きている）。新しいfakeはprovider bindingをheap slotに置き、in-placeでbroadcastし、clearが「いま実行中のbinding」を消したことを記録する。あわせてdestroy要求時点のoperation surfaceの共有owner数が2（testの1 + callbackの1）であることをassertするので、clear後にcaptureを読むと落ちる。
+
+実測（本host、Windows、UE 5.8.4 CL 58902052、`spectator-explore` / `Dot3405Smoke` を新規scaffoldして計測）:
+
+- `TP_FirstPersonEditor Win64 Development` → `Result: Succeeded`。
+- `UnrealEditor-Cmd ... -ExecCmds="Automation RunTests Multica.Online" -nullrhi` → `Result={Success} Name={DeferredCreateJoinCleanup}`、`Result={Success} Name={DeferredDestroyCleanup}`、`Result={Success} Name={SessionIdentity}`、`**** TestExit: Automation Test Queue Empty ****`（3 tests performed）。
+- 回帰testが落ちる側の確認: 同projectへ修正前のcallback形（callback内で自分のhandleをclearし、その後captureを読む）だけを戻してbuildし、`DeferredCreateJoinCleanup` を単体実行すると `Result={Fail}`、`Expected 'the completing create callback still owns its operations copy' to be 2, but it was 1.` と `... join ...` の2件で落ちた。修正版に戻して再buildすると3件とも `Success`。
+
+未検証: PIE、2 clientのNull/LAN接続、EOS/Steamは実行していない。`scripts/Test-UETemplateScaffold.ps1`（8 group PASS / exit 0）と `scripts/Test-UERenderArtifacts.ps1`（exit 0）は本PRでも通したが、このC++修正の検証主体ではない。
+
 ## Unreleased — 動画モーキャプ
 
 書式: 各 `## ` 見出しは `## Unreleased — <DOT番号 or 名前> — <識別子>` の形にする。**識別子は必須**で、`YYYY-MM-DD`（main に入った merge commit の日付。`git log -1 --date=short --format=%cd <merge>` か `gh pr list --state merged` の `mergedAt`）または 40 桁 commit SHA のどちらかを書く。日付だけでは「どの変更か」を commit に結べないので、SHA を併記してよい（併記した SHA は `git cat-file -e <sha>^{commit}` で解決できること）。release も tag も作らないので全節が `Unreleased` のまま。各節の本文には、次を 1 項目ずつ残す:
