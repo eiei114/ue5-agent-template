@@ -69,6 +69,8 @@ $outputNames = @(
 	('{0}_budget' -f ('PthM_' + ('m' * 35))),
 	('{0}_{1}' -f $maxName, $maxRun),
 	('{0}_{1}' -f $maxName, ('b' * 64))
+
+	"Sz_${testId}_$testId-a"
 )
 $outputPaths = @($outputNames | ForEach-Object { Join-Path $productionRoot $_ })
 $ledgerRoot = Join-Path (Join-Path $productionRoot '.runs') ("run_$ledgerRunId")
@@ -577,6 +579,29 @@ try {
 	Write-FixtureJson (Join-Path $thirdPersonTemplate 'Config\DefaultEngine.ini') "[/Script/EngineSettings.GameMapsSettings]`r`nGameDefaultMap=/Game/ThirdPerson/Lvl_ThirdPerson.Lvl_ThirdPerson`r`n"
 	Write-FixtureJson (Join-Path $thirdPersonTemplate 'Config\DefaultGame.ini') "[/Script/EngineSettings.GeneralProjectSettings]`r`nProjectID=(A=1,B=2,C=3,D=4)`r`nProjectName=Third Person Game Template`r`n"
 	Write-FixtureJson (Join-Path $thirdPersonTemplate 'Source\TP_ThirdPerson\TP_ThirdPerson.Build.cs') 'public class TP_ThirdPerson { } // TP_THIRDPERSON_API tp_thirdperson'
+	# Reflected headers the wizard renames: each one's copied file name differs from the source and
+	# its copied contents include the UHT header, so each must produce one class redirect.
+	foreach ($reflectedClass in @('Character', 'GameMode', 'PlayerController')) {
+		$reflectedSource = "TP_ThirdPerson$reflectedClass"
+		Write-FixtureJson (Join-Path $thirdPersonTemplate ("Source\TP_ThirdPerson\$reflectedSource.h")) (@(
+			'#include "CoreMinimal.h"',
+			("#include `"{0}.generated.h`"" -f $reflectedSource),
+			'UCLASS()',
+			("class A{0} : public AActor {{ GENERATED_BODY() }};" -f $reflectedSource)
+		) -join "`r`n")
+		Write-FixtureJson (Join-Path $thirdPersonTemplate ("Source\TP_ThirdPerson\$reflectedSource.cpp")) ("#include `"{0}.h`"" -f $reflectedSource)
+	}
+	# Negative cases pinned in the fixture: a renamed header that is not a UObject (log category only,
+	# like the installed TP_ThirdPerson.h) and a reflected header whose file name does not change
+	# (every Variant_* class keeps its name and resolves through the package redirect alone).
+	Write-FixtureJson (Join-Path $thirdPersonTemplate 'Source\TP_ThirdPerson\TP_ThirdPerson.h') "#include `"CoreMinimal.h`"`r`nDECLARE_LOG_CATEGORY_EXTERN(LogTP_ThirdPerson, Log, All);`r`n"
+	Write-FixtureJson (Join-Path $thirdPersonTemplate 'Source\TP_ThirdPerson\Variant_Combat\CombatEnemy.h') (@(
+		'#include "CoreMinimal.h"',
+		'#include "CombatEnemy.generated.h"',
+		'UCLASS()',
+		'class ACombatEnemy : public AActor { GENERATED_BODY() };'
+	) -join "`r`n")
+	Write-FixtureJson (Join-Path $thirdPersonTemplate 'Source\TP_ThirdPerson\Variant_Combat\CombatEnemy.cpp') '#include "CombatEnemy.h"'
 	Write-FixtureJson (Join-Path $thirdPersonTemplate 'Source\TP_ThirdPerson.Target.cs') 'ExtraModuleNames.Add("TP_ThirdPerson");'
 	Write-FixtureJson (Join-Path $thirdPersonTemplate 'Content\ThirdPerson\Lvl_ThirdPerson.umap') 'binary TP_ThirdPerson'
 	Write-FixtureJson (Join-Path $thirdPersonTemplate 'Content\ThirdPerson\Animations\Ignored.uasset') 'ignored'
@@ -942,6 +967,28 @@ try {
 	Assert-True (Test-Path -LiteralPath (Join-Path $tpOutput 'Content\Characters\Mannequins\SK.uasset')) 'materialized recipe installs shared content packs'
 	$tpEngineIni = [System.IO.File]::ReadAllText((Join-Path $tpOutput 'Config\DefaultEngine.ini'))
 	Assert-True ($tpEngineIni.Contains("+PackageRedirects=(OldName=`"/Script/TP_ThirdPerson`",NewName=`"/Script/$tpName`")")) 'materialized recipe redirects template Blueprints to the new module'
+	# The wizard writes +ActiveClassRedirects for every renamed UObject header; without them the
+	# renamed classes keep an unreachable old name inside the byte-copied Blueprints.
+	$classRedirectMatches = [regex]::Matches($tpEngineIni, '(?m)^\+ActiveClassRedirects=\(OldClassName="([^"]+)",NewClassName="([^"]+)"\)[ \t]*\r?$')
+	$classRedirectPairs = @{}
+	foreach ($match in $classRedirectMatches) { $classRedirectPairs[$match.Groups[1].Value] = $match.Groups[2].Value }
+	Assert-True ($classRedirectMatches.Count -eq 3) 'materialized recipe writes exactly one class redirect per renamed reflected class'
+	foreach ($reflectedClass in @('Character', 'GameMode', 'PlayerController')) {
+		$oldClassName = "TP_ThirdPerson$reflectedClass"
+		$newClassName = "${tpName}$reflectedClass"
+		Assert-True ($classRedirectPairs.ContainsKey($oldClassName) -and $classRedirectPairs[$oldClassName] -ceq $newClassName) "class redirect maps $oldClassName to the generated class name"
+	}
+	Assert-True (-not $classRedirectPairs.ContainsKey('TP_ThirdPerson')) 'a renamed header without the UHT include produces no class redirect'
+	Assert-True (-not $classRedirectPairs.ContainsKey('CombatEnemy')) 'a reflected header whose file name does not change produces no class redirect'
+	$engineSectionIndex = $tpEngineIni.IndexOf('[/Script/Engine.Engine]', [System.StringComparison]::Ordinal)
+	$firstClassRedirectIndex = $tpEngineIni.IndexOf('+ActiveClassRedirects=', [System.StringComparison]::Ordinal)
+	$coreRedirectsIndex = $tpEngineIni.IndexOf('[CoreRedirects]', [System.StringComparison]::Ordinal)
+	Assert-True ($engineSectionIndex -ge 0 -and $firstClassRedirectIndex -gt $engineSectionIndex) 'class redirects live in [/Script/Engine.Engine] like the wizard writes them'
+	Assert-True ($coreRedirectsIndex -gt $firstClassRedirectIndex) 'the package redirect section is appended after the class redirects, not replaced'
+	$materializedStdout = & $generator -Recipe 'third-person-game' -ProjectName "Sz_$testId" -RunId "$testId-a" -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate
+	$sizeOutput = $outputPaths[6]
+	Assert-True (($materializedStdout -join "`n") -match '(?m)^Class redirects: TP_ThirdPersonCharacter -> Sz_') 'the generator reports the class redirects it wrote'
+	Assert-True (Test-Path -LiteralPath (Join-Path $sizeOutput 'Config\DefaultEngine.ini')) 'the reporting generator wrote its output'
 	$tpGameIni = [System.IO.File]::ReadAllText((Join-Path $tpOutput 'Config\DefaultGame.ini'))
 	Assert-True ($tpGameIni.Contains("ProjectName=$tpName") -and -not $tpGameIni.Contains('ProjectID=(A=1,B=2,C=3,D=4)')) 'materialized recipe gives the project its own name and ID'
 	Assert-True (Test-Path -LiteralPath (Join-Path $tpOutput 'Recipe\Play.md')) 'third-person recipe has a play delta'
