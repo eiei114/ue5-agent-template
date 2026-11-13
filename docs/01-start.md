@@ -2,13 +2,11 @@
 
 ## Preflightの完了条件
 
-`templates/QA.md`に日時、Issue/run、hostname/OS、UE実version、GPU/VRAM、disk/RAM、既存toolchain、モデル指定/実効値、利用枠の観測範囲を記録。不明を0や無料と扱わない。これはQA記録だけの規則ではなく、`scripts/New-UETemplateScaffold.ps1`が書く`template-lock.json`にも等しく適用される：エンジンが書いていない値は`null`、0は「エンジンが0と書いた」値だけに使う（[構造と更新](07-architecture.md)のengine build identity）。
 
 `templates/QA.md`を**複製**して、`Production/.runs/run_<runid>/preflight.md`へ日時、Issue/run、hostname/OS、UE実version、GPU/VRAM、disk/RAM、既存toolchain、モデル指定/実効値、利用枠の観測範囲を記録。不明を0や無料と扱わない。`templates/`は雛形であり編集しない（tracked fileを汚すとgeneratorのclean-tree gateで停止する）。`Production/.runs/run_<runid>/`は生成先`Production/<Name>_<runid>/`の外にある台帳dirで、生成前にここへ書いても生成を妨げない。project生成後は同じ内容を`Production/<Name>_<runid>/Out/run_<runid>/QA.md`へ移し、以降はそこで追記する。
 
-`templates/QA.md`に日時、Issue/run、hostname/OS、UE実version、GPU/VRAM、disk/RAM、既存toolchain、モデル指定/実効値、利用枠の観測範囲を記録。不明を0や無料と扱わない。この規則は`template-lock.json`の`template_commit_published`にも適用され、未検査は`null`であって合格ではない。これはQA記録だけの規則ではなく、`scripts/New-UETemplateScaffold.ps1`が書く`template-lock.json`にも等しく適用される：エンジンが書いていない値は`null`、0は「エンジンが0と書いた」値だけに使う（[構造と更新](07-architecture.md)のengine build identity）。
 
-`templates/QA.md`に日時、Issue/run、hostname/OS、UE実version、GPU/VRAM、disk/RAM、既存toolchain、モデル指定/実効値、利用枠の観測範囲を記録。不明を0や無料と扱わない。
+不明値の規則はlockにも適用する。engineが書いていない値はnullで、template_commit_publishedの未検査もnull（合格ではない）。engineが明示した0や空文字と区別する。
 **checkoutと生成先の絶対パス長もPreflightの完了条件**。template repoのclone先と`Production/<ProjectName>_<runid>/`の絶対パス長を実測してQAへ書く（例: `C:\gh\ue5-agent-template` = 24文字）。generatorは生成前に予算検査を行い、既定260文字を超える計画なら停止する（下記[パス長の予算](#パス長の予算)）。UE buildの`Intermediate/`・`*.obj`はgeneratorの出力ではないため検査対象外で、build前に同じ予算を別途確認する。
 
 生成projectの`Config/DefaultGame.ini`には`ProjectID`/`ProjectName`が`[/Script/EngineSettings.GeneralProjectSettings]`配下にあることを`template-lock.json`の`default_game_ini_identity`と実ファイルで照合する。短い`[ProjectSettings]` headerのままの生成物を「完了」にしない（engineはそのheaderを読まない）。
@@ -88,15 +86,15 @@ leaseの取得・解放・所有権照合は `scripts/Lease-UETemplateProject.ps
 ```powershell
 # 取得。生成物dirとlease記録dirの作成は別操作であり、既存dirへの取得も続行できる
 .\scripts\Lease-UETemplateProject.ps1 -Action Acquire `
-  -ProjectDirectory 'Production\<Name>_<runid>' `
+  -ProjectDirectory 'Production\.runs\run_<runid>' `
   -RunId <runid> -IssueId <Issue> -WriterPhase edit
 
 # 読み取り専用の照合。書き込みもmtime更新もしない
-.\scripts\Lease-UETemplateProject.ps1 -Action Test -ProjectDirectory 'Production\<Name>_<runid>' -RunId <runid>
+.\scripts\Lease-UETemplateProject.ps1 -Action Test -ProjectDirectory 'Production\.runs\run_<runid>' -RunId <runid>
 
 # 解放。実fileのrun/nonce一致時だけ実行し、run別の LEASE_RELEASED.<runid>.json を残す
 .\scripts\Lease-UETemplateProject.ps1 -Action Release `
-  -ProjectDirectory 'Production\<Name>_<runid>' `
+  -ProjectDirectory 'Production\.runs\run_<runid>' `
   -RunId <runid> -Nonce <Acquireが出力したnonce>
 ```
 
@@ -152,7 +150,7 @@ leaseとpreflightの正本は`Production/.runs/run_<runid>/`であり、生成�
 - 帰属不明（snapshotに無いprocess、`creation_utc_ticks`が読めないprocess、writerのidentity不一致、snapshotのhash/run/writer不一致）は**停止しない**。dry-run・実行後の検証とも`unknown`を返し、`free`と言わない。
 - PIDを再利用した別process（`creation_utc_ticks`がsnapshotと不一致）は停止対象から外す。
 - lease判定の`WRITER: pid=... alive=true`は「**このrunの**writerが生きている」の意味で、PIDが存在するだけでは`alive=true`にしない。PIDは存在するが`creation_utc_ticks`がsnapshotと違う場合は`pid-present=True` / `identity-verified=False` / `alive=False`として記録し、PID再利用と「終了した」を区別する。
-- 回収結果は`templates/QA.md`の当該行へ、停止対象件数・停止件数・残存件数・残存の帰属不明件数・判定の5つで記録する。空欄のまま納品しない。
+- 回収結果は生成後の`Out/run_<runid>/QA.md`（preflightから移した記録）の当該行へ、停止対象件数・停止件数・残存件数・残存の帰属不明件数・判定の5つで記録する。空欄のまま納品しない。
 
 ### 制約（job objectに依存しない）
 
@@ -164,7 +162,7 @@ clone commit → preflight（`Production/.runs/run_<runid>/preflight.md`）→ l
 生成前の書き込み先は`Production/.runs/run_<runid>/`だけであり、生成先project dirの中には何も書かない。
 
 clone commit → preflight → lease → project生成 → Editor build → Playで床/cube/camera表示 → MRQ 2秒 → ffprobeと目視 → optional Shipping → 解放。
-MRQ 2秒の書き出しは`docs/05-qa.md`の経路A（画像列＋既存ffmpeg）と経路B（`H.264 MP4 [8bit]`で直接MP4）のどちらでもよいが、使った経路・MRQの出力設定名・元PNG列の有無を`templates/QA.md`へ記録する。
+MRQ 2秒の書き出しは`docs/05-qa.md`の経路A（画像列＋既存ffmpeg）と経路B（`H.264 MP4 [8bit]`で直接MP4）のどちらでもよいが、使った経路・MRQの出力設定名・元PNG列の有無を生成後の`Out/run_<runid>/QA.md`（preflightから移した記録）へ記録する。
 各工程はpass/fail/unverified、exit code、実ファイルhashで記録する。文書リンク点検だけをUE smokeと呼ばない。
 
 ## 切断からの復旧・続行（既存制作にも適用）

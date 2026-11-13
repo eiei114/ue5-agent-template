@@ -1277,7 +1277,7 @@ if (-not $destinationPath.StartsWith($productionPrefix, [System.StringComparison
 }
 # This is the pre-copy gate: it throws before the exclusive output directory is created, so a run
 # that would enable an unresolvable plugin leaves nothing on disk.
-$null = Get-PluginRecords -Plugins $projectPluginEntries -EngineRoot $engineRootFull -RepositoryRoot $repoRoot -ProjectRoot $destinationPath
+$null = Get-PluginRecords -Plugins $projectPluginEntries -EngineRoot $engineRootFull -RepositoryRoot $repoRoot -ProjectRoot $sourceTemplate
 
 
 # ---------------------------------------------------------------------------------------------
