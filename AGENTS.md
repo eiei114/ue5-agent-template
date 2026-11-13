@@ -50,16 +50,7 @@ Production/
     Tools/               # 当該project用。秘密なし
     Out/run_<runid>/
       preview/ frames/ final/ staging/ extracted-check/ evidence/
-      QA.md CREDITS.md DELIVERY.json SHA256SUMS.txt
-
-Production/<Name>_<runid>/
-  <ProjectFile>.uproject / Config/ / Content/ / Source/ [Plugins/]   # materialize_projectなら<Name>、それ以外は<EngineTemplate>
-  Art/                 # 許可済み取得物。Gitテンプレートへ入れない
-  Tools/               # 当該project用。秘密なし
-  Out/run_<runid>/
-    preview/ frames/ final/ staging/ extracted-check/ evidence/
-    README.md QA.md CREDITS.md DELIVERY.json SHA256SUMS.txt
-  LEASE.json           # active所有者のみ。Git外
+      README.md QA.md CREDITS.md DELIVERY.json SHA256SUMS.txt
 ```
 
 preflightとleaseの記録先は`Production/.runs/run_<runid>/`のみ。生成先`Production/<Name>_<runid>/`の内側（`Out/`・`LEASE.json`）に先行して書くと、generatorの排他的mkdirが既存扱いで停止する。生成後にpreflightの内容は`Out/run_<runid>/QA.md`へ移し、leaseの解放記録も台帳dirに残す。

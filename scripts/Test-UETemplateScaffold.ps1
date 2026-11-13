@@ -2322,7 +2322,7 @@ try {
 	Assert-True (@(Get-DeliveryContractProblems -RepositoryRoot $contractRepoRoot).Count -eq 0) 'restoring templates/README.md returns the gate to silence'
 	$fixtureAgents = Join-Path $contractRepoRoot 'AGENTS.md'
 	$fixtureAgentsBody = [System.IO.File]::ReadAllText($fixtureAgents)
-	[System.IO.File]::WriteAllText($fixtureAgents, ($fixtureAgentsBody -creplace '(?m)^    README\.md QA\.md CREDITS\.md', '    QA.md CREDITS.md'), $fixtureUtf8)
+	[System.IO.File]::WriteAllText($fixtureAgents, ($fixtureAgentsBody -creplace '(?m)^(\s+)README\.md QA\.md CREDITS\.md', '$1QA.md CREDITS.md'), $fixtureUtf8)
 	Assert-True ((@(Get-DeliveryContractProblems -RepositoryRoot $contractRepoRoot) -join '; ').Contains('AGENTS.md: the Out/run_<runid>/ listing does not include README.md')) 'dropping README.md from the AGENTS.md folder contract fails the gate'
 	[System.IO.File]::WriteAllText($fixtureAgents, $fixtureAgentsBody, $fixtureUtf8)
 	$fixtureQa = Join-Path $contractRepoRoot 'templates\QA.md'
