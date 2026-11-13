@@ -44,13 +44,32 @@ Project BrowserはUE側のtemplate materialize規則でprojectを作るため、
 2. `/Game/<Name>/Maps/L_<Name>`を保存。Project SettingsでEditor Startup MapとGame Default Mapを指定し、package対象mapに含める。GameModeとPawn、camera、collision、入力設定は、Playが用途に含まれるrecipeで照合する。
 3. 撮影smokeなら原作の床・cube・point light・camera・2秒sequenceのみ。ゲームsmokeなら歩ける小mapのみ。Fab/Splice不要で成立させる。
 
-## leaseプロトコル（実装要件。スクリプト未同梱）
+## leaseプロトコル（`scripts/Lease-UETemplateProject.ps1` 同梱済み）
 
-- 新project dirの排他的mkdirと、`LEASE.json` の排他的createを使う（PowerShell通常のNew-Item -Forceで代替しない）。
-- leaseにはrun ID、issue ID、host、project realpath、取得日時、nonce、writer phase、当該runのPIDだけを保存。
+leaseの取得・解放・所有権照合は `scripts/Lease-UETemplateProject.ps1` の3動作で行う。手作業で `New-Item -Force` / `Set-Content` / `Out-File` / `WriteAllText` を書かない。同scriptはそれらを使わず、`CreateDirectoryW` と `[IO.File]::Open(CreateNew, Write, None)` だけで書く。
+
+```powershell
+# 取得。生成物dirとlease記録dirの作成は別操作であり、既存dirへの取得も続行できる
+.\scripts\Lease-UETemplateProject.ps1 -Action Acquire `
+  -ProjectDirectory 'Production\<Name>_<runid>' `
+  -RunId <runid> -IssueId <Issue> -WriterPhase edit
+
+# 読み取り専用の照合。書き込みもmtime更新もしない
+.\scripts\Lease-UETemplateProject.ps1 -Action Test -ProjectDirectory 'Production\<Name>_<runid>' -RunId <runid>
+
+# 解放。実fileのrun/nonce一致時だけ実行し、run別の LEASE_RELEASED.<runid>.json を残す
+.\scripts\Lease-UETemplateProject.ps1 -Action Release `
+  -ProjectDirectory 'Production\<Name>_<runid>' `
+  -RunId <runid> -Nonce <Acquireが出力したnonce>
+```
+
+- lease記録の置き場所は、AGENTS.md「フォルダ」と run 台帳の規則に従い `-ProjectDirectory` で指定する。生成先project dirをlease工程で作り直さない（生成は `scripts/New-UETemplateScaffold.ps1` だけが排他的mkdirする）。
+- leaseにはrun ID、issue ID、host、project realpath、取得日時、nonce、writer phase、当該runのPIDだけを保存。scriptはこの8 field以外を書かない（増やす場合は本文も同じPRで更新する）。
 - create競合なら停止。他runのactive有無とsource fingerprintが不明なら停止。時刻経過だけで奪わない。
 - 再開は前leaseの解放receipt・保存済み版・active writerなしを照合し新nonceを取得。
 - 解放前に実fileのrun/nonceを照合。自process終了・保存後、run別のLEASE_RELEASED記録へ移す。他人のleaseを消さない。
+- `-Action Test` の exit code は 0=active / 1=free（記録は残っている。書換えず手動照合） / 2=unknown（記録なし・読めない・他host）。`free` と `unknown` を混同しない。
+- 同scriptのassertionは `scripts/Test-UETemplateLease.ps1`（`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Test-UETemplateLease.ps1`）に固定されている。
 - crashの残leaseは手動照合対象。CLI/API上のrun終了だけではUE終了を推定しない。
 
 ## 最小smokeの証拠
