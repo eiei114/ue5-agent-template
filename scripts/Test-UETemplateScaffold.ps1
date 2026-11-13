@@ -1758,6 +1758,9 @@ try {
 	Invoke-EngineGenerator 'vertical-loop' $compatibleOnlyProjectName "$testId-a" @() $compatibleOnlyEngine
 	$compatibleOnlyOutput = $outputPaths[6]
 	$compatibleOnlyLock = Read-FixtureLock $compatibleOnlyOutput | ConvertFrom-Json
+	foreach ($requiredNullField in @('engine_is_promoted_build', 'engine_branch_name', 'engine_changelist_source')) {
+		Assert-True ($null -ne $compatibleOnlyLock.PSObject.Properties[$requiredNullField]) "nullable build identity field is present: $requiredNullField"
+	}
 	Assert-True ($compatibleOnlyLock.engine_changelist -eq 0) 'a Build.version with Changelist 0 records the value the engine''s rule derives, not CompatibleChangelist'
 	Assert-True ($compatibleOnlyLock.engine_changelist_source -eq 'Changelist') 'the derived changelist names the field the rule used'
 	Assert-True ($compatibleOnlyLock.engine_compatible_changelist -eq 44201111) 'the build identifier that lives in CompatibleChangelist is recorded instead of ignored'
@@ -1768,6 +1771,14 @@ try {
 	Assert-True ($null -eq $compatibleOnlyLock.plugins.MovieRenderPipeline.version) 'a plugin that declares no version is recorded as null, not as an empty string'
 	Assert-True ($null -ne $compatibleOnlyLock.plugins.PSObject.Properties['MovieRenderPipeline']) 'the plugin without a declared version is still named in the lock'
 	Write-Output 'PASS: optional engine build fields distinguish unknown (null) from a reported zero'
+	$emptyBranchEngine = Join-Path $fixtureRoot 'EmptyBranchEngineRoot'
+	New-FixtureEngineRoot $emptyBranchEngine '{"MajorVersion":5,"MinorVersion":8,"PatchVersion":4,"Changelist":0,"BranchName":""}'
+	$emptyBranchName = "Eb_$testId"
+	$emptyBranchOutput = Join-Path $productionRoot "${emptyBranchName}_emptybranch"
+	$outputPaths += $emptyBranchOutput
+	Invoke-EngineGenerator 'vertical-loop' $emptyBranchName 'emptybranch' @() $emptyBranchEngine
+	$emptyBranchLock = Read-FixtureLock $emptyBranchOutput | ConvertFrom-Json
+	Assert-True ($null -ne $emptyBranchLock.PSObject.Properties['engine_branch_name'] -and $null -ne $emptyBranchLock.engine_branch_name -and $emptyBranchLock.engine_branch_name -ceq '') 'a written empty BranchName remains an empty string, not a missing observation'
 
 	$changelistOnlyEngine = Join-Path $fixtureRoot 'ChangelistOnlyEngineRoot'
 	New-FixtureEngineRoot $changelistOnlyEngine '{"MajorVersion":5,"MinorVersion":8,"PatchVersion":4,"Changelist":58902052}'
@@ -1909,7 +1920,10 @@ try {
 	$relativeLongest = $measuredLongest - ((Join-Path $productionRoot ("PthB_ok1_$testId")).Length + 1)
 	$deepOutputName = 'PthB_dk1_dk'
 	$deepRootLengthNeeded = 259 - $relativeLongest - ($deepOutputName.Length + '\Production'.Length) + 1
-	$deepRootLengthNeeded = [Math]::Max($deepRootLengthNeeded, $fixtureRoot.Length + 120)
+	# Deep enough to exceed the *generated tree* budget, not Git's own GIT_DIR limit.
+	# Shallow CI clones fetch into this path instead of using --local; a 120-character
+	# arbitrary extra segment made Git itself fail before the budget guard could run.
+	$deepRootLengthNeeded = [Math]::Max($deepRootLengthNeeded, $fixtureRoot.Length + 12)
 	$deepSegment = 'd' * ($deepRootLengthNeeded - $fixtureRoot.Length - 1)
 	$deepParent = Join-Path $fixtureRoot $deepSegment
 	[System.IO.Directory]::CreateDirectory($deepParent) | Out-Null
