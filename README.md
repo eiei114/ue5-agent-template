@@ -1,7 +1,7 @@
 # UE5 Agent Production Template
 
 AIが短い映像または小さな鑑賞シーンを安全に作るための**文書・運用テンプレート**。
-最初に [AGENTS.md](AGENTS.md)、次に [着手手順](docs/01-start.md) を読む。
+最初に [AGENTS.md](AGENTS.md)、次に [着手手順](docs/01-start.md) を読む。過去の変更と移行手順は [変更履歴](CHANGELOG.md)。
 
 ## 現在の範囲
 
@@ -25,6 +25,7 @@ AIが短い映像または小さな鑑賞シーンを安全に作るための**�
 | 構造・recipe・lock更新 | docs/07-architecture.md |
 | 少人数online方式・費用・制約 | docs/08-online-foundations.md |
 | 動画モーキャプ（MediaPipe → VRMA → UE） | docs/09-video-mocap.md |
+| 変更履歴・移行手順（過去の変更と移行の記録） | CHANGELOG.md |
 
 `templates/` は雛形であり編集しない。`templates/QA.md` を複製して `Production/.runs/run_<runid>/preflight.md` と `LEASE.json` を作り、生成後は `Production/<Name>_<runid>/Out/run_<runid>/` へ移して記入する。生成先 `Production/<Name>_<runid>/` の中には生成前に書かない（配置の正本は [AGENTS.md](AGENTS.md) と [docs/01-start.md](docs/01-start.md)）。
 `Production/` は生成先の空プレースホルダ。通常Gitには制作物を入れない。`Production/.runs/run_<runid>/` は生成前の preflight と lease の台帳で、こちらも `.gitignore` の対象。

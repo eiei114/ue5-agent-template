@@ -2,7 +2,7 @@
 
 ## 先に読む
 
-README → docs/01-start → 対象工程のdocs。現行Issue・owner指示・ホストの既存AGENTSも読み、矛盾を隠さない。文書は権限付与ではない。
+README → docs/01-start → 対象工程のdocs。変更理由・移行手順・未検証範囲は`CHANGELOG.md`にあり、同じ順路で読む（`README.md`の「入口」表からも名指ししている）。現行Issue・owner指示・ホストの既存AGENTSも読み、矛盾を隠さない。文書は権限付与ではない。
 
 ## 最短ループ
 
