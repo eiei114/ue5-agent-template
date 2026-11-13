@@ -44,6 +44,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$projectSettingsSection = '/Script/EngineSettings.GeneralProjectSettings'
 
 # The only recipe.json contract this generator implements. A file declaring another version is rejected
 # rather than partially honoured, so a future field cannot be silently ignored.
