@@ -574,10 +574,33 @@ public static class MulticaTemplateDirectory {
 }
 '@
 }
+function Get-ExistingOutputDiagnosis([string]$Path) {
+	# The refusal of an existing output directory is correct, but one message for every case makes
+	# an agent read an ordering error as "this run already produced a project". The start procedure
+	# writes preflight and lease to Production/.runs/run_<runid>/, outside the generated project, so a
+	# directory that is empty or holds only that run bookkeeping means an earlier step occupied the
+	# generated path. Report which case this is and never delete or overwrite anything.
+	$names = @()
+	try {
+		$names = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop | ForEach-Object { $_.Name })
+	} catch {
+		return 'The existing directory could not be listed, so it was not modified: ' + $_.Exception.Message
+	}
+	$runBookkeeping = @('LEASE.json', 'Out', 'QA.md', 'preflight.md')
+	if ($names.Count -eq 0) {
+		return 'This is an ordering error, not an existing project: the directory is empty, so an earlier step created the generated project path itself. Preflight and lease belong in Production/.runs/run_<runid>/, outside the generated project. Nothing was deleted or overwritten.'
+	}
+	$unknownNames = @($names | Where-Object { $runBookkeeping -notcontains $_ })
+	if ($unknownNames.Count -eq 0) {
+		return ('This is an ordering error, not an existing project: the directory holds only run bookkeeping ({0}), so an earlier step created the generated project path itself. Preflight and lease belong in Production/.runs/run_<runid>/, outside the generated project. Nothing was deleted or overwritten.' -f ($names -join ', '))
+	}
+	return ('An existing output is present and was not modified. Existing entries: {0}. If these are this run''s own artifacts, generate under a new -RunId instead of deleting or overwriting them.' -f ($names -join ', '))
+}
+
 if (-not [MulticaTemplateDirectory]::CreateDirectory($destinationPath, [IntPtr]::Zero)) {
 	$win32Error = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
 	if ($win32Error -eq 183) {
-		throw "Output already exists; it was not modified: $destinationPath"
+		throw "Output already exists; it was not modified: $destinationPath. $(Get-ExistingOutputDiagnosis -Path $destinationPath)"
 	}
 	throw "Could not exclusively create the output directory (Win32 $win32Error): $destinationPath"
 }

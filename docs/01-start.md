@@ -3,6 +3,8 @@
 ## Preflightの完了条件
 
 `templates/QA.md`に日時、Issue/run、hostname/OS、UE実version、GPU/VRAM、disk/RAM、既存toolchain、モデル指定/実効値、利用枠の観測範囲を記録。不明を0や無料と扱わない。これはQA記録だけの規則ではなく、`scripts/New-UETemplateScaffold.ps1`が書く`template-lock.json`にも等しく適用される：エンジンが書いていない値は`null`、0は「エンジンが0と書いた」値だけに使う（[構造と更新](07-architecture.md)のengine build identity）。
+
+`templates/QA.md`を**複製**して、`Production/.runs/run_<runid>/preflight.md`へ日時、Issue/run、hostname/OS、UE実version、GPU/VRAM、disk/RAM、既存toolchain、モデル指定/実効値、利用枠の観測範囲を記録。不明を0や無料と扱わない。`templates/`は雛形であり編集しない（tracked fileを汚すとgeneratorのclean-tree gateで停止する）。`Production/.runs/run_<runid>/`は生成先`Production/<Name>_<runid>/`の外にある台帳dirで、生成前にここへ書いても生成を妨げない。project生成後は同じ内容を`Production/<Name>_<runid>/Out/run_<runid>/QA.md`へ移し、以降はそこで追記する。
 Multicaのissue runs / runtime activity（先に各--help）と現地UE/renderプロセス・project leaseを確認。onlineはbuild可能の証拠ではない。
 Windows offlineなら新規buildをqueueして成功扱いしない。MacBookは許可済みApple工程の候補、miniは軽い計画・文書確認のみ。
 
@@ -65,6 +67,12 @@ leaseの取得・解放・所有権照合は `scripts/Lease-UETemplateProject.ps
 
 - lease記録の置き場所は、AGENTS.md「フォルダ」と run 台帳の規則に従い `-ProjectDirectory` で指定する。生成先project dirをlease工程で作り直さない（生成は `scripts/New-UETemplateScaffold.ps1` だけが排他的mkdirする）。
 - leaseにはrun ID、issue ID、host、project realpath、取得日時、nonce、writer phase、当該runのPIDだけを保存。scriptはこの8 field以外を書かない（増やす場合は本文も同じPRで更新する）。
+
+leaseとpreflightの正本は`Production/.runs/run_<runid>/`であり、生成先`Production/<Name>_<runid>/`とは別dirである。
+
+- 台帳dir `Production/.runs/run_<runid>/` の排他的mkdirと、その中の`LEASE.json` の排他的createを使う（PowerShell通常のNew-Item -Forceで代替しない）。
+- **生成先 `Production/<Name>_<runid>/` はlease工程で作らない。** その排他的mkdirはgenerator（`scripts/New-UETemplateScaffold.ps1`）が行い、既存なら停止する。lease工程が先に生成先dirを作ると生成が必ず失敗する。
+- leaseにはrun ID、issue ID、host、project realpath（生成予定の絶対path。生成後に実pathと照合）、取得日時、nonce、writer phase、当該runのPIDだけを保存。
 - create競合なら停止。他runのactive有無とsource fingerprintが不明なら停止。時刻経過だけで奪わない。
 - 再開は前leaseの解放receipt・保存済み版・active writerなしを照合し新nonceを取得。
 - 解放前に実fileのrun/nonceを照合。自process終了・保存後、run別のLEASE_RELEASED記録へ移す。他人のleaseを消さない。
@@ -74,7 +82,8 @@ leaseの取得・解放・所有権照合は `scripts/Lease-UETemplateProject.ps
 
 ## 最小smokeの証拠
 
-clone commit → preflight → lease → project生成 → Editor build → Playで床/cube/camera表示 → MRQ 2秒 → ffprobeと目視 → optional Shipping → 解放。
+clone commit → preflight（`Production/.runs/run_<runid>/preflight.md`）→ lease（同dir の `LEASE.json`）→ project生成（`Production/<Name>_<runid>/`、generatorが排他mkdir）→ Editor build → Playで床/cube/camera表示 → MRQ 2秒 → ffprobeと目視 → optional Shipping → 解放。
+生成前の書き込み先は`Production/.runs/run_<runid>/`だけであり、生成先project dirの中には何も書かない。
 各工程はpass/fail/unverified、exit code、実ファイルhashで記録する。文書リンク点検だけをUE smokeと呼ばない。
 
 ## 切断からの復旧・続行（既存制作にも適用）
