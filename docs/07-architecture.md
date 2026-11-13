@@ -10,6 +10,8 @@
 | 三人称ゲーム | 公式TP_ThirdPersonをウィザード同等に実体化（名前置換・共有pack・package redirect + 改名済みclass redirect） | `third-person-game` recipe（`materialize_project`） |
 
 | 三人称ゲーム | 公式TP_ThirdPersonを、`TemplateDefs.ini`の置換規則で`<Name>`へ実体化（名前置換・共有pack・redirect）。規則の適用範囲と封じ込めは下記「TemplateDefs.ini契約」 | `third-person-game` recipe（`materialize_project`） |
+
+| 三人称ゲーム | 公式TP_ThirdPersonの実体化（実装済みTemplateDefsキーによる名前置換・共有pack・redirect） | `third-person-game` recipe（`materialize_project`） |
 | 映像専用 | 縦動画・ループ等、操作不要の入口 | `vertical-loop` capture-only recipeを追加 |
 | オンライン | 小人数listen server、session、replication | Null/LAN starter pluginと方式比較を追加。実測範囲はQA参照 |
 | project generator | installed Engineの公式templateから新規project生成 | `scripts/New-UETemplateScaffold.ps1`。排他的作成/上書き禁止、`TemplateDefs.ini`適用、project identity照合、既定map照合あり |
@@ -19,13 +21,19 @@
 
 `spectator-explore`は公式`TP_FirstPerson`を起点にし、プレイと撮影を同じsetへ向ける。`vertical-loop`は公式`TP_BlankBP`を起点にしてゲーム操作を要求しない。この2つはtemplateのprojectファイル名と`Source/<EngineTemplate>`をそのまま残す（生コピー経路）。`third-person-game`だけが`materialize_project: true`で、`Config/TemplateDefs.ini`の規則を適用し`<Name>.uproject`へ実体化する。
 
-generatorはEngineの既存templateをコピーし、recipe文書・online plugin・`template-lock.json`を加える。**3 recipeともtemplate自身の`Config/TemplateDefs.ini`を1つの実装（`scripts/New-UETemplateScaffold.ps1`の`Copy-TemplateTree`）で読む**。違いはrenameを適用するかどうかだけで、copy範囲の規則は共通である。
+`spectator-explore`は公式`TP_FirstPerson`を起点にし、プレイと撮影を同じsetへ向ける。`vertical-loop`は公式`TP_BlankBP`を起点にしてゲーム操作を要求しない。この2つはtemplateのprojectファイル名と`Source/<EngineTemplate>`をそのまま残す（生コピー経路）。`third-person-game`だけが`materialize_project: true`で、`Config/TemplateDefs.ini`の実装済みキーを適用し`<Name>.uproject`へ実体化する（materialize経路）。
+
+generatorはEngineの既存templateをコピーし、recipe文書・online plugin・`template-lock.json`を加える。**3 recipeともtemplate自身の`Config/TemplateDefs.ini`を1つの実装（`scripts/New-UETemplateScaffold.ps1`の`Copy-TemplateTree`）で読む**。違いはrenameを適用するかどうかだけで、copy範囲の規則は共通である。generator自身がmap/Sequence/`.uasset`を捏造しない。
 
 ### TemplateDefs.ini契約（実装しているキーと検査している範囲）
 
 `third-person-game`は「UE New Projectウィザードと同じ規則」ではなく、**このgeneratorが実装した範囲**を適用する。Epic公式docsには`TemplateDefs.ini`の`FolderRenames` / `SharedContentPacks` / `ReplacementsInFiles` / `FilenameReplacements` / `EditDetailLevelPreference`のschemaが無い（2026-11-03取得、0ヒット）。したがって規則の正しさは公式仕様ではなくrepoの実測で担保する。
 
 | キー / 範囲 | 生コピー経路 | materialize経路（`third-person-game`） |
+
+### TemplateDefs.ini の実装範囲（共通基盤）
+
+| キー | 生コピー経路 | materialize経路 |
 |---|---|---|
 | `FoldersToIgnore` / `FilesToIgnore` | 相対pathで除外（`Config/TemplateDefs.ini`自身・`Config/config.ini`・`Media/`が出力に残らない） | 同左 |
 | `FolderRenames` | 適用しない（project名/module名がtemplate名のまま残るため） | `From`一致時に`To`（`%PROJECTNAME%`置換）へ改名。改名後の各ファイル書き込み先を`$Destination`配下に封じ込め、外れたら**書き込み前に**停止 |
@@ -36,7 +44,13 @@ generatorはEngineの既存templateをコピーし、recipe文書・online plugi
 
 封じ込め判定は`Resolve-ContainedPath`1つに集約し、`GetFullPath`で正規化したpathが出力ディレクトリ+区切り文字で始まるか（`OrdinalIgnoreCase`）で判定する。出力ディレクトリ自体の`Production/`内判定も同じ関数を使う。
 
-generator自身がmap/Sequence/`.uasset`を捏造しない。
+| `FolderRenames` / `ReplacementsInFiles` / `FilenameReplacements` | 適用しない（project名/module名がtemplate名のまま残るため） | 適用 |
+
+- `SharedContentPacks`はmountごとの`DetailLevels`宣言を先に試し、実体が無い場合だけ`EditDetailLevelPreference` → `High` → `Standard` の順にfall backする。fall backしたときは警告し、実際に使ったlevelと「宣言どおりか」を`template-lock.json`の`template_defs.shared_content_packs`（`mount` / `detail_level` / `declared`）に記録する。
+- `FilenameReplacements`（**ファイル名**）と`ReplacementsInFiles`（**ファイル本文**）は別宣言であり、片方の`Extensions`をもう片方の判定に使わない。どちらも`From`/`To`/`bCaseSensitive`をtupleごとに使い、`%TEMPLATENAME%`系のtokenを展開する。`From`が一致しないtupleは何も置換しない。
+- module名（`.uproject`の`Modules[].Name`）にも`ReplacementsInFiles`を適用する。`.uproject`はJSONであり`ReplacementsInFiles`の`Extensions`（`cpp`/`h`/`ini`/`cs`等）に含まれないため、module名の書換はidentity契約を保つための別処理として同じ宣言規則を適用する。宣言規則がmodule名に届かなければ生成後のidentity検査で非0停止し、未一致pathを列挙する。
+- 上表に無いキー（`LocalizedDisplayNames` / `LocalizedDescriptions` / `Categories` / `ClassTypes` / `AssetTypes` / `bThumbnailAsIcon` / `SortKey` / `Variants` 等）はウィザードの表示・選択metadataであり、本generatorは使わない。**適用せず、警告して継続**し、`template-lock.json`の`template_defs.applied_keys` / `ignored_keys` / `unreadable_lines`に記録する。実engine templateはこれらを必ず含むため、停止ではなく警告とlock記録を選んでいる。
+- "UEウィザードと同じ規則"とは書かない。公式文書にschemaが無く、engine同梱`TemplateDefs.ini`の実物との照合も限定的なので、実装範囲をキーの列挙で示す。
 
 generatorはrecipe名を一切見ない。`-Recipe` は `templates/recipes/<Recipe>/recipe.json` を指す名前であり、合成内容は recipe.json のデータと recipe ディレクトリに実際に置かれたファイルだけで決まる。
 
@@ -155,6 +169,7 @@ generatorは`Production/.stage-<runid>-<nonce>/`に全成果物を作り、最�
 | `shared_content_packs` | 出力`Content/`へ展開したmount名の配列。宣言が無いtemplate（`TP_BlankBP`）は空配列 |
 | `shared_content_pack_detail_levels` | mount名 → 実際に展開元としたdetail level（例: `Weapons: Standard`） |
 | `template_defs_ignore_rules` | 適用した`FoldersToIgnore` / `FilesToIgnore`の件数（`folders_to_ignore` / `files_to_ignore`） |
+| `template_defs` | 適用したキー（`applied_keys`）、適用できなかったキー（`ignored_keys`）、解釈できなかった行（`unreadable_lines`）、`edit_detail_level_preference`、mountごとの`shared_content_packs`（`mount` / `detail_level` / `declared`） |
 
 生成後の検査として、生成された`Config/DefaultEngine.ini`の`GameDefaultMap` / `EditorStartupMap`が`/Game/...`を指す場合、その`.umap`が出力に存在することを確認する。無ければgeneratorは停止して欠落pathを列挙し、`template-lock.json`を書かず`Created ...`も出さない。`/Engine/...`（engine content）を指す宣言は出力treeの対象外として検査しない。
 
