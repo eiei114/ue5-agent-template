@@ -50,6 +50,8 @@ writer/lease nonce・取得/解放receipt（`scripts/Lease-UETemplateProject.ps1
 - MP4のframe数だけでは、元画像列の欠番・余分を排除できない。
 - 音声streamの存在は聴取ではない。
 - 解像度や範囲を入力しなかった項目は`unverified`と書き、空欄のままpassにしない。
+- Mac hostの判定は、EpicのUE5.8表とAppleのXcode対応表の**交差**で出す。片方の表だけでpassにしない。観測値が無い欄は`unverified`、公開表に記載の無い版も`unverified`とし、passに丸めない。
+- Mac hostの`pass`はhost適格の判定であり、Mac実機のbuild/UAT/`.app`生成/署名・公証の合格に読み替えない。
 
 検査対象の画像列・run専用出力先・実施SHA・tool版を記録する。旧runの同数frame混入はこの検査だけでは判定できないため、run所有権の照合結果を別途残す。
 
