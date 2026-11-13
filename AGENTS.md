@@ -28,6 +28,7 @@ README → docs/01-start → 対象工程のdocs。現行Issue・owner指示・�
 - RoomSevenの稼働writer/Content/素材/Audio/downloadsに接触・複製しない。運用知識は本書に抽出済み。必要な既存tool mapの限定読取はそのhostで許可がある場合だけ。
 - 新Claude/Anthropic割当は既定禁止。docs/02-runtimeのOpus例は過去案件固有の許可記録であり、汎用テンプレートの既定モデルにしない。
 - 購入、credit消費、追加API billing、新認証・資格情報移送、GitHub作成/push/public/SNS/配布はそれぞれの現行許可を確認。既存案件の2credit許可を再利用しない。
+- GitHubへpush/publicする前に `./scripts/Test-UETemplatePublishSurface.ps1 -RepoRoot <checkout>` を実行し、exit 0 と `SUMMARY: ... fail=0` を確認する。`FAIL:` は1行1件ずつ潰し、exit 2（worktreeでない・indexが空）は通過扱いにしない。`.gitignore` は未追跡物しか止めないので、この監査の代用にしない（詳細と3つのFALSE PASSの実測は `docs/06-delivery.md`）。
 - secrets、cookie、token、署名URL、auth.json、環境変数全体、生transcriptを読取/出力/commitしない。
 - 既存writerへ割込まない。名前指定kill、leaseの時刻だけでの強制解除、他人のdirty差分のstash/restore/削除は禁止。
 - run終了後に残すbuild/renderは不可。完了・安全停止を当該turn内で回収。

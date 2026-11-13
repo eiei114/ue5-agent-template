@@ -1,4 +1,10 @@
 # Runtime, credentials, licensed assets and generated productions stay out.
+#
+# This file only keeps *untracked* files untracked. It cannot stop a path that is
+# already in the index - `git rm --cached` is required for that - so the published
+# surface is decided by `scripts/Test-UETemplatePublishSurface.ps1`, which reads
+# `git ls-files` and applies its own case-insensitive rules. Do not treat adding a
+# line here as a guarantee that the file cannot be published.
 Production/*
 !Production/PLACEHOLDER.md
 Out/
@@ -9,16 +15,37 @@ Intermediate/
 DerivedDataCache/
 .vs/
 .idea/
+
+# Engine and licensed content shapes.
 *.uasset
 *.umap
 *.fbx
+*.psd
 *.wav
 *.mp3
 *.mp4
+*.mov
 *.zip
 *.pak
 *.utoc
 *.ucas
+
+# Offline handoff / distribution shapes. README.md documents the bundle as a
+# normal offline handoff artifact, so it can legitimately exist in a checkout;
+# it must never be committed.
+*.bundle
+*.7z
+*.rar
+*.tar.gz
+*.tgz
+*.exe
+*.dll
+*.pdb
+*.lib
+*.so
+*.dylib
+
+# Credentials and secret-shaped paths.
 LEASE*.json
 .env*
 auth.json
@@ -26,4 +53,30 @@ auth.json
 *chrome-profile*
 *.pem
 *.key
+*.p12
+*.pfx
+*.jks
+*.p8
+*.ppk
+secrets.json
+secrets.yaml
+secrets.yml
+secret.json
+secret.yaml
+secret.yml
+token.json
+service-account.json
+id_rsa
+id_ed25519
+id_ecdsa
+id_dsa
+.netrc
+_netrc
+.npmrc
+.pypirc
+client_secret*
+api-token.txt
+GH_TOKEN
+keystore
+.htpasswd
 .DS_Store
