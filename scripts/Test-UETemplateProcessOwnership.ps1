@@ -306,7 +306,9 @@ try {
 	# --- group 4: a reused PID is never stopped (c) --------------------------------------------
 	# Rewrite the leaf's recorded creation time; the live PID now "belongs to" a different process.
 	$reusedSnapshot = $snapshot | ConvertTo-Json -Depth 12 | ConvertFrom-Json
-	$reusedLeafTicks = [long]$leafRecord.creation_utc_ticks - 50000
+	# Move forward, not backward: subtracting 5ms could put the fake child before its
+	# parent on fast CI runners and test an invalid parent link instead of PID reuse.
+	$reusedLeafTicks = [long]$leafRecord.creation_utc_ticks + [TimeSpan]::TicksPerSecond
 	$reusedSnapshot.processes = @(@($reusedSnapshot.processes) | ForEach-Object {
 		if ([int]$_.process_id -eq [int]$leafRecord.process_id) {
 			[pscustomobject]@{

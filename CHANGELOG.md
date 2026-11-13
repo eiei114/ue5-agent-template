@@ -1,6 +1,6 @@
 # 変更履歴
 
-## Unreleased — DOT-3117
+## Unreleased — DOT-3117 — 2026-11-13
 
 - `templates/QA.md` が、repo 自身が要求する受入項目のうち10項目（起動map・Pawn・開始姿勢、座位/立位、host の session 作成、2 人目 client の join、score と player count の replication、client leave、reconnect、failed search、timeout）に対応する行を持っていなかった。行が無ければ検品者はその欄自体を書かないため、`docs/05-qa.md:36` の「合否・版/hash・実施者・日時・証拠・未確認をセットにする」を満たさないまま `Out/run_<runid>/` の QA が納品セットに入った。行を追加し、各行に機械検査用の `[QA-...]` ID を付けた。
 - online/LAN 行は `spectator-explore` 使用時のみ対象で、他の recipe は `non-goal` を記録することを雛形の冒頭と行本文の両方に明記した。実接続を実施していない `spectator-explore` の run は `unverified` のままとし、`non-goal` へ読み替えないことも書いた。
@@ -13,7 +13,7 @@
 
 実測（本 host、Windows、Windows PowerShell 5.1.26100.9711 と `pwsh 7.6.9` の両方、repo SHA `adfb5eebab9d1a3d90a60928ee31bfa35cb20b4a`、`templates/QA.md` の変更前 sha256 `AC1C02940CD6639C4CE451C4EF83A18E7E210D219D9031605F5C3D74470DC277` / 変更後 `D24FE74633EEC8649406C259B4E678177C177DCCF03BF28AF5511EEE1A72800D`）: `scripts/Test-UETemplateScaffold.ps1` は 11 group PASS / exit 0（既存 8 group を含む）。負例は 4 行それぞれ `required acceptance row <id> is missing` で exit 1、値の負例は `row QA-MRQ-01 uses 'ok' …` で exit 1 になることを、`a9e31bc` の clone に新 suite を当てて確認した（`QA template contract violated: … the table carries 11 data rows, fewer than the 24 required acceptance rows …` で exit 1）。suite 前後の `git status --porcelain --untracked-files=all` は同一（この変更の 4 ファイルのみ）。**UE install / compile / Editor / PIE / MRQ / render / Shipping / 実 LAN 接続は一切実行していない**（Unverified Scope）。行があることは 2-client 接続の実測ではない。
 
-## Unreleased — DOT-3119（UE-PROV-001）
+## Unreleased — DOT-3119（UE-PROV-001） — 2026-11-13
 
 `template-lock.json`が「公開repoのcommit」を名乗りながら、未pushのcommitを書いていた問題を修正した。旧generatorは`template_repository`を文字列定数で固定し、`git rev-parse HEAD`の値を無条件に`template_commit`として書いていたため、bundle clone・fork・remote無しのcheckoutから生成してもlockは公開repoを名乗り、そのSHAは公開repoからは取得できなかった。
 
@@ -34,7 +34,7 @@
 
 `schema_version`の順序: `main`は`2`なので、本変更は`4`を使う。競合して未マージのUE-LOCK-001（DOT-3114、PR #20）が`3`を使っているため、`3`は予約であり、どちらが先にマージされても残った側が**単調増加**で再採番する（本PRが先なら#20が`5`、#20が先なら本PRをrebaseして`5`）。どちらも`schema_version`の値で新旧を判別できる。
 
-## Unreleased — DOT-3114
+## Unreleased — DOT-3114 — 2026-11-13
 
 `template-lock.json`のengine build identityを、UE自身の規則と一致させた。旧generatorは`Build.version`／`.uplugin`に存在しないfieldを`0`／`""`へ黙って変換してlockに書いており、実測で**Engine installが異なる2つの生成物がbyte一致のlock**を持っていた。
 
@@ -55,7 +55,7 @@
 
 本host実測（Windows PowerShell 5.1.26100.9711 / pwsh 7.6.9、2026-11-03、template `adfb5eebab9d1a3d90a60928ee31bfa35cb20b4a`）: `scripts/Test-UETemplateScaffold.ps1`は両shellで13 group PASS / exit 0。`a9e31bc`のgeneratorに同じsuiteを当てると`generated project descriptor has a non-empty EngineAssociation`で失敗（engine_changelist assertion 0件のbaseline）。UE install / compile / Editor / PIE / MRQ / render は実行していない（本変更はUE非依存、**Unverified Scope**）。
 
-## Unreleased — DOT-3220
+## Unreleased — DOT-3220 — 2026-11-13
 
 - `docs/04-package.md` のMac節がEpicのUE 5.8表から引用していたのはXcodeの1行だけだった。同じ表にある最低/推奨のmacOS、プロセッサ、メモリ、Metal、Xcodeの行を独自要約の表として揃え、行ごとに出典URLと参照日（2026-11-05）を付けた。表・本文の転載ではなくリンクと要約のみ。
 - Epicの「最低macOS = Sonoma 14.5」と「最低Xcode = 26.0」は、Appleの[Xcode対応表](https://developer.apple.com/support/xcode/)（Xcode 26.0〜26.3はmacOS 15.6以上を要求）と両立しない。どちらの表が誤記かは決めず、host判定は**両表の交差**で行う規則として明記した。Epic内の「Sequoia 14（上部）/ Sequoia 15（Version History）」の不整合と、「Xcode 26.4は非互換」が単一buildか26.4系全体か確定できない点も、推定せず未確定として残した。
@@ -67,7 +67,7 @@
 
 移行: 既存作品のQA記録は書き換えない。Mac host行が無い旧記録は**Unverifiedのまま**残し、新規runから本行を埋める。Mac実機のbuild / UAT / `.app`生成 / 署名・公証、`sw_vers` / `xcodebuild`の実測は未検証（Unverified Scope）。fixtureと文書の検査成功はMac実行の証明ではない。
 
-## Unreleased — DOT-3232
+## Unreleased — DOT-3232 — 2026-11-13
 
 - `docs/05-qa.md` は MP4 への書き出し経路を **1 本（MRQ 画像列 → 既存 ffmpeg）しか書いておらず**、UE 5.8.4 の実インストールが同梱する MRQ の MP4 直接出力を encoder として数えていなかった。同ファイル `:7` の「既存 encoder がなければ勝手に導入しない」は、UE 自身が持つ encoder を「無い」と読ませる書き方で、ffmpeg の無い host の agent を停止させうる。加えて `templates/QA.md` には**どの経路で MP4 を作ったかを記録する欄が 0 行**だったため、direct-MRQ の MP4 と ffmpeg で組んだ MP4 が納品記録上で区別できなかった。
 - `docs/05-qa.md` に「書き出し経路（2つ）」節を追加し、**経路A（`mrq-image-sequence+external-ffmpeg`、元 PNG 列が存在し画像列検査が効く）** と **経路B（`mrq-native-mp4`、MRQ の出力設定 `H.264 MP4 [8bit]` で直接 MP4、元 PNG 列は存在しない）** を、元 PNG 列の有無つきで明示した。既定は経路A のままで、経路B を既定にしない。`:7` の文は「UE 同梱の MRQ 出力設定も encoder として数える。外部 ffmpeg の新規導入はしない」へ書き換えた（**新規導入禁止は維持**）。既存の ffmpeg 例は削除していない。独立判定表の「画像列」行にも、経路B では対象が存在しないことを追記した。
@@ -78,7 +78,7 @@
 - 移行: 既存作品の `Out`・画像列・MP4 を再生成しない。既存 run の QA 記録は当時の経路が不明なら `encode_path` を空欄のまま `unverified` とし、遡って推測で埋めない。`MovieRenderPipelineMP4Encoder` を recipe の `required_plugins` へ追加していない（`.uplugin` の `MovieRenderPipeline` に同梱される）。ffmpeg / ffprobe の導入・更新・画質パラメータの変更も無い。
 - Unverified Scope: UE 5.8.4 で経路B（`H.264 MP4 [8bit]`）が実際に動くこと、direct-MRQ MP4 の画質・frame 数・音声同期・loop 継ぎ目が経路A と同等であること、`Experimental` 表記が将来の UE 版で外れること、Epic が MP4 出力を非推奨としていること、ffmpeg の無い host で agent が実際に停止すること（本 host には ffmpeg 8.1.2 がある）。本変更は UE を起動せず、engine 同梱物（`.dll` / `.uasset` / `TemplateDefs.ini`）を repo へ追加していない。
 
-## Unreleased — DOT-3229
+## Unreleased — DOT-3229 — 2026-11-13
 
 - `scripts/New-UETemplateScaffold.ps1` の `Read-TemplateDefs` が `TemplateDefs.ini` の区切り文字の空白に依存していたのを直した。`FolderRenames` の `From=` / `To=` の間と `Extensions=(` / `MountName="` の直後に、任意個の空白・タブを許容する。
   - 実測: 本hostの実 install `UE_5.8`（`Engine/Build/Build.version` = 5.8.4 / CL 58902052）の `Templates/*` 34本のうち `Config/TemplateDefs.ini` を持つ32本を読み、うち**15本**が `FolderRenames=(From="…", To="…")`（カンマ直後に空白）形式で書いている。`Source/` を持つ spaced 形式の template は `TP_Blank` と `TP_SIM_Blank` の2本で、`TP_Blank` を `materialize_project: true` の recipe で実体化すると、宣言された改名規則が**無言で捨てられ**、`.uproject` が宣言する module 名と `Source/` の実ディレクトリ名が食い違った tree を exit 0 で出力していた（`aa11370`）。
@@ -117,7 +117,7 @@
 
 Unverified: UE の install 操作 / 起動 / compile / Editor / PIE / cook / MRQ / render / Shipping は実行していない。`Source/Probe/Probe.Build.cs` + `.uproject Modules[0].Name = "Probe"` の tree を UE / UBT が読んだときの挙動、UE ウィザードが `", To="` 形式を受理するか、タブ区切り・行末コメント・引用符なし等他の書式変種、UE 5.8.4 以外の版の同梱 template の書き方は未確認。
 
-## Unreleased — DOT-3235
+## Unreleased — DOT-3235 — 2026-11-13
 
 - `templates/CREDITS.md` のデータ行は1行だけで全列が `未使用` を主張していたが、generator は生成物の `Content/` に engine 同梱の `.uasset`/`.umap` を最大 753 件置く。**「素材を一切使っていない」と書いたまま engine 同梱 content を納品する経路**を閉じるため、記入契約を「`Content/` の先頭ディレクトリごとに1行、`出所区分 (origin)`（`engine-template` / `shared-content-pack` / `third-party` / `original`）と `同梱形態 (bundle)`（`repo-bundled` / `generated-only`）を明記」に変えた。未記入は Unverified であり「未使用」の主張ではない。記入例は code fence 内に置く（監査器は fence の中を記録として読まない）。
 - 監査器 `scripts/Measure-UECreditsInventory.ps1` を追加。納品dir（`Out/run_<runid>/`）と project root のどちらを渡しても同じ組（`Content/` と `CREDITS.md`）を解決し、同じ結論を返す。`Content/` に asset が1件以上あり出所を述べた行が無ければ FAIL、`Content/` の各先頭ディレクトリ名が出所行に現れなければ FAIL（group 名を報告）、`Content/` が無ければ placeholder 1行で PASS、`CREDITS.md` 不在や `Content/`・`CREDITS.md` が2つ以上解決できる場合は exit 2。exit 0 = 通過 / 1 = 検出 / 2 = 入力不備。
@@ -152,7 +152,7 @@ git status --porcelain --untracked-files=all  実行前後とも 0 行（生成�
 
 移行: 既存作品の `CREDITS.md` は**書き換えを強制しない**。旧9列表は監査で FAIL になるが、それは Unverified のままであることを意味し、権利判断ではない。再生成する場合は `template-lock.json` の `shared_content_packs` を見て `Content/` の先頭ディレクトリごとに出所行を書く。engine 同梱 content の再配布可否は本変更の対象外（Epic の template 機構文書に記載が無いという不在の観測のみ）。
 
-## Unreleased — DOT-3225（UE-PROCTREE-001）
+## Unreleased — DOT-3225（UE-PROCTREE-001） — 2026-11-13
 
 **理由**: `AGENTS.md` は「自分のrun所有processを同期回収」を必須にし、`templates/QA.md` がその合否を記録させ、同じ `AGENTS.md` が名前指定killを禁止している。ところが repo は「run所有」の**範囲を定義せず**、回収・検証のscriptを1つも同梱していなかった。lease が保存するのは単一の `pid` だけで、`Stop-Process` / `taskkill` / `Win32_Process` / `ParentProcessId` の参照は repo 全体で 0 件だった。結果、文書に従うagentは「回収しない」か「禁止された方法で回収する」のどちらかに落ち、さらにPID生存だけでleaseをfreeと報告すると、子孫がprojectを掴んだまま次のrunが失敗する。
 
@@ -175,7 +175,7 @@ git status --porcelain --untracked-files=all  実行前後とも 0 行（生成�
 **Unverified Scope**: 実UE 5.8.4 の起動/compile/Editor/PIE/MRQ/render/Shipping は実行していない。job object の `KILL_ON_JOB_CLOSE` は本hostで成立を確認できていないため採用せず、帰属はsnapshotの親子鎖だけで行う。Microsoftの仕様上 `Win32_Process.Create` 経由の子はjobを継承しない（[Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)、2026-11-05参照）ので、job単独を根拠にしない。実際のUE runがどのprocessをどの親子関係で出すかは未観測で、fixtureでの一致だけを合格根拠にしている。
 
 
-## Unreleased — DOT-3076
+## Unreleased — DOT-3076 — 2026-11-13
 
 - `scripts/New-UETemplateScaffold.ps1` は `Production/.stage-<runid>-<nonce>/` に全成果物を書き、最後に単一renameで`Production/<Name>_<runid>/`へ公開するようになった。`Directory.Move`は既存パスを拒否するので、これが生成のatomicな公開と最終的な排他判定を兼ねる。
 - 失敗時はcatchが**そのrun自身のstagingだけ**を削除する。公開済の既存projectや他runのstagingには触れない。従来の「失敗時は出力ディレクトリをそのまま残す」は廃止した。
@@ -185,7 +185,7 @@ git status --porcelain --untracked-files=all  実行前後とも 0 行（生成�
 - 実測（本host Windows、`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Test-UETemplateScaffold.ps1`）: 変更前のgeneratorでは`ASSERT FAILED: a mid-copy failure publishes no Production/<Name>_<runid> directory`でexit 1。変更後は11 group PASS・`EXIT=0`。
 - Unverified: UE実機（Editor/build/PIE/MRQ/Shipping）は実行していない。本変更はPowerShell層のみで、`Production/`の既存生成物には触れていない。
 
-## Unreleased — DOT-3404
+## Unreleased — DOT-3404 — 2026-11-13
 
 - `.github/workflows/verify.yml` の `render-artifacts` job は、runner image の `ffprobe` を無条件に受け入れ、無ければ version 未指定の `choco install ffmpeg` に落ちていた。同じ commit でも decode 判定が runner image / package 更新で変わり得るため、`scripts/ffprobe-pin.json`（配布元 URL・archive の SHA-256・`ffprobe.exe` の SHA-256・期待 version 行 prefix）で実体を固定し、`scripts/Install-PinnedFfprobe.ps1` が archive → binary → `-version` の 3 点を照合してから検査に使う形にした。固定 binary は checkout 外（`$env:RUNNER_TEMP`）に置き、repo へ同梱しない。
 - `scripts/Test-FfprobePin.ps1` を追加し、落ちる側を固定した。manifest の項目欠落（http URL・短い hash）、archive の 1 byte 改変、PATH の手前に別の `ffprobe` がある場合をすべて拒否し、固定版の bytes と version だけを受け入れる。suite は checkout 内に何も書かない。
@@ -200,7 +200,7 @@ git status --porcelain --untracked-files=all  実行前後とも 0 行（生成�
 
 未検証: GitHub Actions `windows-latest` 実機での実行（この PR の CI で確認する）。UE 5.8.4 の MRQ・実映像・ffprobe 実測は Unverified Scope のまま。
 
-## Unreleased — DOT-3135
+## Unreleased — DOT-3135 — 2026-11-13
 
 - `Read-TemplateDefs` は `FilenameReplacements`（ファイル名の置換）と `ReplacementsInFiles`（本文の置換）を別宣言として読み、それぞれの `Extensions` で判定する。`From` / `To` は tuple ごとに適用し、`bCaseSensitive` も tuple の値を尊重する（`%TEMPLATENAME%` / `%TEMPLATENAME_UPPERCASE%` / `%TEMPLATENAME_LOWERCASE%` / `%PROJECTNAME%` / `%PROJECTNAME_UPPERCASE%` / `%PROJECTNAME_LOWERCASE%` を展開する）。旧実装は両キーを区別せず、1つの extension list をファイル名 rename と本文置換の両方に使い、`From` / `To` / `bCaseSensitive` を無視して template 名を3段階で必ず置換していた。
 - 実装していない `TemplateDefs.ini` キーは**警告して継続**する（停止ではない）。実 engine template は `LocalizedDisplayNames` / `LocalizedDescriptions` / `Categories` / `ClassTypes` / `AssetTypes` / `bThumbnailAsIcon` / `Variants` 等の wizard metadata を必ず持つため、停止にすると install 済み template を丸ごと拒否する。適用したキー・捨てたキー・解釈できなかった行は `template-lock.json` の `template_defs`（`applied_keys` / `ignored_keys` / `unreadable_lines`）に記録する。無言の成功は 0 件。
@@ -221,7 +221,7 @@ git status --porcelain --untracked-files=all  実行前後とも 0 行（生成�
 
 UE install / launch / UBT compile / Editor / PIE / cook / MRQ / render / Shipping は本変更で実行していない。`Source/<Name>/<Name>.Build.cs` と `Modules[].Name = <Name>` の静的一致だけを合格根拠にし、UBT がこの tree をどう読むかは Unverified。
 
-## Unreleased — DOT-3208
+## Unreleased — DOT-3208 — 2026-11-13
 
 - 非materialize recipe（`spectator-explore` / `vertical-loop`）が生成projectのidentityを一度も書いていなかった。templateの`Config/DefaultGame.ini`をバイト単位でコピーするだけなので、別`ProjectName`・別RunIdの2つの生成物が同じ`ProjectID`を持ち、`ProjectName`は`First Person Template`のまま、`vertical-loop`はidentity block無しだった。materialize経路も`ProjectID=`/`ProjectName=`の**行だけ**を置換しており、templateが短い`[ProjectSettings]` headerで持つ場合はengineの読まないセクションに書いていた。
 - generatorは3 recipe すべてで`Config/DefaultGame.ini`のidentityを`[/Script/EngineSettings.GeneralProjectSettings]`配下に確定させる。短いheaderのidentity行は長い名前のセクションへ移し、identity以外を持たない短いheaderは落とす。`TP_BlankBP`のようにidentity blockが無いtemplateではセクションごと作る。同一keyが複数セクションに散在する等、一意に畳めない形では停止し、対象ファイル・セクション・keyを列挙する。書き込み後は実ファイルを読み戻して、長いheader配下に両keyがあることを確認する。
@@ -236,7 +236,7 @@ UE install / launch / UBT compile / Editor / PIE / cook / MRQ / render / Shippin
 
 移行: 既存の生成projectは自動改名・自動移行しない。`default_game_ini_identity`が無い旧lockの作品は、必要なら同じ`ProjectName`で新しいRunIdへ再生成し、lock・`Config/DefaultGame.ini`・作品差分を比較してから差し替える。`ProjectID`重複がZen/DDC/crash reportingに与える実害、UE Editor/PIE/MRQ/Shipping、packaged buildは本変更でも未検証（Unverified）。
 
-## Unreleased — DOT-3462
+## Unreleased — DOT-3462 — 2026-11-13
 
 - 画像列QA helper `scripts/Measure-UERenderArtifacts.ps1` に、期待indexの**格子**を宣言する入力を追加した。`-FrameStep`（既定1、`ValidateRange(1, …)`）と `-FrameNumberOffset`（既定0）。期待indexは`StartNumber + FrameNumberOffset + k*FrameStep`（`EndNumberExclusive + FrameNumberOffset`未満）で組む。**既定は従来挙動と完全に同一**（step=1/offset=0 は連番）。
 - MRQの`Output Frame Step`>1で描いた正当なrenderは連番ではない。従来のhelperにはその宣言手段が無く、宣言rangeをどう選んでもPASS 0件（69通り総当りで全てfail）、「120枚欠番」という誤診になった。`-FrameStep 2 -EndNumberExclusive 240`は、120枚（`0,2,…,238`）の格子でpass（exit 0）する。
@@ -250,7 +250,7 @@ UE install / launch / UBT compile / Editor / PIE / cook / MRQ / render / Shippin
 
 移行: 既存runのreportは再取得する（新しい`frame_step` / `index_lattice`欄は既存reportに無い）。`schema_version`は1のまま（追加のみで、既存の欄の意味は変わらない）。消費者は`frame_step` / `index_lattice`の存在を仮定せず、無ければstep未宣言として扱う。helper既定はstep=1/offset=0で従来と同一のため、stepを使っていない既存手順の判定は変わらない。既存`Production/`の生成物・既存reportは上書きしない。UE実機のMRQ render（`OutputFrameStep=2`の実出力のindex格子）、compile、PIE、Shipping、MP4のffprobe実測・目視は未実行（Unverified）。公式Epic docsの`Output Frame Step`定義と、本host実installのengine source（`MoviePipelineTiming.cpp`の`bSkipRendering`がoutput merger前にreturn）のread-only参照からの推論であり、実MRQ出力の観測ではない。
 
-## Unreleased — DOT-3157
+## Unreleased — DOT-3157 — 2026-11-13
 
 - 生コピー経路（`materialize_project`を持たない`spectator-explore` / `vertical-loop`）がtemplateの`Config/TemplateDefs.ini`を一度も読まず、templateフォルダを丸ごとコピーしていた。出力`Content/`に`TP_FirstPerson`の既定mapが参照する共有content pack（`Characters` / `LevelPrototyping` / `Input` / `Weapons`）が入らず、逆にignore対象の`Media/`と`Config/TemplateDefs.ini`・`Config/config.ini`が残っていた。generatorはexit 0で`Created ...`を表示し、testは6群PASSしていたため、"assetが足りない"を出力から判別できなかった。
 - `scripts/New-UETemplateScaffold.ps1`のコピー実装を1つ（`Copy-TemplateTree`）に統合し、両経路とも`TemplateDefs.ini`を読むようにした。`FoldersToIgnore` / `FilesToIgnore` / `SharedContentPacks`は共通、`FolderRenames` / `ReplacementsInFiles` / `FilenameReplacements`によるrenameは`materialize_project`のrecipeだけで適用する（生コピーの2 recipeはproject名/module名をtemplate名のまま維持する契約を変えていない）。
@@ -265,7 +265,7 @@ UE install / launch / UBT compile / Editor / PIE / cook / MRQ / render / Shippin
 
 未検証（Unverified）: UE Editorでの起動、既定mapを開いたときのmissing reference表示、PIE、MRQ、Shipping、パッケージ済みbuild。本変更の検証はPowerShell層のfixture回帰と実installのコピー結果までで、UE実機でmapを開いた確認ではない。
 
-## Unreleased — DOT-3132
+## Unreleased — DOT-3132 — 2026-11-13
 
 - `scripts/New-UETemplateScaffold.ps1` had **no path-length budget**: it accepted `ProjectName` up to 40 characters and `RunId` up to 64, so the output folder `<Name>_<RunId>` could reach 105 characters and the generated tree could exceed 260 characters while the generator still printed `Created ...` and exited 0. This repository already records 260 characters as a real failure (`docs/08-online-foundations.md`: a 2026-11-01 UE Editor build had to move the checkout to a temporary `Q:` drive), yet nothing in `scripts/` or the docs checked it.
 - The generator now measures the longest absolute path it is about to write — copied engine template (projected through `TemplateDefs.ini` for materializing recipes), shared content packs, the bundled `MulticaOnlineStarter` payload, and its own `Recipe/`, `docs/08` and `template-lock.json` — **before the exclusive mkdir**, and stops when it exceeds `-MaxPathLength` (default **260**). A rejected run leaves no `Production/<Name>_<RunId>/` behind. The stop message carries the measured length, the relative path, the overrun, the current clone-root length, the clone-root length that would fit, and concrete ways to shorten.
@@ -278,7 +278,7 @@ Evidence class: the default 260 comes from this repository's own recorded failur
 
 Migration: **existing generated projects are not moved, renamed or regenerated.** The check applies to new generations only; an existing `Production/<Name>_<RunId>/` stays as it is, and work already under way continues. If a new generation stops, either clone the template into a shallower directory or pass a larger `-MaxPathLength` and record the measured length and the reason in QA. UE build output (`Intermediate/`, `*.generated.h`, `*.obj`) is not generated here and is not measured; whether UE/UBT/MSVC actually fail above 260 characters on long-path-enabled hosts remains **Unverified** (this host has `LongPathsEnabled=1` and can write such paths, so no "always fails" claim is made).
 
-## Unreleased — DOT-3090
+## Unreleased — DOT-3090 — 2026-11-13
 
 - 公開前の公開面監査を実装した。`scripts/Test-UETemplatePublishSurface.ps1` は **index を正本**（`git ls-files -z`）とし、`generation-output`（`Production/` `Out/` `Art/` `Saved/` `Binaries/` `Intermediate/` `DerivedDataCache/`、`Production/PLACEHOLDER.md` だけ許可）/ `distribution-binary`（`.bundle` `.7z` `.exe` `.dll` `.pdb` `.uasset` `.mp4` 等）/ `credential`（`auth.json` `.env*` `id_rsa` `*.pem` 等）のpath形状規則を**監査器自身がcase-insensitiveに持つ**。終了コードは0=通過 / 1=検出あり / 2=監査不能。`throw` を使わず `FAIL:` / `WARN:` / `SUMMARY:` を1行1件で出す。
 - なぜ `git status` 目視・`git check-ignore` 突き合わせ・`.gitignore` だけで足りないかを、fixtureで固定した。commit済みの `.bundle` / `.exe` / `.7z` は status 0行・check-ignore は3件とも not-ignored・`^(Production|Out)/` grep 該当なしで**3通りともPASS**する。強制追加した `auth.json` をworktreeから消すと status は `D auth.json` に見え check-ignore も not-ignored を返すが、indexに残り fresh clone に載る。
@@ -294,7 +294,7 @@ Migration: **existing generated projects are not moved, renamed or regenerated.*
 
 移行: 既存の生成物・`Production/`・`Out/` には触れない。公開判定の根拠を「目視」から「`Test-UETemplatePublishSurface.ps1` の exit code」へ移す。`.gitignore` の拡張は未追跡物の抑制だけで、追跡済みの禁止物は `git rm --cached` しない限り公開面に残る（監査はそれを `FAIL` で報告する）。UE compile / PIE / Editor / MRQ / render は本件で一切実行していない（この変更は UE 非依存、Unverified Scope）。
 
-## Unreleased — DOT-3042
+## Unreleased — DOT-3042 — 2026-11-13
 
 - `docs/01-start.md` は lease プロトコルを「実装要件。スクリプト未同梱」と宣言したままで、排他的 mkdir と `LEASE.json` の CreateNew 相当を各エージェントの手作業に委ねていた。`New-Item -Force` や `Set-Content` で代替した生成物は別 run の active lease を黙って上書きして「成功」として通る。
 - `scripts/Lease-UETemplateProject.ps1` を追加した。`Acquire` / `Release` / `Test` の3動作で、出力先 dir の排他的作成は generator と同じ P/Invoke `CreateDirectoryW` + Win32 183 判定、`LEASE.json` の書き込みは `[IO.File]::Open($path, CreateNew, Write, None)` のみ。`Set-Content` / `WriteAllText` / `Out-File` / 一時ファイル rename は使わない（rename は他所の active lease を置換できる）。既存 dir への取得は「生成と取得の区別」として継続し、`Test` は読み取りだけで書き込み・mtime 更新をしない。
@@ -308,7 +308,7 @@ Migration: **existing generated projects are not moved, renamed or regenerated.*
 
 **Unverified Scope**: UE 実機（compile / PIE / MRQ / Shipping）は実行していない。本変更は UE を起動しない PowerShell 層のみで、実 UE 5.8 系 install を `-ProjectDirectory` にした実 project 生成は未実行。
 
-## Unreleased — DOT-3153
+## Unreleased — DOT-3153 — 2026-11-13
 
 - **文書どおりに最初の1回を実行すると必ず停止していた。** preflight 記録先（`docs/01-start.md:5`）・lease 取得先（`AGENTS.md:11` / `docs/01-start.md:21`）・生成先（`scripts/New-UETemplateScaffold.ps1` の排他的 mkdir）が同じ `Production/<Name>_<runid>/` を要求していたため、記録を先に書くと generator が `Output already exists; it was not modified` で停止した。
 - preflight と lease の正本を **`Production/.runs/run_<runid>/`**（生成先 project dir の外）へ一本化した。`Production/*` は `.gitignore:2` の対象なので clean-tree gate を踏まない。正本は `docs/07-architecture.md` の `preflight-lease-placement: Production/.runs/run_<runid>/` 1 行で、`AGENTS.md`・`README.md`・`docs/01-start.md` はそれを指す。
@@ -325,7 +325,7 @@ Migration: **existing generated projects are not moved, renamed or regenerated.*
 
 **Unverified Scope**: 実 UE 5.8 系 install を `-EngineRoot` にした実 project 生成・Editor build・PIE・MRQ は本 turn で実行していない。根拠は合成 Engine fixture と PowerShell 実測のみ。`docs/06-delivery.md` の `SHA256SUMS.txt` 検証 cwd との整合（DOT-3065 の領域）は未検証。
 
-## Unreleased — DOT-3156
+## Unreleased — DOT-3156 — 2026-11-13
 
 - `third-person-game`の実体化は、template自身の置換規則でコピーした**reflected ヘッダ**のうち、ファイル名が変わったもの（実測: `TP_ThirdPersonCharacter` / `TP_ThirdPersonGameMode` / `TP_ThirdPersonPlayerController`の3つ）について、`Config/DefaultEngine.ini`の`[/Script/Engine.Engine]`へ`+ActiveClassRedirects=(OldClassName="…",NewClassName="…")`を書くようになった。UEウィザードの`IsClassRename`（拡張子`h`かつ**コピー後**の内容に`.generated.h"`を含む）と同じ判定で、新旧名は実際に生成された名前を使う。
 - 従来は`[CoreRedirects] +PackageRedirects`しか書いておらず、これは`/Script` package部分だけを付け替えるため、改名済みクラスを指すBlueprint（既定`GlobalDefaultGameMode`と既定mapが依存する`BP_ThirdPersonGameMode`等）は存在しないクラス名を指したまま残っていた。**`+PackageRedirects`は残し、class redirectを追加する**（置き換えではない）。
@@ -337,7 +337,7 @@ Migration: **existing generated projects are not moved, renamed or regenerated.*
 
 移行: 旧版で生成済みの`third-person-game`projectは、同じ`-ProjectName`で再生成するか、`Config/DefaultEngine.ini`の`[/Script/Engine.Engine]`へ同等の`+ActiveClassRedirects`を手で追記してからEditorで開く。`.uasset`は書き換えない。**UE Editor起動・Blueprint compile・PIE・MRQ・renderは未実行**で、redirectによる解決は実機確認していない（Unverified）。
 
-## Unreleased — DOT-3217（UE-ENCODEPRESET-001）
+## Unreleased — DOT-3217（UE-ENCODEPRESET-001） — 2026-11-13
 
 - **文書にあった唯一のエンコード例が landscape preset の尺を落としていた。** `docs/05-qa.md` は `vertical`（8秒）と `landscape`（10秒）の2 preset を定義していたが、encode 例は `-frames:v 240` 固定だった。`-frames:v` は出力フレーム数の**上限**なので、landscape の 300 frame に同じコマンドを当てると **240 frame / 8.0 秒で ffmpeg が exit 0** を返し、続く ffprobe も「240 frame / 8.0 秒」と正しく報告する。文書は期待値の出所を書いていなかったため、「240 を期待値にする」経路が残っていた。
 - **preset を1箇所のデータにした。** `templates/CAPTURE-PRESETS.json` が解像度・fps・秒数・開始番号・桁数・codec/crf の唯一の定義で、フレーム数は `fps × 秒数` から導出する（定義に `frame_count` を併記すると `preset_invalid` で落ちる）。`docs/05-qa.md` と `README.md` から同じ数値の再掲を外し、文書は定義から生成した行を使う形にした。`templates/recipes/vertical-loop/Capture.md` の開始案の数値（1080×1920/30fps/8秒）は変えていない（この recipe の差分ではないため）。
@@ -356,7 +356,7 @@ Migration: **existing generated projects are not moved, renamed or regenerated.*
 
 未検証（Unverified Scope）: UE 5.8.4 の MRQ / compile / PIE / Editor / Shipping は本 host で実行していない。実 MRQ が landscape preset で 300 枚出力するかは観測していない。MRQ の既定命名（`ZeroPadFrameNumbers` などの engine 既定）と `docs/05-qa.md` が前提する `%06d`・0 開始の一致も未確認。本変更の根拠は、本 host の ffmpeg/ffprobe 実測と自作 PNG fixture に限る。
 
-## Unreleased — DOT-3448
+## Unreleased — DOT-3448 — 2026-11-13
 
 - 納品セットが要求していた「README操作表」に、雛形・配置先・受領証欄・検査のどれもが無かった。`templates/README.md`を新規に追加し、作品名/Issue/run ID、対象版とREADME自身のSHA-256、起動方法、操作表（視点/移動/zoom/reset/help/終了）、既定解像度・fps・尺、前提、同一版の紐づけ、非目標/未実装、既知の不具合の欄を持つ雛形にした。web上の一般論ではなく、`docs/04-package.md`と`docs/05-qa.md`の実手順に合わせている。
 - `docs/06-delivery.md`の納品セットを表にし、各項目の`Out/run_<runid>/`の配置先と正本（`templates/README.md`等）を1箇所で定義した。`AGENTS.md`の`Out/run_<runid>/`列挙に`README.md`を加え、フォルダ契約と納品セットの不一致（README欠落）を解消した。規則を2箇所に重複して書かず、納品セットを正本にした。
@@ -385,7 +385,7 @@ Migration: **existing generated projects are not moved, renamed or regenerated.*
 - `artifact_kind_vocabulary`の追加が既存の納品記録と衝突しないかは、実案件の`DELIVERY.json`実物がrepoに無いため未確認。
 - UE install / compile / Editor / PIE / MRQ / render / Shippingは本変更でも実行していない。
 
-## Unreleased — DOT-3451
+## Unreleased — DOT-3451 — 2026-11-13
 
 - `scripts/New-UETemplateScaffold.ps1` の `template-lock.json` の `plugins` は、recipe の `required_plugins` だけではなく **生成 `.uproject` の `Plugins` 配列の全 entry** を記録する。各 entry は `{ version, source, enabled_in_project }` で、`version` は当該 install の `.uplugin` の `VersionName`（空なら `Version`）、`source` は `project`／`repository`／`engine`、`enabled_in_project` は生成 `.uproject` の `Enabled`。`lock.schema_version` は 3。
 - 生成 `.uproject` で `Enabled: true` の plugin は、コピー**前**に `.uplugin` の実在を確認する。生成projectの`Plugins/<Name>/<Name>.uplugin` → repo の `templates/online/<Name>/<Name>.uplugin` → `Engine/Plugins/<Category>/<Name>/<Name>.uplugin` → `Engine/Plugins/**` の再帰探索の順で探し、見つからなければ**出力directoryを作らずに停止**して未解決plugin名と探索pathを列挙する。以前は `ModelingToolsEditorMode` / `StateTree` / `GameplayStateTree` などの template 由来 plugin を実在確認せず `Enabled = $true` で書き、`exit 0` で「その Engine では開けない project」を出していた。
@@ -397,7 +397,7 @@ Migration: **existing generated projects are not moved, renamed or regenerated.*
 - 本host実測（Windows 11 / `pwsh 7.6.9` / Windows PowerShell 5.1.26100.9711 / 実 UE 5.8.4 CL 58902052）: `scripts/Test-UETemplateScaffold.ps1` = 10 group PASS / `exit 0`（`pwsh`）、10 group PASS / `exit 0`（Windows PowerShell 5.1）。実 install から 3 recipe を生成し、`plugins` の key 集合が `.uproject` の `Plugins` と一致（`third-person-game` = 4件、`spectator-explore` = 8件、`vertical-loop` = 2件）。版は `ModelingToolsEditorMode` 0.1 / `StateTree` 0.1 / `GameplayStateTree` 1.0 / `MovieRenderPipeline` 1.3 / `OnlineSubsystem*` 1.0 / `MulticaOnlineStarter` 1.0.1 と、実 `.uplugin` の値に一致した。
 - **Unverified Scope**: UE 5.8.4 の起動 / compile / Editor / PIE / MRQ / render / Shipping / packaged build は本変更で一切実行していない。plugin 実在検証は `.uplugin` ファイルの有無と `VersionName` の読取に閉じており、「Editor が実際にその plugin をロードできるか」「`TargetAllowList` が効くか」は観測していない。検証は PowerShell と JSON の層と、本 host の実 install 上の read-only 参照に限る。GitHub Actions `windows-latest` での suite 実行結果は本変更の CI 実行で確認する（本 host の実測ではない）。
 
-## Unreleased — DOT-3463
+## Unreleased — DOT-3463 — 2026-11-13
 
 - `scripts/Test-UERenderArtifacts.ps1` に、`FramesDirectory`側のreparse-point guardだけを外したときに必ず落ちる回帰group（group 13）を追加した。既存のjunction fixtureはreport親だけをaliasしていて`FramesDirectory`は通常のdirectoryだったため、その検査対象が見ているのはreport親guardだけだった。報告（DOT-3395 comment 01a1bfb5-e80a）のとおり、`FramesDirectory` guardだけを外しても13群すべてPASSしていた。
 - 追加したfixtureは逆向きに隔離する。画像列の実体`guard-probe/real-frames`を通常のdirectoryとして作り、それを指すjunction `guard-probe/alias`を`FramesDirectory`に渡し、report先は実体側の通常path（`real-frames/escaped-report.json`）にする。report親guardは通常pathしか見ないので、拒否できるのは`FramesDirectory` guardだけになる。
@@ -406,7 +406,7 @@ Migration: **existing generated projects are not moved, renamed or regenerated.*
 - `docs/05-qa.md` の入力不変記載を18 fixtureへ合わせ、2つのguardを片方ずつ外す負例fixtureの存在を明記した。fixture総数は17→18。
 - 移行: helper（`Measure-UERenderArtifacts.ps1`）の判定ロジックは変更していない。本変更は回帰suiteと文書に閉じる。
 
-## Unreleased — DOT-3405
+## Unreleased — DOT-3405 — 2026-11-13
 
 - `MulticaOnlineSessionSubsystem.cpp` の `RegisterDeferredCreateCleanup` / `RegisterDeferredJoinCleanup` は、callbackの中で自分の `FDelegateHandle` をclearしていた。UE 5.8の `OnlineDelegateMacros` はBroadcast前にmulticast delegateをコピーせず、`MulticastDelegateBase::RemoveDelegateInstance` はinvocation listをbroadcast中にlockしていても該当entryを即 `Unbind()` して破棄する。そのためclearの瞬間に実行中のlambda（capturesごと）が消え、直後の `DestroySession(Name)` はuse-after-freeになっていた。
 - 両関数を `MulticaOnlineDeferredSessionCleanup.cpp` の `RegisterDeferredCreateSessionCleanup` / `RegisterDeferredJoinSessionCleanup` へ移し、DOT-3295の `MulticaOnlineDeferredDestroyCleanup.cpp` と同じ形（provider操作を `TSharedRef` のoperation surfaceに閉じ込め、callback内でcapturesをローカルへコピーし、その後はcaptureに触らない）に揃えた。`Deinitialize()` からの呼び出しはoperation surfaceを作って渡す形になる。
@@ -420,7 +420,7 @@ Migration: **existing generated projects are not moved, renamed or regenerated.*
 
 未検証: PIE、2 clientのNull/LAN接続、EOS/Steamは実行していない。`scripts/Test-UETemplateScaffold.ps1`（8 group PASS / exit 0）と `scripts/Test-UERenderArtifacts.ps1`（exit 0）は本PRでも通したが、このC++修正の検証主体ではない。
 
-## Unreleased — DOT-3149
+## Unreleased — DOT-3149 — 2026-11-13
 
 - `scripts/New-UETemplateScaffold.ps1` の `materialize_project` 経路は、出力ディレクトリのパスだけを封じ込めており、その先の各書き込み先（`TemplateDefs.ini` の `FolderRenames` / `SharedContentPacks`）を検査していなかった。`To` / `MountName` に `..` を入れると exit 0 で「Created …」と表示したまま、`Production/` 内の別ディレクトリ・`Production/` の外・別 run が作業中の既存ディレクトリ・engine pack の外へ書けた（`.uasset` などは `.gitignore` 対象なので `git status` にも出ない）。
 - 封じ込め判定を `Resolve-ContainedPath` 1関数に集約した。`GetFullPath` で正規化した書き込み先が出力ディレクトリ+区切り文字で始まるか（`OrdinalIgnoreCase`）を、`CreateDirectory` / `Copy-Item` の**直前**に判定し、外れたら**書き込み前に**停止する。既存の出力ディレクトリの `Production/` 内判定も同じ関数を通す（判定ロジックを2つ持たない）。
@@ -432,7 +432,7 @@ Migration: **existing generated projects are not moved, renamed or regenerated.*
 
 移行: 既存の生成済み project と `Production/` の成果物には触れない。`TemplateDefs.ini` の rename / pack 先が出力ディレクトリの外を指していた template で生成すると、従来は成功していたものが停止するようになる（それが本修正の意図）。該当する作品は新 RunId で再生成し、止まった場合は `TemplateDefs.ini` の `To` / `MountName` を出力ディレクトリ内に限定する。
 
-## Unreleased — DOT-3115
+## Unreleased — DOT-3115 — 2026-11-13
 
 - `scripts/Test-UETemplateScaffold.ps1` に **plugin モジュールのエントリポイント検査**を追加した。`.uplugin` が宣言する各モジュールについて、`Source/` 配下の `.cpp` に同名の `IMPLEMENT_MODULE(<class>, <module>)` があることを内容走査で確認する。ファイル名では判定しない（engine の慣例では `[ModuleName]Module.cpp` に限らない）。宣言はあるのに entry point が無い場合は宣言名を名指しして FAIL、モジュール名と第2引数が一致しない場合は不一致として FAIL する。
 - 検査対象は repository の template plugin、生成物 `Plugins/MulticaOnlineStarter`、そして repository 全体の `.uplugin`（同種の欠落を別 plugin が持ち込めないようにする棚卸し）の3つ。
@@ -446,7 +446,7 @@ Migration: **existing generated projects are not moved, renamed or regenerated.*
 
 移行: **既存の生成 project は再生成が必要**（上書きはしない）。旧 generator が出した `Production/<Name>_<runid>/` は `IMPLEMENT_MODULE` を含まない plugin を同梱している可能性があり、新しい RunId で生成し直すか、`Plugins/MulticaOnlineStarter` を現行 template の内容へ置き換えてから Editor で開く。どちらを取ったかを案件の QA に記録する。本変更は plugin の同梱物・test・docs に閉じ、recipe、`New-UETemplateScaffold.ps1` のコピー処理、UE Content、他 plugin を変えていない。
 
-## Unreleased — 動画モーキャプ
+## Unreleased — 動画モーキャプ — 2026-11-13
 
 書式: 各 `## ` 見出しは `## Unreleased — <DOT番号 or 名前> — <識別子>` の形にする。**識別子は必須**で、`YYYY-MM-DD`（main に入った merge commit の日付。`git log -1 --date=short --format=%cd <merge>` か `gh pr list --state merged` の `mergedAt`）または 40 桁 commit SHA のどちらかを書く。日付だけでは「どの変更か」を commit に結べないので、SHA を併記してよい（併記した SHA は `git cat-file -e <sha>^{commit}` で解決できること）。release も tag も作らないので全節が `Unreleased` のまま。各節の本文には、次を 1 項目ずつ残す:
 
@@ -472,7 +472,7 @@ Unverified Scope: 「エージェントが実際に `CHANGELOG.md` を読んで�
 - `docs/09-video-mocap.md` を追加した。単眼のダンス動画から MediaPipe で体・手・顔の点を取り、VRM の骨の回転 → VRMA → UE（VRM4U）→ MV にする工程、単眼で取れない量の補い方、確認方法、1 本での実測、残る限界、権利の gate をまとめた。
 - 図は工程図・棒人間・腰の高さのグラフだけで、元動画・キャラの画像は入れていない。スクリプトは非公開の制作 repo にあり、本 repo には同梱しない。
 
-## Unreleased — DOT-3122
+## Unreleased — DOT-3122 — 2026-11-13
 
 - `docs/PROVENANCE.md` は README の入口表で「実績と未確認点」の正本を名乗りながら、2026-10-31 の 15 ファイル時代で止まっていた。そのため `:18` の「UE生成/build/render/アセット取得scriptは同梱しない」が、同梱済みの `scripts/New-UETemplateScaffold.ps1`（generator）と `scripts/Test-UETemplateScaffold.ps1`、Null/LAN plugin、3 recipe、`docs/07` の 6 層と正面から矛盾していた。`:19` の「納品添付の検証記録を参照」は tracked file に解決せず、`2026-11-02` の実績（UE Editor build）も 1 件も無かった。
 - 同梱物の主張を散文からデータへ移した。`docs/PROVENANCE.inventory.json`（`schema_version: 1`、`bundled` / `not_bundled`）が正本で、`docs/PROVENANCE.md` の散文はその写しである。語の一致で判定すると「UE本体は同梱しない」のような**修正後の正しい文**を偽陽性で落とすため、判定対象を構造化データにした。
@@ -487,7 +487,7 @@ Unverified Scope: 「エージェントが実際に `CHANGELOG.md` を読んで�
 
 移行：既存 project・`Production/`・`Out/` の生成物には触れない。inventory は現行 tree の分類であり、新しい top-level ディレクトリを新設する変更は同じ commit で `bundled`/`not_bundled` を更新する（更新しないと R3 で落ちる）。UE の install/compile/Editor/PIE/MRQ/render は本変更で一切実行していない（Unverified Scope のまま）。
 
-## Unreleased — DOT-3118
+## Unreleased — DOT-3118 — 2026-11-13
 
 - recipe層の合成を**名前の直書きからデータ駆動へ**移した。`scripts/New-UETemplateScaffold.ps1` の `-Recipe` から `ValidateSet` を廃止し、`templates/recipes/<Recipe>/recipe.json` の実在とスキーマ検証で受ける。recipeディレクトリを追加するだけで新層が使え、generatorの編集は不要。存在しない名前は停止し、出力ディレクトリを作らない。
 - `if ($Recipe -eq 'spectator-explore')` / `-eq 'third-person-game'` の分岐を削除した。`Play.md` のコピー可否は**recipeディレクトリに`Play.md`が実在するか**で、`Capture.md`は全recipe必須、`Plugins/MulticaOnlineStarter`・`docs/08-online-foundations.md`・`Config/DefaultEngine.ini` のonline設定は**`required_plugins`に`MulticaOnlineStarter`が含まれるか**で決まる。lock・`.uproject`の`Plugins[]`・実体のtreeが同じデータから生成される。
@@ -515,7 +515,7 @@ Unverified Scope: 「エージェントが実際に `CHANGELOG.md` を読んで�
 - 本hostに実UE installは無く、計測は合成Engine fixture（`Engine/Build/Build.version` 5.8.4 / CL 58902052、`Templates/TP_FirstPerson` / `TP_BlankBP` / `TP_ThirdPerson`、engine plugin descriptor 4本）に対する生成の実測である。実UE installに対する生成成功の証明ではない。
 - 新recipeの意味づけ（受入条件・撮影手順）はデータを置く人の責任であり、generatorはファイルの実在・整合しか検査しない。
 
-## Unreleased — DOT-3187
+## Unreleased — DOT-3187 — 2026-11-13
 
 - `templates/online/MulticaOnlineStarter` の provider 設定は、engine が読まない名前の carrier に置かれていた。旧 `Config/DefaultEngine.ini` は UE 5.8.4 の plugin config loader が `{PLUGIN}/Config/{TYPE}.ini`（既存 branch を変更する layer）にも `{PLUGIN}/Config/Default<PluginName>.ini`（plugin 自身の branch）にも解決できず、`ConfigCacheIni.cpp:7275` で `DefaultEngine` という branch 名を作った後 `:7294-7301` で Verbose ログだけ残して捨てる。`[OnlineSubsystem] DefaultPlatformService=Null` は宣言だけが残り、`GEngineIni` には届いていなかった。
 - 旧 `scripts/Test-UETemplateScaffold.ps1` は生成物の `Plugins/MulticaOnlineStarter/Config/DefaultEngine.ini` の**本文**に `DefaultPlatformService=Null` が含まれることだけを見ており、carrier 名が解決されるかを検査していなかった。そのため carrier 名を `Engine.ini` に変えても `DefaultEngine.ini` のままでも同じく PASS し、6 群 PASS / exit 0 のまま出荷されていた。
@@ -528,7 +528,7 @@ Measured on this host (Windows 10.0.26300, Windows PowerShell 5.1.26100.9711, pw
 
 移行（重要）: **既存の生成済み project は自動変換しない。** 旧 scaffold が出した `Plugins/MulticaOnlineStarter/Config/DefaultEngine.ini` は engine に読まれない（`Test-UETemplateScaffold.ps1` のcarrier 検査を `aa11370` の実 tree へ当てると 1 件で落ちる）。必要な作品は**新しい RunId で再生成**するか、project 自身の `Config/DefaultEngine.ini` に `[OnlineSubsystem] DefaultPlatformService=Null` を書いて採用理由と日付を作品の QA に残す。旧ファイルを `Config/Engine.ini` へ改名して済ませる運用は、plugin modification layer として `Engine` branch に届くかどうかを未完のまま使うため、本 PR では勧めない（実測は `-dumpiniloads` の別 receipt とする）。
 
-## Unreleased — DOT-3186
+## Unreleased — DOT-3186 — 2026-11-13
 
 - `AMulticaOnlineGameMode` の leave 経路が人数を減らしていなかった。UE の `AController::Destroyed` は `GameMode->Logout(this)` を `CleanupPlayerState()` と `UWorld::RemoveController()` **より前**に呼ぶ（engine 5.8.4 同梱 source、`Controller.cpp:595-612`）。したがって `Logout` の時点で離脱する PlayerController は world の player-controller list にまだ入り、`PlayerState` もまだ非 null であり、`GetNumPlayers()` は離脱者を数え続ける。`AMulticaOnlineGameState::SetConnectedPlayerCountFromServer` は同値で早期 return するため、replicated `ConnectedPlayerCount` は join では増えるが **leave では 1 も減らなかった**。
 - 修正方針は「離脱者を数えない」ではなく「**残る player を数える**」。`Logout` は `RefreshConnectedPlayerCount(Exiting)` を呼び、`CountConnectedPlayers(ExcludedController)` が world の player-controller list を走査して `Exiting` を**数える前に除外**する。減算ではないので、元々数えていなかった spectator-only の離脱で実 player 数を下回ることはない。述語は engine と同じ 1 本（`PlayerState` が非 null、かつ `MustSpectate()` が false）。`PostLogin` は join 済み controller をそのまま数える。
@@ -540,7 +540,7 @@ Measured on this host (Windows 10.0.26300, Windows PowerShell 5.1.26100.9711, pw
 
 Unverified Scope: 本変更で UE 5.8.4 の起動 / compile / Editor build / PIE / 2-client Null/LAN / MRQ は **一切実行していない**。`Logout` 時点の engine 呼出順は、本 host の実 install にある engine source（`Controller.cpp:595-612`、`GameModeBase.cpp:179-188`）を read-only で参照したもので、plugin の compile 成否や実 2-client の人数減算を観測したものではない。上記の test も本 host では実行しておらず（UE 非起動のため）、`Multica.Online.PlayerCount.Connected` の合否は未観測。
 
-## Unreleased — DOT-3395
+## Unreleased — DOT-3395 — 2026-11-13
 
 ## Unreleased — DOT-3395 — 2026-11-09
 

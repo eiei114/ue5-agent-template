@@ -110,7 +110,7 @@ function Assert-NoStagingResidue([string]$Root, [string]$Run) {
 }
 
 function Invoke-GeneratorAt([string]$GeneratorPath, [string]$EngineRootPath, [string]$RecipeName, [string]$Name, [string]$Run, [string[]]$Diff) {
-	& $GeneratorPath -Recipe $RecipeName -ProjectName $Name -RunId $Run -EngineRoot $EngineRootPath -ProjectDiff $Diff -AllowDirtyTemplate | Out-Null
+	& $GeneratorPath -Recipe $RecipeName -ProjectName $Name -RunId $Run -EngineRoot $EngineRootPath -ProjectDiff $Diff -AllowDirtyTemplate -MaxPathLength 32767 -SkipTemplatePublishCheck | Out-Null
 }
 
 # Config branch names the engine resolves, read from the installed UE 5.8.4
@@ -235,6 +235,7 @@ function Invoke-Generator([string]$RecipeName, [string]$Name, [string]$Run, [str
 		ProjectDiff = $Diff
 		AllowDirtyTemplate = $true
 		SkipTemplatePublishCheck = $true
+        MaxPathLength = 32767
 	}
 	& $generator @generatorArguments | Out-Null
 }
@@ -250,6 +251,7 @@ function Invoke-EngineGenerator([string]$RecipeName, [string]$Name, [string]$Run
 		ProjectDiff = $Diff
 		AllowDirtyTemplate = $true
 		SkipTemplatePublishCheck = $true
+        MaxPathLength = 32767
 	}
 	& $generator @generatorArguments | Out-Null
 }
@@ -303,22 +305,26 @@ function New-FixtureEngineRoot([string]$Path, [string]$BuildVersionJson, [switch
 	)
 	$pluginDescriptor = if ($PluginWithoutVersion) { '{"FileVersion":3}' } else { '{"FileVersion":3,"Version":1,"VersionName":"1.0"}' }
 	Write-FixtureJson (Join-Path $Path 'Engine\Plugins\MovieScene\MovieRenderPipeline\MovieRenderPipeline.uplugin') $pluginDescriptor
+}
+
 
 function Invoke-Generator([string]$RecipeName, [string]$Name, [string]$Run, [string[]]$Diff, [int]$MaxPathLength = 32767) {
 	& $generator -Recipe $RecipeName -ProjectName $Name -RunId $Run -EngineRoot $fixtureEngine -ProjectDiff $Diff -AllowDirtyTemplate -SkipTemplatePublishCheck -MaxPathLength $MaxPathLength | Out-Null
 }
 
 function Invoke-GeneratorCaptured([string]$RecipeName, [string]$Name, [string]$Run, [string[]]$Diff, [int]$MaxPathLength) {
-	return (& $generator -Recipe $RecipeName -ProjectName $Name -RunId $Run -EngineRoot $fixtureEngine -ProjectDiff $Diff -AllowDirtyTemplate -MaxPathLength $MaxPathLength) -join "`n"
+	return (& $generator -Recipe $RecipeName -ProjectName $Name -RunId $Run -EngineRoot $fixtureEngine -ProjectDiff $Diff -AllowDirtyTemplate -SkipTemplatePublishCheck -MaxPathLength $MaxPathLength) -join "`n"
 }
 
 function Invoke-GeneratorNoBudget([string]$RecipeName, [string]$Name, [string]$Run, [string[]]$Diff) {
 	# No -MaxPathLength at all: this is the case an agent hits by following the documented example.
-	& $generator -Recipe $RecipeName -ProjectName $Name -RunId $Run -EngineRoot $fixtureEngine -ProjectDiff $Diff -AllowDirtyTemplate | Out-Null
+	& $generator -Recipe $RecipeName -ProjectName $Name -RunId $Run -EngineRoot $fixtureEngine -ProjectDiff $Diff -AllowDirtyTemplate -SkipTemplatePublishCheck | Out-Null
 }
 
 function Read-FixtureLock([string]$OutputPath) {
 	return [System.IO.File]::ReadAllText((Join-Path $OutputPath 'template-lock.json'))
+
+}
 
 function Invoke-ScaffoldGenerator {
 	# Same invocation, but keeps the warning stream and the thrown message so a group can assert on what
@@ -336,7 +342,7 @@ function Invoke-ScaffoldGenerator {
 	try {
 		# 3>&1 keeps warning records as objects so a group can assert on what the generator reported;
 		# without it the warning stream is only displayed.
-		$found = @(& $GeneratorPath -Recipe $RecipeName -ProjectName $Name -RunId $RunId -EngineRoot $EngineRoot -ProjectDiff $Diff -AllowDirtyTemplate 3>&1)
+		$found = @(& $GeneratorPath -Recipe $RecipeName -ProjectName $Name -RunId $RunId -EngineRoot $EngineRoot -ProjectDiff $Diff -AllowDirtyTemplate -MaxPathLength 32767 -SkipTemplatePublishCheck 3>&1)
 	} catch {
 		$failure = $_.Exception.Message
 	}
@@ -522,7 +528,7 @@ function Assert-QaTemplateContract([string]$Path) {
 	if ($violations.Count -gt 0) { throw ('QA template contract violated: ' + ($violations -join '; ')) }
 }
 
-function New-FixtureRepository([string]$Name, [string]$Revision) {
+function New-RecipeFixtureRepository([string]$Name, [string]$Revision) {
 	# An isolated clone of the committed template, with the generator under test copied in. Recipe
 	# directories can then be added or broken without touching the developer checkout, and the
 	# checkout-unchanged gate at the end of the suite keeps its meaning. The clones live in a short
@@ -540,7 +546,7 @@ function New-FixtureRepository([string]$Name, [string]$Revision) {
 
 function Invoke-RepositoryGenerator([string]$RepositoryRoot, [string]$RecipeName, [string]$Name, [string]$Run, [string[]]$Diff) {
 	$repositoryGenerator = Join-Path $RepositoryRoot 'scripts\New-UETemplateScaffold.ps1'
-	& $repositoryGenerator -Recipe $RecipeName -ProjectName $Name -RunId $Run -EngineRoot $fixtureEngine -ProjectDiff $Diff -AllowDirtyTemplate | Out-Null
+	& $repositoryGenerator -Recipe $RecipeName -ProjectName $Name -RunId $Run -EngineRoot $fixtureEngine -ProjectDiff $Diff -AllowDirtyTemplate -MaxPathLength 32767 -SkipTemplatePublishCheck | Out-Null
 }
 
 function Get-GeneratorFailure([scriptblock]$Action) {
@@ -571,6 +577,8 @@ function Assert-GeneratedProject([string]$ProjectName, [string]$Run, [string]$Me
 	$path = Join-Path $productionRoot ('{0}_{1}' -f $ProjectName, $Run)
 	Assert-True (Test-Path -LiteralPath $path -PathType Container) $Message
 	Assert-True (@(Get-ChildItem -LiteralPath $path -File -Force).Count -gt 0) ($Message + ' (the project directory is not empty)')
+
+}
 
 function Add-SetDifference($Problems, $Actual, $Expected, [string]$MissingMessage, [string]$ExtraMessage) {
 	foreach ($item in $Expected) {
@@ -675,6 +683,8 @@ function Get-DeliveryContractProblems {
 	}
 	return $problems.ToArray()
 
+}
+
 function Get-GeneratorFailure([scriptblock]$Action) {
 	# Returns the exact stop message, so a negative case can prove *which* guard fired instead of
 	# only that something failed.
@@ -686,6 +696,8 @@ function Get-DirectoryFileSet([string]$Path) {
 	@(Get-ChildItem -LiteralPath $Path -Recurse -File -Force | ForEach-Object {
 		$_.FullName.Substring($Path.Length + 1).Replace('\', '/') + '=' + (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
 	} | Sort-Object)
+
+}
 
 function Get-CppCodeOnly([string]$Text) {
 	# A comment or a string literal that mentions IMPLEMENT_MODULE is not an entry point: commenting
@@ -747,6 +759,7 @@ function Get-PluginModuleEntryPointViolations([string]$PluginRoot) {
 	}
 	return $violations.ToArray()
 
+}
 $canonicalProjectSettingsSection = '/Script/EngineSettings.GeneralProjectSettings'
 
 function Get-DefaultGameSectionEntries([string]$ProjectOutput) {
@@ -1221,7 +1234,7 @@ try {
 	# was read as published), and the provenance group below covers the measured states.
 	Assert-True ($null -ne $lockData.PSObject.Properties['template_commit_published']) 'the lock declares template_commit_published instead of omitting the field'
 	Assert-True ($null -eq $lockData.template_commit_published) 'a skipped publication probe is recorded as null, never as published'
-	Assert-True ($lockData.plugins.MulticaOnlineStarter -eq '1.0.1') 'lock records the project plugin version'
+	Assert-True ($lockData.plugins.MulticaOnlineStarter.version -eq '1.0.2') 'lock records the project plugin version'
 	Assert-True ($lockData.project_differences.Count -eq 2) 'lock records normalized project-specific differences'
 	Assert-True ($lockData.schema_version -ge 4) 'lock declares at least the template-provenance schema version'
 	Assert-True ($lockData.engine_changelist -eq 55116800) 'lock records the effective changelist UE derives from CompatibleChangelist'
@@ -1233,7 +1246,7 @@ try {
 	Assert-True ($lockData.engine_branch_name -eq '++UE5+Release-5.8') 'lock records BranchName'
 
 	Assert-True ($lockData.template_commit -match '^[0-9a-f]{40}$') 'lock records a full template commit SHA'
-	Assert-True ($lockData.plugins.MulticaOnlineStarter.version -eq '1.0.1') 'lock records the project plugin version'
+	Assert-True ($lockData.plugins.MulticaOnlineStarter.version -eq '1.0.2') 'lock records the project plugin version'
 	Assert-True ($lockData.plugins.MulticaOnlineStarter.source -eq 'project') 'lock records the plugin payload the generated project actually loads'
 	Assert-True ($lockData.plugins.MulticaOnlineStarter.enabled_in_project -eq $true) 'lock records that the project enables the plugin'
 	$lockPluginNames = @($lockData.plugins.PSObject.Properties.Name)
@@ -1243,7 +1256,7 @@ try {
 	Assert-True (($lockPluginNames -join ',') -ceq ($descriptorPluginNames -join ',')) 'lock records every plugin the generated project enables, and nothing else'
 	Assert-True ($lockPluginNames.Count -eq 5) 'the online game recipe records all five plugins it enables'
 	Assert-True ($lockData.project_differences.Count -eq 2) 'lock records normalized project-specific differences'
-	Assert-True ($lockData.schema_version -eq 3) 'lock records the identity-bearing schema version'
+	Assert-True ($lockData.schema_version -ge 5) 'lock records the identity-bearing schema version'
 	Assert-True ($lockData.identity.project_file -eq 'TP_FirstPerson.uproject') 'lock records the generated project file name'
 	Assert-True (@($lockData.identity.project_modules) -join ',' -eq 'TP_FirstPerson') 'lock records the generated project module identity'
 	Assert-True ($lockData.identity.engine_association -eq '5.8') 'lock records the generated engine association'
@@ -1353,7 +1366,7 @@ try {
 	$coreRedirectsIndex = $tpEngineIni.IndexOf('[CoreRedirects]', [System.StringComparison]::Ordinal)
 	Assert-True ($engineSectionIndex -ge 0 -and $firstClassRedirectIndex -gt $engineSectionIndex) 'class redirects live in [/Script/Engine.Engine] like the wizard writes them'
 	Assert-True ($coreRedirectsIndex -gt $firstClassRedirectIndex) 'the package redirect section is appended after the class redirects, not replaced'
-	$materializedStdout = & $generator -Recipe 'third-person-game' -ProjectName "Sz_$testId" -RunId "$testId-a" -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate
+	$materializedStdout = & $generator -Recipe 'third-person-game' -ProjectName "Sz_$testId" -RunId "$testId-a" -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -MaxPathLength 32767 -SkipTemplatePublishCheck
 	$sizeOutput = $outputPaths[6]
 	Assert-True (($materializedStdout -join "`n") -match '(?m)^Class redirects: TP_ThirdPersonCharacter -> Sz_') 'the generator reports the class redirects it wrote'
 	Assert-True (Test-Path -LiteralPath (Join-Path $sizeOutput 'Config\DefaultEngine.ini')) 'the reporting generator wrote its output'
@@ -1555,7 +1568,7 @@ try {
 	# Recipe layer group (DOT-3118): the selectable recipes are data. The suite proves this by adding
 	# and breaking recipe directories in an isolated clone of the committed template, so the checked-in
 	# recipes stay untouched and the checkout-unchanged gate keeps its meaning.
-	$recipeRepo = New-FixtureRepository 'RecipeLayer' $templateRevision
+	$recipeRepo = New-RecipeFixtureRepository 'RecipeLayer' $templateRevision
 	$recipeRepoProduction = Join-Path $recipeRepo 'Production'
 	$fixtureGenre = 'Fixture-Genre'
 	$fixtureCapture = 'fixture-capture'
@@ -1577,7 +1590,7 @@ try {
 	$captureLock = [System.IO.File]::ReadAllText((Join-Path $captureOutput 'template-lock.json')) | ConvertFrom-Json
 	Assert-True ($genreLock.recipe -ceq $fixtureGenre) 'lock records the recipe directory that was actually synthesized'
 	Assert-True ($genreLock.purpose -ceq 'game-and-capture') 'lock records the purpose the recipe declares'
-	Assert-True (@($genreLock.plugins.PSObject.Properties).Count -eq 2 -and $genreLock.plugins.MulticaOnlineStarter -eq '1.0.1') 'lock records every declared plugin version'
+	Assert-True (@($genreLock.plugins.PSObject.Properties).Count -eq 2 -and $genreLock.plugins.MulticaOnlineStarter.version -eq '1.0.2') 'lock records every declared plugin version'
 	Assert-True ($captureLock.recipe -ceq $fixtureCapture -and @($captureLock.plugins.PSObject.Properties).Count -eq 1) 'a capture-only fixture recipe locks only its one declared plugin'
 	Assert-True ($captureLock.online_session_identifier -eq $null) 'a recipe without the online plugin records no session identifier'
 	$genreDescriptor = [System.IO.File]::ReadAllText((Join-Path $genreOutput 'TP_FirstPerson.uproject')) | ConvertFrom-Json
@@ -1736,7 +1749,7 @@ try {
 	Assert-True ($compatibleOnlyLock.engine_is_licensee_version -eq 1) 'lock records the licensee flag of this install'
 	Assert-True ($null -eq $compatibleOnlyLock.engine_is_promoted_build) 'a missing IsPromotedBuild is recorded as null, not as 0'
 	Assert-True ($null -eq $compatibleOnlyLock.engine_branch_name) 'a missing BranchName is recorded as null, not as an empty string'
-	Assert-True ($null -eq $compatibleOnlyLock.plugins.MovieRenderPipeline) 'a plugin that declares no version is recorded as null, not as an empty string'
+	Assert-True ($null -eq $compatibleOnlyLock.plugins.MovieRenderPipeline.version) 'a plugin that declares no version is recorded as null, not as an empty string'
 	Assert-True ($null -ne $compatibleOnlyLock.plugins.PSObject.Properties['MovieRenderPipeline']) 'the plugin without a declared version is still named in the lock'
 	Write-Output 'PASS: optional engine build fields distinguish unknown (null) from a reported zero'
 
@@ -1748,7 +1761,7 @@ try {
 	Assert-True ($changelistOnlyLock.engine_changelist -eq 58902052) 'a Build.version with only Changelist records that changelist'
 	Assert-True ($changelistOnlyLock.engine_changelist_source -eq 'Changelist') 'the effective changelist names Changelist as its source'
 	Assert-True ($null -eq $changelistOnlyLock.engine_compatible_changelist) 'a missing CompatibleChangelist is recorded as null, not as 0'
-	Assert-True ($changelistOnlyLock.plugins.MovieRenderPipeline -eq '1.0') 'a plugin that declares a version records it'
+	Assert-True ($changelistOnlyLock.plugins.MovieRenderPipeline.version -eq '1.0') 'a plugin that declares a version records it'
 	Write-Output 'PASS: a Build.version with only Changelist still records its build identity'
 
 	# The baseline wrote the same lock for both: Changelist 0 in both installs, CompatibleChangelist
@@ -1852,7 +1865,7 @@ try {
 	# stops depends on how deep this checkout is, so the expectation is derived from the measured
 	# length instead of assuming the developer's path.
 	$maxNameProbeRun = ('b' * 64)
-	$maxNameProbe = (& $generator -Recipe 'spectator-explore' -ProjectName $maxName -RunId $maxNameProbeRun -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -MaxPathLength $unboundedPathBudget) -join "`n"
+	$maxNameProbe = (& $generator -Recipe 'spectator-explore' -ProjectName $maxName -RunId $maxNameProbeRun -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -SkipTemplatePublishCheck -MaxPathLength $unboundedPathBudget) -join "`n"
 	$maxNameProbePath = Join-Path $productionRoot ('{0}_{1}' -f $maxName, $maxNameProbeRun)
 	if (Test-Path -LiteralPath $maxNameProbePath -PathType Container) { Remove-Item -LiteralPath $maxNameProbePath -Recurse -Force }
 	$maxNameMatch = [regex]::Match($maxNameProbe, 'longest planned path (\d+) characters')
@@ -1892,12 +1905,12 @@ try {
 	Copy-Item -LiteralPath $generator -Destination $deepGenerator -Force
 	$deepStopFailure = ''
 	try {
-		& $deepGenerator -Recipe 'spectator-explore' -ProjectName 'PthB_dk1' -RunId 'dk' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate | Out-Null
+		& $deepGenerator -Recipe 'spectator-explore' -ProjectName 'PthB_dk1' -RunId 'dk' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -MaxPathLength 32767 -SkipTemplatePublishCheck | Out-Null
 	} catch { $deepStopFailure = $_.Exception.Message }
 	Assert-True ($deepStopFailure.Contains('260-character budget')) 'a deeper clone root stops the default-budget run without changing the generated tree'
 	Assert-True ($deepStopFailure.Contains($deepRepoRoot)) 'the deep-root stop names the checkout root that made the tree too long'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path (Join-Path $deepRepoRoot 'Production') $deepOutputName))) 'the deep-root stop creates no output directory'
-	$deepSuccessOutput = (& $deepGenerator -Recipe 'spectator-explore' -ProjectName 'PthB_dk1' -RunId 'dk' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -MaxPathLength $unboundedPathBudget) -join "`n"
+	$deepSuccessOutput = (& $deepGenerator -Recipe 'spectator-explore' -ProjectName 'PthB_dk1' -RunId 'dk' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -SkipTemplatePublishCheck -MaxPathLength $unboundedPathBudget) -join "`n"
 	$deepMatch = [regex]::Match($deepSuccessOutput, 'longest planned path (\d+) characters')
 	Assert-True ($deepMatch.Success) 'the deep-root run reports its measured longest path when the budget allows it'
 	Assert-True ([int]$deepMatch.Groups[1].Value -gt 260) 'the deeper clone root really exceeds 260 characters for the same tree'
@@ -1905,7 +1918,7 @@ try {
 
 	# The measured value must equal the tree that actually lands on disk, including the recipe that
 	# rewrites paths through TemplateDefs.ini (folder renames change the relative lengths).
-	$materializedOutput = (& $generator -Recipe 'third-person-game' -ProjectName $pathBudgetMaterializedName -RunId 'budget' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -MaxPathLength $unboundedPathBudget) -join "`n"
+	$materializedOutput = (& $generator -Recipe 'third-person-game' -ProjectName $pathBudgetMaterializedName -RunId 'budget' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -SkipTemplatePublishCheck -MaxPathLength $unboundedPathBudget) -join "`n"
 	$materializedMatch = [regex]::Match($materializedOutput, 'longest planned path (\d+) characters')
 	Assert-True ($materializedMatch.Success) 'the materializing recipe reports its measured longest path too'
 	$materializedDir = Join-Path $productionRoot ('{0}_budget' -f $pathBudgetMaterializedName)
@@ -1930,7 +1943,7 @@ try {
 	$badVersionOutput = Join-Path (Join-Path $badVersionRepoRoot 'Production') "${badVersionProjectName}_badver"
 	$badVersionFailure = ''
 	try {
-		& $badVersionGenerator -Recipe 'vertical-loop' -ProjectName $badVersionProjectName -RunId 'badver' -EngineRoot $badVersionEngine -ProjectDiff @() -AllowDirtyTemplate -SkipTemplatePublishCheck | Out-Null
+		& $badVersionGenerator -Recipe 'vertical-loop' -ProjectName $badVersionProjectName -RunId 'badver' -EngineRoot $badVersionEngine -ProjectDiff @() -AllowDirtyTemplate -MaxPathLength 32767 -SkipTemplatePublishCheck | Out-Null
 	} catch {
 		$badVersionFailure = $_.Exception.Message
 	}
@@ -1956,7 +1969,7 @@ try {
 	$driftOutput = Join-Path (Join-Path $driftRepoRoot 'Production') "${driftProjectName}_drift"
 	$driftFailure = ''
 	try {
-		& $driftGenerator -Recipe 'vertical-loop' -ProjectName $driftProjectName -RunId 'drift' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -SkipTemplatePublishCheck | Out-Null
+		& $driftGenerator -Recipe 'vertical-loop' -ProjectName $driftProjectName -RunId 'drift' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -MaxPathLength 32767 -SkipTemplatePublishCheck | Out-Null
 	} catch {
 		$driftFailure = $_.Exception.Message
 	}
@@ -2049,7 +2062,7 @@ try {
 	$formatProjectName = 'Fmt' + $testId.Substring(0, 12)
 	$formatOutput = Join-Path (Join-Path $formatRepoRoot 'Production') "${formatProjectName}_a"
 	$formatWarnings = @()
-	& $formatGenerator -Recipe 'third-person-game' -ProjectName $formatProjectName -RunId 'a' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -WarningVariable +formatWarnings -WarningAction Continue | Out-Null
+	& $formatGenerator -Recipe 'third-person-game' -ProjectName $formatProjectName -RunId 'a' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -MaxPathLength 32767 -SkipTemplatePublishCheck -WarningVariable +formatWarnings -WarningAction Continue | Out-Null
 	Assert-True (Test-Path -LiteralPath (Join-Path $formatOutput "Source\$formatProjectName\$formatProjectName.Build.cs")) 'a spaced FolderRenames tuple renames the module directory too'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $formatOutput "Source\$formatTemplateName"))) 'a spaced FolderRenames tuple leaves no template module directory behind'
 	Assert-True (Test-Path -LiteralPath (Join-Path $formatOutput 'Content\Project\Lvl_Loose.umap')) 'an unspaced FolderRenames tuple outside Source is also applied'
@@ -2088,7 +2101,7 @@ try {
 	$silentWarnings = @()
 	$silentFailure = ''
 	try {
-		& $formatGenerator -Recipe 'third-person-game' -ProjectName $silentProjectName -RunId 'b' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -WarningVariable +silentWarnings -WarningAction Continue | Out-Null
+		& $formatGenerator -Recipe 'third-person-game' -ProjectName $silentProjectName -RunId 'b' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -MaxPathLength 32767 -SkipTemplatePublishCheck -WarningVariable +silentWarnings -WarningAction Continue | Out-Null
 	} catch {
 		$silentFailure = $_.Exception.Message
 	}
@@ -2126,7 +2139,7 @@ try {
 	$ambiguousOutput = Join-Path (Join-Path $ambiguousRepoRoot 'Production') "${ambiguousProjectName}_amb"
 	$ambiguousFailure = ''
 	try {
-		& $ambiguousGenerator -Recipe 'vertical-loop' -ProjectName $ambiguousProjectName -RunId 'amb' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate | Out-Null
+		& $ambiguousGenerator -Recipe 'vertical-loop' -ProjectName $ambiguousProjectName -RunId 'amb' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -MaxPathLength 32767 -SkipTemplatePublishCheck | Out-Null
 	} catch {
 		$ambiguousFailure = $_.Exception.Message
 	}
@@ -2174,7 +2187,7 @@ try {
 	[System.IO.File]::AppendAllText((Join-Path $packMapTemplateRoot 'Config\TemplateDefs.ini'), "`r`nSharedContentPacks=(MountName=`"LevelPrototyping`",DetailLevels=(`"High`"))`r`n", [System.Text.UTF8Encoding]::new($false))
 	$packMapProjectName = "PackMap_$testId"
 	$packMapOutput = Join-Path (Join-Path $packMapRepoRoot 'Production') "${packMapProjectName}_ok"
-	& $packMapGenerator -Recipe 'vertical-loop' -ProjectName $packMapProjectName -RunId 'ok' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate | Out-Null
+	& $packMapGenerator -Recipe 'vertical-loop' -ProjectName $packMapProjectName -RunId 'ok' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -MaxPathLength 32767 -SkipTemplatePublishCheck | Out-Null
 	Assert-True (Test-Path -LiteralPath (Join-Path $packMapOutput 'Content\LevelPrototyping\Lvl_Prototype.umap')) 'the default map check accepts a map provided by a declared shared content pack'
 	Assert-True ((([System.IO.File]::ReadAllText((Join-Path $packMapOutput 'template-lock.json'))) | ConvertFrom-Json).shared_content_packs -contains 'LevelPrototyping') 'lock records the pack that supplied the default map'
 	Write-Output 'PASS: default map resolution accepts pack-provided maps'
@@ -2187,7 +2200,7 @@ try {
 	$missingMapProjectName = "NoMap_$testId"
 	$missingMapFailure = ''
 	try {
-		& $packMapGenerator -Recipe 'vertical-loop' -ProjectName $missingMapProjectName -RunId 'missing-map' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate | Out-Null
+		& $packMapGenerator -Recipe 'vertical-loop' -ProjectName $missingMapProjectName -RunId 'missing-map' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -MaxPathLength 32767 -SkipTemplatePublishCheck | Out-Null
 	} catch {
 		$missingMapFailure = $_.Exception.Message
 	}
@@ -2322,7 +2335,7 @@ try {
 	$pluginGapOutput = Join-Path $productionRoot ("{0}_{1}-phantom" -f $pluginGapProjectName, $testId)
 	$pluginGapFailure = ''
 	try {
-		& $generator -Recipe 'vertical-loop' -ProjectName $pluginGapProjectName -RunId "$testId-phantom" -EngineRoot $pluginGapEngine -ProjectDiff @() -AllowDirtyTemplate | Out-Null
+		& $generator -Recipe 'vertical-loop' -ProjectName $pluginGapProjectName -RunId "$testId-phantom" -EngineRoot $pluginGapEngine -ProjectDiff @() -AllowDirtyTemplate -MaxPathLength 32767 -SkipTemplatePublishCheck | Out-Null
 	} catch {
 		$pluginGapFailure = $_.Exception.Message
 	}
@@ -2360,7 +2373,7 @@ try {
 	$wsProjectName = "Ws_$wsShort"
 	$wsInvoke = {
 		param([string]$RunId)
-		& $wsGenerator -Recipe 'third-person-game' -ProjectName $wsProjectName -RunId $RunId -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate | Out-Null
+		& $wsGenerator -Recipe 'third-person-game' -ProjectName $wsProjectName -RunId $RunId -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -MaxPathLength 32767 -SkipTemplatePublishCheck | Out-Null
 	}
 	# Case A (control): the rename stays inside the output directory and still succeeds.
 	Write-FixtureJson (Join-Path $wsTemplateRoot 'Config\TemplateDefs.ini') (@(

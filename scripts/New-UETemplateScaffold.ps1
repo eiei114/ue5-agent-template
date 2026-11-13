@@ -145,15 +145,6 @@ function Get-PluginDescriptorPath {
 	}
 }
 
-function Convert-TemplateName([string]$Text, [string]$TemplateName, [string]$Name) {
-	# Same order as TemplateDefs.ini: UPPERCASE and lowercase (case-sensitive), then any case.
-	$Text = $Text.Replace($TemplateName.ToUpperInvariant(), $Name.ToUpperInvariant())
-	$Text = $Text.Replace($TemplateName.ToLowerInvariant(), $Name.ToLowerInvariant())
-	return [regex]::Replace($Text, [regex]::Escape($TemplateName), $Name.Replace('$', '$$'), [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-}
-
-function Read-TemplateDefs([string]$Path, [string]$TemplateName) {
-
 function Expand-TemplateTokens([string]$Value, [string]$TemplateName, [string]$Name) {
 	# The installed engine templates write the two names through tokens instead of a fixed string, so
 	# a declared rule is expanded before it is applied. A token this generator does not know is left as
@@ -321,36 +312,151 @@ function Copy-TextWithReplacement([string]$From, [string]$To, $Rules, [string]$E
 	[System.IO.File]::WriteAllText($To, (Invoke-TemplateRules -Text $text -Rules $Rules -Extension $Extension), $encoding)
 }
 
-function Test-IsReflectedHeader([string]$Path) {
-	# The UE New Project wizard treats a renamed header as a UObject class only when the *copied*
-	# file's contents contain the UHT include (DefaultTemplateProjectDefs.cpp IsClassRename).
-	# Log-category headers, interfaces without that include, and everything that is not a header
-	# must not produce a class redirect.
-	# IndexOf rather than Contains(string, StringComparison): the latter needs .NET Core and the
-	# suite is also run under Windows PowerShell 5.1.
-	return [System.IO.File]::ReadAllText($Path).IndexOf('.generated.h"', [System.StringComparison]::OrdinalIgnoreCase) -ge 0
-}
-
-function Add-IniSectionEntries([string]$IniPath, [string]$SectionName, [string[]]$Entries = @()) {
-	# Writes `+Key=(...)` entries into `SectionName`, creating the section at the end of the file when
-	# it is absent. The wizard's SaveConfigValues() appends these values to the generated project's
-	# DefaultEngine.ini, so the generator uses the same owner and placement instead of inventing a
-	# second redirect mechanism.
-	if ($Entries.Count -eq 0) { return }
-	$newLine = [Environment]::NewLine
-	$text = if (Test-Path -LiteralPath $IniPath -PathType Leaf) { [System.IO.File]::ReadAllText($IniPath) } else { '' }
-	$block = ($Entries -join $newLine) + $newLine
-	$sectionPattern = '(?im)^\[' + [regex]::Escape($SectionName) + '\][ \t]*\r?\n'
-	if ([regex]::IsMatch($text, $sectionPattern)) {
-		$sectionRegex = [regex]::new($sectionPattern)
-		$text = $sectionRegex.Replace($text, [System.Text.RegularExpressions.MatchEvaluator]{ param($match) $match.Value + $block }, 1)
-	} else {
-		$text = $text.TrimEnd("`r", "`n") + $newLine + $newLine + $SectionName + $newLine + $block
+function Resolve-SharedContentPack([string]$EngineTemplateRoot, $Pack, [string]$PreferredDetailLevel) {
+	# A template may declare a different detail level per mount (TP_FirstPerson declares Weapons at
+	# "Standard" while its EditDetailLevelPreference is "High"). The declared levels are tried first,
+	# then the template preference, then the installed levels in a fixed order, so a mount that exists
+	# is copied from the level the template asked for. A fall back to a level the template did not
+	# declare is reported to the caller instead of passing as declared behaviour.
+	$declared = @(@($Pack.DetailLevels) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+	$fallBack = @(@($PreferredDetailLevel, 'High', 'Standard') | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+	$candidates = @($declared + $fallBack | Select-Object -Unique)
+	foreach ($level in $candidates) {
+		$packContent = Join-Path $EngineTemplateRoot ("TemplateResources\{0}\{1}\Content" -f $level, $Pack.Mount)
+		if (Test-Path -LiteralPath $packContent -PathType Container) {
+			return [pscustomobject]@{
+				Mount               = [string]$Pack.Mount
+				DetailLevel         = $level
+				DeclaredDetailLevel = ($declared -contains $level)
+				Path                = $packContent
+			}
+		}
 	}
-	[System.IO.File]::WriteAllText($IniPath, $text, [System.Text.UTF8Encoding]::new($false))
+	throw ("Shared content pack is missing from the installed engine: {0} (declared detail levels {1}, tried {2}, below {3})" -f $Pack.Mount, $(if ($declared.Count -gt 0) { $declared -join ', ' } else { 'none' }), ($candidates -join ', '), $EngineTemplateRoot)
 }
 
-$projectSettingsSection = '/Script/EngineSettings.GeneralProjectSettings'
+function Copy-TemplateTree {
+	# Single copy implementation for both the raw-copy and the materialize path. Every recipe reads the
+	# template's own Config/TemplateDefs.ini: FoldersToIgnore / FilesToIgnore decide what is copied and
+	# SharedContentPacks decide which installed content packs are mounted into Content/. Renaming
+	# (FolderRenames, filename and in-file replacement, CoreRedirects, ProjectID) happens only when
+	# -Materialize is set, because the raw-copy recipes keep the template's project and module names.
+	param(
+		[Parameter(Mandatory = $true)][string]$SourceTemplate,
+		[Parameter(Mandatory = $true)][string]$Destination,
+		[Parameter(Mandatory = $true)][string]$TemplateName,
+		[Parameter(Mandatory = $true)][string]$ProjectFileName,
+		[Parameter(Mandatory = $true)][string]$Name,
+		[Parameter(Mandatory = $true)][string]$EngineTemplateRoot,
+		[switch]$Materialize
+	)
+
+	$defsPath = Join-Path $SourceTemplate 'Config\TemplateDefs.ini'
+	if (-not (Test-Path -LiteralPath $defsPath -PathType Leaf)) { throw "The template has no Config/TemplateDefs.ini to copy from: $defsPath" }
+	$defs = Read-TemplateDefs -Path $defsPath -TemplateName $TemplateName -Name $Name
+	foreach ($unreadable in @($defs.UnreadableLines)) {
+		Write-Warning ('TemplateDefs.ini rule was not understood and was not applied ({0}): {1}' -f $defsPath, $unreadable)
+	}
+	foreach ($ignoredKey in @($defs.IgnoredKeys)) {
+		# The installed templates carry wizard metadata that this generator cannot apply
+		# (LocalizedDisplayNames, Categories, Variants, ...). Reporting it keeps a declared key from
+		# disappearing silently, while continuing keeps a real engine template usable. What was
+		# applied and what was ignored is also written to template-lock.json.
+		Write-Warning ('TemplateDefs.ini key {0} is not implemented by this generator and was not applied ({1})' -f $ignoredKey, $defsPath)
+	}
+	$classRenames = [System.Collections.Generic.List[object]]::new()
+	$sourceRoot = [System.IO.Path]::GetFullPath($SourceTemplate).TrimEnd('\', '/')
+	foreach ($file in Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Force) {
+		$relative = $file.FullName.Substring($sourceRoot.Length + 1).Replace('\', '/')
+        $projected = Get-TemplateTarget $relative $defs $TemplateName $Name $ProjectFileName ([bool]$Materialize)
+        if ($null -eq $projected) { continue }
+        $target = $projected.Target
+        $isText = $projected.IsText
+        $extension = $projected.Extension
+		$targetPath = Resolve-ContainedPath $Destination (Join-Path $Destination $target.Replace('/', '\')) 'template file target'
+		[System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($targetPath)) | Out-Null
+		if (Test-Path -LiteralPath $targetPath) { throw "Template copy paths collide: $target" }
+		if ($isText) { Copy-TextWithReplacement -From $file.FullName -To $targetPath -Rules $defs.ContentRules -Extension $extension }
+        else { Copy-Item -LiteralPath $file.FullName -Destination $targetPath }
+        if ($Materialize -and $isText -and $extension -eq 'h' -and (Test-IsReflectedHeader $targetPath)) {
+            $old = [IO.Path]::GetFileNameWithoutExtension($file.Name)
+            $new = [IO.Path]::GetFileNameWithoutExtension($targetPath)
+            if ($old -cne $new) { $classRenames.Add([pscustomobject]@{OldClassName=$old; NewClassName=$new}) }
+        }
+	}
+	$copiedPacks = [System.Collections.Generic.List[object]]::new()
+	foreach ($pack in $defs.SharedContentPacks) {
+		$resolved = Resolve-SharedContentPack -EngineTemplateRoot $EngineTemplateRoot -Pack $pack -PreferredDetailLevel $defs.DetailLevel
+		if (-not $resolved.DeclaredDetailLevel) {
+			Write-Warning ('Shared content pack {0} was declared for detail level(s) {1} but was copied from {2}; EditDetailLevelPreference={3}' -f $resolved.Mount, $(if (@($pack.DetailLevels).Count -gt 0) { @($pack.DetailLevels) -join ', ' } else { 'none' }), $resolved.DetailLevel, $defs.DetailLevel)
+		}
+		$packTarget = Resolve-ContainedPath $Destination (Join-Path $Destination ('Content\' + $resolved.Mount)) 'shared content mount'
+		[System.IO.Directory]::CreateDirectory($packTarget) | Out-Null
+        foreach ($entry in Get-ChildItem -LiteralPath $resolved.Path -File -Recurse -Force) {
+            $relativeEntry = $entry.FullName.Substring($resolved.Path.TrimEnd('\', '/').Length + 1)
+            $entryTarget = Resolve-ContainedPath $Destination (Join-Path $packTarget $relativeEntry) 'shared content file'
+            if (Test-Path -LiteralPath $entryTarget) { throw "Shared content pack paths collide: $entryTarget" }
+            [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($entryTarget)) | Out-Null
+            Copy-Item -LiteralPath $entry.FullName -Destination $entryTarget
+        }
+		$copiedPacks.Add($resolved)
+	}
+	if ($Materialize) {
+		# Blueprints in the template Content were saved against /Script/<TemplateName>.
+		$engineIni = Join-Path $Destination 'Config\DefaultEngine.ini'
+		[System.IO.File]::AppendAllText($engineIni, [Environment]::NewLine + '[CoreRedirects]' + [Environment]::NewLine + ('+PackageRedirects=(OldName="/Script/{0}",NewName="/Script/{1}")' -f $TemplateName, $Name) + [Environment]::NewLine)
+        $entries = @($classRenames | Sort-Object OldClassName | ForEach-Object { '+ActiveClassRedirects=(OldClassName="{0}",NewClassName="{1}")' -f $_.OldClassName,$_.NewClassName })
+        Add-IniSectionEntries $engineIni '[/Script/Engine.Engine]' $entries
+
+	}
+	return [pscustomobject]@{
+		ClassRedirects = @($classRenames)
+		ContentRules     = @($defs.ContentRules)
+		AppliedKeys      = @($defs.AppliedKeys)
+		IgnoredKeys      = @($defs.IgnoredKeys)
+		UnreadableLines  = @($defs.UnreadableLines)
+		SharedContentPacks = @($copiedPacks)
+		EditDetailLevelPreference = $defs.DetailLevel
+		FoldersToIgnore = @($defs.FoldersToIgnore).Count
+		FilesToIgnore = @($defs.FilesToIgnore).Count
+	}
+}
+
+function Get-DeclaredGameMapPaths([string]$ProjectConfigPath) {
+	# Returns the /Game/ map package paths a generated project declares as its default and editor
+	# startup map. Non-/Game/ paths (engine content such as /Engine/Maps/Templates/OpenWorld) are not
+	# part of the project tree and are not checked.
+	$declared = [System.Collections.Generic.List[string]]::new()
+	if (-not (Test-Path -LiteralPath $ProjectConfigPath -PathType Leaf)) { return @() }
+	$inMapsSection = $false
+	foreach ($line in [System.IO.File]::ReadAllLines($ProjectConfigPath)) {
+		$trimmed = $line.Trim()
+		if ($trimmed -match '^\[(.+)\]$') { $inMapsSection = $Matches[1] -eq '/Script/EngineSettings.GameMapsSettings'; continue }
+		if (-not $inMapsSection) { continue }
+		if ($trimmed -match '^(GameDefaultMap|EditorStartupMap)=(.*)$') {
+			$value = $Matches[2].Split(';')[0].Trim()
+			if ($value -match '^/Game/' -and -not $declared.Contains($value)) { $declared.Add($value) }
+		}
+	}
+	return @($declared)
+}
+
+function Convert-GamePackagePathToAssetPath([string]$GamePackagePath) {
+	# '/Game/FirstPerson/Lvl_FirstPerson.Lvl_FirstPerson' is Content/FirstPerson/Lvl_FirstPerson.umap.
+	$body = $GamePackagePath.Substring('/Game/'.Length)
+	$lastSlash = $body.LastIndexOf('/')
+	if ($lastSlash -ge 0) {
+		$directory = $body.Substring(0, $lastSlash)
+		$leaf = $body.Substring($lastSlash + 1)
+	} else {
+		$directory = ''
+		$leaf = $body
+	}
+	$dot = $leaf.IndexOf('.')
+	if ($dot -ge 0) { $leaf = $leaf.Substring(0, $dot) }
+	if ($directory) { return "Content/$directory/$leaf.umap" }
+	return "Content/$leaf.umap"
+}
 
 function Get-ProjectIdBytes([string]$ProjectName) {
 	# The identity is derived from the project name instead of a fresh random GUID so that regenerating
@@ -504,35 +610,6 @@ function Set-ProjectIdentity {
 	}
 }
 
-function Set-OnlineSessionProjectIdentifier([string]$ProjectConfigPath, [string]$Identifier) {
-	# The switch has to live in the project's Config/DefaultEngine.ini: a plugin's own
-	# Config/DefaultEngine.ini is never merged, because engine and project branches take
-	# precedence over plugin layers, so the setting would never reach GEngineIni.
-	$configText = ''
-	if (Test-Path -LiteralPath $ProjectConfigPath -PathType Leaf) {
-		$configText = [System.IO.File]::ReadAllText($ProjectConfigPath)
-	} elseif (-not (Test-Path -LiteralPath (Split-Path -Parent $ProjectConfigPath) -PathType Container)) {
-		throw "The generated project has no Config directory: $ProjectConfigPath"
-	}
-	if ([regex]::IsMatch($configText, '(?m)^\[MulticaOnlineStarter\][ \t]*\r?$') -or
-		[regex]::IsMatch($configText, '(?m)^SessionProjectIdentifier=')) {
-		throw 'The generated project engine config already defines the online session identifier.'
-	}
-	if ([regex]::IsMatch($configText, '(?m)^\[OnlineSubsystem\][ \t]*\r?$')) {
-		# Keep one owner for the provider selection: append only our own section.
-		$configText = $configText.TrimEnd("`r", "`n") + [Environment]::NewLine +
-			'[MulticaOnlineStarter]' + [Environment]::NewLine +
-			('SessionProjectIdentifier={0}' -f $Identifier) + [Environment]::NewLine
-	} else {
-		$configText = $configText.TrimEnd("`r", "`n") + [Environment]::NewLine +
-			'[OnlineSubsystem]' + [Environment]::NewLine +
-			'DefaultPlatformService=Null' + [Environment]::NewLine + [Environment]::NewLine +
-			'[MulticaOnlineStarter]' + [Environment]::NewLine +
-			('SessionProjectIdentifier={0}' -f $Identifier) + [Environment]::NewLine
-	}
-	[System.IO.File]::WriteAllText($ProjectConfigPath, $configText, [System.Text.UTF8Encoding]::new($false))
-}
-
 function Resolve-ContainedPath([string]$Root, [string]$Candidate, [string]$Label) {
 	# Single containment rule for every write this generator performs: normalize the candidate and
 	# require it to stay under $Root (the exclusive output directory) before anything is created.
@@ -552,141 +629,35 @@ function Resolve-ContainedPath([string]$Root, [string]$Candidate, [string]$Label
 	return $resolved
 }
 
-function Resolve-SharedContentPack([string]$EngineTemplateRoot, [string]$Mount, [string]$PreferredDetailLevel) {
-	# The installed engine only ships some mounts at some detail levels (TP_FirstPerson declares Weapons
-	# at "Standard" while its EditDetailLevelPreference is "High"). The preference of the template is
-	# tried first, then the remaining installed levels in a fixed order, so a declared pack is either
-	# copied and recorded with the level it actually came from, or reported as missing. The per-mount
-	# DetailLevels tuple written next to each MountName is not interpreted here.
-	$candidates = @(@($PreferredDetailLevel, 'High', 'Standard') | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
-
-function Resolve-SharedContentPack([string]$EngineTemplateRoot, $Pack, [string]$PreferredDetailLevel) {
-	# A template may declare a different detail level per mount (TP_FirstPerson declares Weapons at
-	# "Standard" while its EditDetailLevelPreference is "High"). The declared levels are tried first,
-	# then the template preference, then the installed levels in a fixed order, so a mount that exists
-	# is copied from the level the template asked for. A fall back to a level the template did not
-	# declare is reported to the caller instead of passing as declared behaviour.
-	$declared = @(@($Pack.DetailLevels) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-	$fallBack = @(@($PreferredDetailLevel, 'High', 'Standard') | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-	$candidates = @($declared + $fallBack | Select-Object -Unique)
-	foreach ($level in $candidates) {
-		$packContent = Join-Path $EngineTemplateRoot ("TemplateResources\{0}\{1}\Content" -f $level, $Pack.Mount)
-		if (Test-Path -LiteralPath $packContent -PathType Container) {
-			return [pscustomobject]@{
-				Mount               = [string]$Pack.Mount
-				DetailLevel         = $level
-				DeclaredDetailLevel = ($declared -contains $level)
-				Path                = $packContent
-			}
-		}
-	}
-	throw ("Shared content pack is missing from the installed engine: {0} (declared detail levels {1}, tried {2}, below {3})" -f $Pack.Mount, $(if ($declared.Count -gt 0) { $declared -join ', ' } else { 'none' }), ($candidates -join ', '), $EngineTemplateRoot)
+function Test-IsReflectedHeader([string]$Path) {
+	# The UE New Project wizard treats a renamed header as a UObject class only when the *copied*
+	# file's contents contain the UHT include (DefaultTemplateProjectDefs.cpp IsClassRename).
+	# Log-category headers, interfaces without that include, and everything that is not a header
+	# must not produce a class redirect.
+	# IndexOf rather than Contains(string, StringComparison): the latter needs .NET Core and the
+	# suite is also run under Windows PowerShell 5.1.
+	return [System.IO.File]::ReadAllText($Path).IndexOf('.generated.h"', [System.StringComparison]::OrdinalIgnoreCase) -ge 0
 }
 
-function Copy-TemplateTree {
-	# Single copy implementation for both the raw-copy and the materialize path. Every recipe reads the
-	# template's own Config/TemplateDefs.ini: FoldersToIgnore / FilesToIgnore decide what is copied and
-	# SharedContentPacks decide which installed content packs are mounted into Content/. Renaming
-	# (FolderRenames, filename and in-file replacement, CoreRedirects, ProjectID) happens only when
-	# -Materialize is set, because the raw-copy recipes keep the template's project and module names.
-	param(
-		[Parameter(Mandatory = $true)][string]$SourceTemplate,
-		[Parameter(Mandatory = $true)][string]$Destination,
-		[Parameter(Mandatory = $true)][string]$TemplateName,
-		[Parameter(Mandatory = $true)][string]$ProjectFileName,
-		[Parameter(Mandatory = $true)][string]$Name,
-		[Parameter(Mandatory = $true)][string]$EngineTemplateRoot,
-		[switch]$Materialize
-	)
-    Copy-TemplateTreeImpl -SourceTemplate $SourceTemplate -Destination $Destination -TemplateName $TemplateName -ProjectFileName $ProjectFileName -Name $Name -EngineTemplateRoot $EngineTemplateRoot -Materialize:$Materialize
-}
-
-
-# Single source of truth for "where does this template file land", used both by the copy and by
-# the pre-copy path budget, so the measured paths are the paths that actually get written.
-function Get-MaterializedTarget([string]$RelativePath, $Defs, [string]$TemplateName, [string]$Name) {
-	if ($RelativePath -ieq "$TemplateName.uproject") {
-		return [pscustomobject]@{ Target = "$Name.uproject"; IsCopy = $true }
-	}
-	if (@($Defs.FilesToIgnore | Where-Object { $RelativePath -ieq $_ }).Count -gt 0) { return $null }
-	if (@($Defs.FoldersToIgnore | Where-Object { $RelativePath.StartsWith($_.TrimEnd('/') + '/', [System.StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) { return $null }
-	$target = $RelativePath
-	foreach ($rename in $Defs.FolderRenames) {
-		$from = $rename[0].TrimEnd('/') + '/'
-		if ($target.StartsWith($from, [System.StringComparison]::OrdinalIgnoreCase)) {
-			$target = $rename[1].Replace('%PROJECTNAME%', $Name).TrimEnd('/') + '/' + $target.Substring($from.Length)
-		}
-	}
-	$extension = [System.IO.Path]::GetExtension([System.IO.Path]::GetFileName($RelativePath)).TrimStart('.').ToLowerInvariant()
-	$isText = $Defs.Extensions -contains $extension
-	if ($isText) {
-		$leaf = Convert-TemplateName -Text ([System.IO.Path]::GetFileName($target)) -TemplateName $TemplateName -Name $Name
-		$target = ([System.IO.Path]::GetDirectoryName($target.Replace('/', '\')) + '\' + $leaf).TrimStart('\')
-	}
-	return [pscustomobject]@{ Target = $target; IsCopy = -not $isText }
-}
-
-function Get-SharedContentPackRoot([string]$EngineTemplateRoot, $Defs, [string]$MountName) {
-	return Join-Path $EngineTemplateRoot ("TemplateResources\{0}\{1}\Content" -f $Defs.DetailLevel, $MountName)
-}
-
-function Measure-GeneratedPathBudget([string]$Destination, $RelativePaths) {
-	# Length of the longest path the generator is about to write, measured as the real absolute
-	# path string (Windows counts every character of it, separators included).
-	$longestPath = $Destination
-	$longestRelative = '(the output directory itself)'
-	foreach ($relative in $RelativePaths) {
-		$normalized = $relative.Replace('/', '\')
-		$candidate = $Destination + '\' + $normalized
-		if ($candidate.Length -gt $longestPath.Length) {
-			$longestPath = $candidate
-			$longestRelative = $normalized
-		}
-	}
-	return [pscustomobject]@{ Path = $longestPath; Relative = $longestRelative; Length = $longestPath.Length }
-}
-
-function Get-PlannedOutputRelativePaths([string]$SourceTemplate, [string]$EngineTemplateRoot, [string]$TemplateName, [string]$Name, [string[]]$GeneratorOwnedPaths) {
-	# Every relative path the generator plans to write: the copied template tree (projected through
-	# the materialize rules when the recipe materializes), the shared content packs, and the files the
-	# generator writes itself (recipe payload and lock). Engine build output (Intermediate/, *.obj)
-	# is not generated here and is therefore out of scope here; docs/01-start.md warns about it.
-	$planned = [System.Collections.Generic.List[string]]::new()
-	$sourceRoot = [System.IO.Path]::GetFullPath($SourceTemplate).TrimEnd('\', '/')
-	if ($null -ne $Name -and $Name -ne '') {
-		$defsPath = Join-Path $SourceTemplate 'Config\TemplateDefs.ini'
-		if (-not (Test-Path -LiteralPath $defsPath -PathType Leaf)) { throw "The template has no Config/TemplateDefs.ini to materialize from: $defsPath" }
-		$defs = Read-TemplateDefs -Path $defsPath -TemplateName $TemplateName
-		foreach ($file in Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Force) {
-			$relative = $file.FullName.Substring($sourceRoot.Length + 1).Replace('\', '/')
-			$target = Get-MaterializedTarget -RelativePath $relative -Defs $defs -TemplateName $TemplateName -Name $Name
-			if ($null -ne $target) { $planned.Add($target.Target) }
-		}
-		foreach ($mount in $defs.SharedContentPacks) {
-			$packContent = Get-SharedContentPackRoot -EngineTemplateRoot $EngineTemplateRoot -Defs $defs -MountName $mount
-			if (-not (Test-Path -LiteralPath $packContent -PathType Container)) { throw "Shared content pack is missing from the installed engine: $packContent" }
-			$packRoot = [System.IO.Path]::GetFullPath($packContent).TrimEnd('\', '/')
-			foreach ($packFile in Get-ChildItem -LiteralPath $packRoot -Recurse -File -Force) {
-				$planned.Add((Join-Path ("Content\" + $mount) $packFile.FullName.Substring($packRoot.Length + 1)))
-			}
-		}
+function Add-IniSectionEntries([string]$IniPath, [string]$SectionName, [string[]]$Entries = @()) {
+	# Writes `+Key=(...)` entries into `SectionName`, creating the section at the end of the file when
+	# it is absent. The wizard's SaveConfigValues() appends these values to the generated project's
+	# DefaultEngine.ini, so the generator uses the same owner and placement instead of inventing a
+	# second redirect mechanism.
+	if ($Entries.Count -eq 0) { return }
+	$newLine = [Environment]::NewLine
+	$text = if (Test-Path -LiteralPath $IniPath -PathType Leaf) { [System.IO.File]::ReadAllText($IniPath) } else { '' }
+	$block = ($Entries -join $newLine) + $newLine
+	$sectionPattern = '(?im)^\[' + [regex]::Escape($SectionName) + '\][ \t]*\r?\n'
+	if ([regex]::IsMatch($text, $sectionPattern)) {
+		$sectionRegex = [regex]::new($sectionPattern)
+		$text = $sectionRegex.Replace($text, [System.Text.RegularExpressions.MatchEvaluator]{ param($match) $match.Value + $block }, 1)
 	} else {
-		foreach ($file in Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Force) {
-			$planned.Add($file.FullName.Substring($sourceRoot.Length + 1).Replace('\', '/'))
-		}
+		$text = $text.TrimEnd("`r", "`n") + $newLine + $newLine + $SectionName + $newLine + $block
 	}
-	foreach ($owned in $GeneratorOwnedPaths) { $planned.Add($owned) }
-	return , $planned
+	[System.IO.File]::WriteAllText($IniPath, $text, [System.Text.UTF8Encoding]::new($false))
 }
 
-function Copy-TemplateTreeImpl([string]$SourceTemplate, [string]$Destination, [string]$TemplateName, [string]$Name, [string]$EngineTemplateRoot, [string]$ProjectFileName, [switch]$Materialize) {
-
-# Plugin identity contract: the `.uproject` is what the engine reads, so the lock records every
-# plugin entry of the generated project (not only the recipe's required_plugins) and every enabled
-# entry's `.uplugin` is resolved on this install before anything is copied. UE 5.8 nests plugins
-# one to four directories under Engine/Plugins, so the search walks the category directories first
-# and only then scans the whole tree. A version that cannot be read is recorded as the explicit
-# value `unknown`; it is never invented.
 function Find-PluginDescriptor {
 	# Returns the resolved `.uplugin` path for one plugin name, or a Path of $null. `Searched` carries
 	# every path that was tried, so a stop can list them instead of saying "missing plugin".
@@ -756,7 +727,7 @@ function Get-PluginRecords {
 	foreach ($pluginName in $orderedNames) {
 		$enabled = @($Plugins | Where-Object { $null -ne $_ -and [string]$_.Name -ceq $pluginName -and $_.Enabled -eq $true }).Count -gt 0
 		$resolution = Find-PluginDescriptor -PluginName $pluginName -EngineRoot $EngineRoot -RepositoryRoot $RepositoryRoot -ProjectRoot $ProjectRoot
-		$version = 'unknown'
+		$version = $null
 		if (-not [string]::IsNullOrWhiteSpace([string]$resolution.Path)) {
 			$pluginJson = Get-Content -Raw -LiteralPath $resolution.Path | ConvertFrom-Json
 			if (-not [string]::IsNullOrWhiteSpace([string]$pluginJson.VersionName)) { $version = [string]$pluginJson.VersionName }
@@ -797,33 +768,166 @@ function Get-ProjectPluginEntries {
 	return $entries
 }
 
-function Copy-MaterializedTemplate([string]$SourceTemplate, [string]$Destination, [string]$TemplateName, [string]$Name, [string]$EngineTemplateRoot) {
-	$defsPath = Join-Path $SourceTemplate 'Config\TemplateDefs.ini'
-	if (-not (Test-Path -LiteralPath $defsPath -PathType Leaf)) { throw "The template has no Config/TemplateDefs.ini to copy from: $defsPath" }
-	$defs = Read-TemplateDefs -Path $defsPath -TemplateName $TemplateName -Name $Name
-	foreach ($unreadable in @($defs.UnreadableLines)) {
-		Write-Warning ('TemplateDefs.ini rule was not understood and was not applied ({0}): {1}' -f $defsPath, $unreadable)
+function Measure-GeneratedPathBudget([string]$Destination, $RelativePaths) {
+	# Length of the longest path the generator is about to write, measured as the real absolute
+	# path string (Windows counts every character of it, separators included).
+	$longestPath = $Destination
+	$longestRelative = '(the output directory itself)'
+	foreach ($relative in $RelativePaths) {
+		$normalized = $relative.Replace('/', '\')
+		$candidate = $Destination + '\' + $normalized
+		if ($candidate.Length -gt $longestPath.Length) {
+			$longestPath = $candidate
+			$longestRelative = $normalized
+		}
 	}
-	foreach ($ignoredKey in @($defs.IgnoredKeys)) {
-		# The installed templates carry wizard metadata that this generator cannot apply
-		# (LocalizedDisplayNames, Categories, Variants, ...). Reporting it keeps a declared key from
-		# disappearing silently, while continuing keeps a real engine template usable. What was
-		# applied and what was ignored is also written to template-lock.json.
-		Write-Warning ('TemplateDefs.ini key {0} is not implemented by this generator and was not applied ({1})' -f $ignoredKey, $defsPath)
+	return [pscustomobject]@{ Path = $longestPath; Relative = $longestRelative; Length = $longestPath.Length }
+}
+
+function Get-TemplateOriginInfo {
+	# Records where this checkout actually came from instead of asserting a fixed repository URL.
+	# The value is the measured `origin` URL (or null), because the lock is evidence about the
+	# template that produced the project, not about the repository the template is meant to live in.
+	param([Parameter(Mandatory = $true)][string]$RepositoryRoot)
+
+	$remoteNames = @()
+	foreach ($line in @(& git -C $RepositoryRoot remote)) {
+		if (-not [string]::IsNullOrWhiteSpace([string]$line)) { $remoteNames += ([string]$line).Trim() }
 	}
-	$sourceRoot = [System.IO.Path]::GetFullPath($SourceTemplate).TrimEnd('\', '/')
-	$classRenames = [System.Collections.Generic.List[object]]::new()
-	foreach ($file in Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Force) {
-		$relative = $file.FullName.Substring($sourceRoot.Length + 1).Replace('\', '/')
+	if ($LASTEXITCODE -ne 0) {
+		throw 'Could not read the template repository remotes, so the template provenance cannot be recorded.'
+	}
+	if ($remoteNames.Count -eq 0) {
+		return [pscustomobject]@{ Repository = $null; Kind = 'no-remote' }
+	}
+	# A checkout can carry remotes without an `origin` (a renamed remote, a multi-remote setup). The
+	# clone source is then genuinely unknown, so it is reported as such rather than guessed.
+	if ($remoteNames -cnotcontains 'origin') {
+		return [pscustomobject]@{ Repository = $null; Kind = 'no-origin' }
+	}
+
+	$originLines = @(& git -C $RepositoryRoot remote get-url origin)
+	if ($LASTEXITCODE -ne 0) {
+		throw 'Could not read the template repository origin URL, so the template provenance cannot be recorded.'
+	}
+	$originUrl = @($originLines | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) | Select-Object -First 1
+	if ($null -eq $originUrl) {
+		return [pscustomobject]@{ Repository = $null; Kind = 'no-origin' }
+	}
+	$originUrl = ([string]$originUrl).Trim()
+	if ($originUrl -match '^(https?|ssh|git|ftp)://' -or $originUrl -match '^[^/\\]+@[^/\\]+[:/]') {
+		return [pscustomobject]@{ Repository = $originUrl; Kind = 'remote' }
+	}
+	if ([System.IO.Path]::GetFileName($originUrl) -like '*.bundle') {
+		return [pscustomobject]@{ Repository = $originUrl; Kind = 'bundle' }
+	}
+	return [pscustomobject]@{ Repository = $originUrl; Kind = 'local-path' }
+}
+
+function Invoke-GitCaptured {
+	# Runs git and returns its exit code, keeping stderr out of PowerShell error handling. PowerShell
+	# 5.1 turns a failing native command's stderr into a terminating error under
+	# `$ErrorActionPreference = 'Stop'`, which would turn a measured 'not our ref' into an exception;
+	# pwsh 7 does not, so the same probe would behave differently per shell. Redirecting stderr to a file
+	# with a locally relaxed preference keeps both shells measuring the same thing.
+	param(
+		[string]$WorkingDirectory,
+		[Parameter(Mandatory = $true)][string]$StdErrPath,
+		[Parameter(Mandatory = $true)][string[]]$GitArguments
+	)
+
+	$previousPreference = $ErrorActionPreference
+	$ErrorActionPreference = 'Continue'
+	try {
+		if ([string]::IsNullOrWhiteSpace($WorkingDirectory)) {
+			& git @GitArguments 2> $StdErrPath | Out-Null
+		} else {
+			& git -C $WorkingDirectory @GitArguments 2> $StdErrPath | Out-Null
+		}
+		return $LASTEXITCODE
+	} finally {
+		$ErrorActionPreference = $previousPreference
+	}
+}
+
+function Test-TemplateCommitPublished {
+	# Answers "can the recorded repository serve this commit?" - the only claim a third party can
+	# check. true/false are measured; null means the probe could not answer (offline, missing remote
+	# object, unreachable host), and null must never be read as published.
+	param(
+		[Parameter(Mandatory = $true)][string]$Repository,
+		[Parameter(Mandatory = $true)][string]$Commit,
+		[Parameter(Mandatory = $true)][string]$SourceKind
+	)
+
+	# A bundle is an offline hand-off file, not a repository another party can consult, so it cannot
+	# establish publication. The lock records the bundle as the source and leaves this null.
+	if ($SourceKind -eq 'bundle') { return $null }
+
+	$probeRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('multica-template-probe-' + [Guid]::NewGuid().ToString('N'))
+	try {
+		[System.IO.Directory]::CreateDirectory($probeRoot) | Out-Null
+		$probeRepo = Join-Path $probeRoot 'probe.git'
+		$initErrorField = Join-Path $probeRoot 'init-stderr.txt'
+		if ((Invoke-GitCaptured -WorkingDirectory $probeRoot -StdErrPath $initErrorField -GitArguments @('init', '--quiet', '--bare', $probeRepo)) -ne 0) { return $null }
+		$fetchErrorField = Join-Path $probeRoot 'fetch-stderr.txt'
+		# A throwaway bare repository keeps the probe out of the template checkout's object store.
+		$fetchCode = Invoke-GitCaptured -WorkingDirectory $probeRepo -StdErrPath $fetchErrorField -GitArguments @('fetch', '--quiet', '--depth', '1', '--no-tags', $Repository, $Commit)
+		if ($fetchCode -eq 0) {
+			if ((Invoke-GitCaptured -WorkingDirectory $probeRepo -StdErrPath $initErrorField -GitArguments @('cat-file', '-e', ($Commit + '^{commit}')) ) -ne 0) { return $null }
+			return $true
+		}
+		$fetchMessage = ''
+		if (Test-Path -LiteralPath $fetchErrorField -PathType Leaf) {
+			$fetchMessage = [System.IO.File]::ReadAllText($fetchErrorField)
+		}
+		if ($fetchMessage -match 'not our ref|could not find remote ref|couldn''t find remote ref|no such remote ref|does not allow request for unadvertised object') {
+			return $false
+		}
+		return $null
+	} finally {
+		if (Test-Path -LiteralPath $probeRoot) { Remove-Item -LiteralPath $probeRoot -Recurse -Force }
+	}
+}
+
+function Set-OnlineSessionProjectIdentifier([string]$ProjectConfigPath, [string]$Identifier) {
+	# The switch has to live in the project's Config/DefaultEngine.ini: a plugin's own
+	# Config/DefaultEngine.ini is never merged, because engine and project branches take
+	# precedence over plugin layers, so the setting would never reach GEngineIni.
+	$configText = ''
+	if (Test-Path -LiteralPath $ProjectConfigPath -PathType Leaf) {
+		$configText = [System.IO.File]::ReadAllText($ProjectConfigPath)
+	} elseif (-not (Test-Path -LiteralPath (Split-Path -Parent $ProjectConfigPath) -PathType Container)) {
+		throw "The generated project has no Config directory: $ProjectConfigPath"
+	}
+	if ([regex]::IsMatch($configText, '(?m)^\[MulticaOnlineStarter\][ \t]*\r?$') -or
+		[regex]::IsMatch($configText, '(?m)^SessionProjectIdentifier=')) {
+		throw 'The generated project engine config already defines the online session identifier.'
+	}
+	if ([regex]::IsMatch($configText, '(?m)^\[OnlineSubsystem\][ \t]*\r?$')) {
+		# Keep one owner for the provider selection: append only our own section.
+		$configText = $configText.TrimEnd("`r", "`n") + [Environment]::NewLine +
+			'[MulticaOnlineStarter]' + [Environment]::NewLine +
+			('SessionProjectIdentifier={0}' -f $Identifier) + [Environment]::NewLine
+	} else {
+		$configText = $configText.TrimEnd("`r", "`n") + [Environment]::NewLine +
+			'[OnlineSubsystem]' + [Environment]::NewLine +
+			'DefaultPlatformService=Null' + [Environment]::NewLine + [Environment]::NewLine +
+			'[MulticaOnlineStarter]' + [Environment]::NewLine +
+			('SessionProjectIdentifier={0}' -f $Identifier) + [Environment]::NewLine
+	}
+	[System.IO.File]::WriteAllText($ProjectConfigPath, $configText, [System.Text.UTF8Encoding]::new($false))
+}
+
+function Get-TemplateTarget([string]$relative, $defs, [string]$TemplateName, [string]$Name, [string]$ProjectFileName, [bool]$Materialize) {
 		# TemplateDefs.ini names the template project file in FilesToIgnore, because the wizard writes a
 		# renamed descriptor instead. Both paths still need that descriptor, so it is copied to the project
 		# file name this run publishes and is exempt from the ignore rules.
 		if ($relative -ieq "$TemplateName.uproject") {
-			Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $Destination $ProjectFileName)
-			continue
+			return [pscustomobject]@{ Target = $ProjectFileName; IsText = $false; Extension = "" }
 		}
-		if (@($defs.FilesToIgnore | Where-Object { $relative -ieq $_ }).Count -gt 0) { continue }
-		if (@($defs.FoldersToIgnore | Where-Object { $relative.StartsWith($_.TrimEnd('/') + '/', [System.StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) { continue }
+		if (@($defs.FilesToIgnore | Where-Object { $relative -ieq $_ }).Count -gt 0) { return $null }
+		if (@($defs.FoldersToIgnore | Where-Object { $relative.StartsWith($_.TrimEnd('/') + '/', [System.StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) { return $null }
 		$target = $relative
 		$isText = $false
 		if ($Materialize) {
@@ -833,7 +937,7 @@ function Copy-MaterializedTemplate([string]$SourceTemplate, [string]$Destination
 					$target = $rename[1].TrimEnd('/') + '/' + $target.Substring($from.Length)
 				}
 			}
-			$extension = [System.IO.Path]::GetExtension($file.Name).TrimStart('.').ToLowerInvariant()
+			$extension = [System.IO.Path]::GetExtension(([IO.Path]::GetFileName($relative))).TrimStart('.').ToLowerInvariant()
 			# The file name is renamed by FilenameReplacements, the text by ReplacementsInFiles. They are
 			# different declarations and may carry different extension lists, so neither decides for the
 			# other: a template can rename .cpp file names without rewriting .cpp contents.
@@ -848,90 +952,57 @@ function Copy-MaterializedTemplate([string]$SourceTemplate, [string]$Destination
 			# everything else is byte-copied so binary content is never decoded.
 			$isText = @($defs.ContentRules | Where-Object { $_.Extensions -contains $extension }).Count -gt 0
 		}
-		$targetPath = Resolve-ContainedPath -Root $Destination -Candidate (Join-Path $Destination $target.Replace('/', '\')) -Label "FolderRenames/ReplacementsInFiles target '$target' for template file '$relative'"
-		[System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($targetPath)) | Out-Null
-		if (Test-Path -LiteralPath $targetPath) { throw "Template copy paths collide: $target" }
-		if ($isText) { Copy-TextWithReplacement -From $file.FullName -To $targetPath -Rules $defs.ContentRules -Extension $extension }
-		else { Copy-Item -LiteralPath $file.FullName -Destination $targetPath }
-	}
-	$copiedPacks = [System.Collections.Generic.List[object]]::new()
-	foreach ($pack in $defs.SharedContentPacks) {
-		$resolved = Resolve-SharedContentPack -EngineTemplateRoot $EngineTemplateRoot -Pack $pack -PreferredDetailLevel $defs.DetailLevel
-		if (-not $resolved.DeclaredDetailLevel) {
-			Write-Warning ('Shared content pack {0} was declared for detail level(s) {1} but was copied from {2}; EditDetailLevelPreference={3}' -f $resolved.Mount, $(if (@($pack.DetailLevels).Count -gt 0) { @($pack.DetailLevels) -join ', ' } else { 'none' }), $resolved.DetailLevel, $defs.DetailLevel)
-		}
-		$packTarget = Join-Path $Destination ("Content\" + $resolved.Mount)
-		[System.IO.Directory]::CreateDirectory($packTarget) | Out-Null
-		Get-ChildItem -LiteralPath $resolved.Path -Force | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $packTarget $_.Name) -Recurse }
-		$copiedPacks.Add($resolved)
-	}
-	# Blueprints in the template Content were saved against /Script/<TemplateName>.
-	if ($Materialize) {
-		$engineIni = Join-Path $Destination 'Config\DefaultEngine.ini'
-		[System.IO.File]::AppendAllText($engineIni, [Environment]::NewLine + '[CoreRedirects]' + [Environment]::NewLine + ('+PackageRedirects=(OldName="/Script/{0}",NewName="/Script/{1}")' -f $TemplateName, $Name) + [Environment]::NewLine)
-	}
-	# Blueprints in the template Content were saved against /Script/<TemplateName>. A package redirect
-	# only rewrites the /Script package, and source headers that were renamed (Character, GameMode,
-	# PlayerController, ...) keep their old class name inside those Blueprints, so the wizard's
-	# +ActiveClassRedirects are required in addition -- never instead of -- the package redirect.
-	$engineIni = Join-Path $Destination 'Config\DefaultEngine.ini'
-	$orderedClassRenames = @($classRenames | Sort-Object -Property OldClassName)
-	$classRedirectEntries = @($orderedClassRenames | ForEach-Object { '+ActiveClassRedirects=(OldClassName="{0}",NewClassName="{1}")' -f $_.OldClassName, $_.NewClassName })
-	Add-IniSectionEntries -IniPath $engineIni -SectionName '[/Script/Engine.Engine]' -Entries $classRedirectEntries
-	return [pscustomobject]@{
-		ContentRules     = @($defs.ContentRules)
-		AppliedKeys      = @($defs.AppliedKeys)
-		IgnoredKeys      = @($defs.IgnoredKeys)
-		UnreadableLines  = @($defs.UnreadableLines)
-		SharedContentPacks = @($copiedPacks)
-		EditDetailLevelPreference = $defs.DetailLevel
-		FoldersToIgnore = @($defs.FoldersToIgnore).Count
-		FilesToIgnore = @($defs.FilesToIgnore).Count
-		DetailLevel = $defs.DetailLevel
-		ClassRedirects = @($orderedClassRenames)
-	}
+
+ return [pscustomobject]@{ Target=$target; IsText=$isText; Extension=$extension }
 }
 
-function Get-DeclaredGameMapPaths([string]$ProjectConfigPath) {
-	# Returns the /Game/ map package paths a generated project declares as its default and editor
-	# startup map. Non-/Game/ paths (engine content such as /Engine/Maps/Templates/OpenWorld) are not
-	# part of the project tree and are not checked.
-	$declared = [System.Collections.Generic.List[string]]::new()
-	if (-not (Test-Path -LiteralPath $ProjectConfigPath -PathType Leaf)) { return @() }
-	$inMapsSection = $false
-	foreach ($line in [System.IO.File]::ReadAllLines($ProjectConfigPath)) {
-		$trimmed = $line.Trim()
-		if ($trimmed -match '^\[(.+)\]$') { $inMapsSection = $Matches[1] -eq '/Script/EngineSettings.GameMapsSettings'; continue }
-		if (-not $inMapsSection) { continue }
-		if ($trimmed -match '^(GameDefaultMap|EditorStartupMap)=(.*)$') {
-			$value = $Matches[2].Split(';')[0].Trim()
-			if ($value -match '^/Game/' -and -not $declared.Contains($value)) { $declared.Add($value) }
-		}
-	}
-	return @($declared)
-}
-
-function Convert-GamePackagePathToAssetPath([string]$GamePackagePath) {
-	# '/Game/FirstPerson/Lvl_FirstPerson.Lvl_FirstPerson' is Content/FirstPerson/Lvl_FirstPerson.umap.
-	$body = $GamePackagePath.Substring('/Game/'.Length)
-	$lastSlash = $body.LastIndexOf('/')
-	if ($lastSlash -ge 0) {
-		$directory = $body.Substring(0, $lastSlash)
-		$leaf = $body.Substring($lastSlash + 1)
-	} else {
-		$directory = ''
-		$leaf = $body
-	}
-	$dot = $leaf.IndexOf('.')
-	if ($dot -ge 0) { $leaf = $leaf.Substring(0, $dot) }
-	if ($directory) { return "Content/$directory/$leaf.umap" }
-	return "Content/$leaf.umap"
+function Get-PlannedOutputRelativePaths([string]$SourceTemplate, [string]$EngineTemplateRoot, [string]$TemplateName, [string]$Name, [string[]]$GeneratorOwnedPaths) {
+    $planned = [System.Collections.Generic.List[string]]::new()
+    $materialized = -not [string]::IsNullOrEmpty($Name)
+    $projectFileName = if ($materialized) { "$Name.uproject" } else { "$TemplateName.uproject" }
+    $defs = Read-TemplateDefs (Join-Path $SourceTemplate 'Config/TemplateDefs.ini') $TemplateName $Name
+    foreach ($file in Get-ChildItem -LiteralPath $SourceTemplate -Recurse -File -Force) {
+        $relative = $file.FullName.Substring($SourceTemplate.TrimEnd('\','/').Length+1).Replace('\','/')
+        $target = Get-TemplateTarget $relative $defs $TemplateName $Name $projectFileName $materialized
+        if ($null -ne $target) { $planned.Add($target.Target) }
+    }
+    foreach ($pack in $defs.SharedContentPacks) {
+        $resolved = Resolve-SharedContentPack $EngineTemplateRoot $pack $defs.DetailLevel
+        foreach ($file in Get-ChildItem -LiteralPath $resolved.Path -Recurse -File -Force) {
+            $planned.Add('Content\'+$resolved.Mount+'\'+$file.FullName.Substring($resolved.Path.TrimEnd('\','/').Length+1))
+        }
+    }
+    foreach ($owned in $GeneratorOwnedPaths) { $planned.Add($owned) }
+    return ,$planned
 }
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $productionRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot 'Production'))
 $engineRootFull = [System.IO.Path]::GetFullPath($EngineRoot)
 $recipeRoot = Join-Path $repoRoot 'templates\recipes'
+function Get-ExistingOutputDiagnosis([string]$Path) {
+	# The refusal of an existing output directory is correct, but one message for every case makes
+	# an agent read an ordering error as "this run already produced a project". The start procedure
+	# writes preflight and lease to Production/.runs/run_<runid>/, outside the generated project, so a
+	# directory that is empty or holds only that run bookkeeping means an earlier step occupied the
+	# generated path. Report which case this is and never delete or overwrite anything.
+	$names = @()
+	try {
+		$names = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop | ForEach-Object { $_.Name })
+	} catch {
+		return 'The existing directory could not be listed, so it was not modified: ' + $_.Exception.Message
+	}
+	$runBookkeeping = @('LEASE.json', 'Out', 'QA.md', 'preflight.md')
+	if ($names.Count -eq 0) {
+		return 'This is an ordering error, not an existing project: the directory is empty, so an earlier step created the generated project path itself. Preflight and lease belong in Production/.runs/run_<runid>/, outside the generated project. Nothing was deleted or overwritten.'
+	}
+	$unknownNames = @($names | Where-Object { $runBookkeeping -notcontains $_ })
+	if ($unknownNames.Count -eq 0) {
+		return ('This is an ordering error, not an existing project: the directory holds only run bookkeeping ({0}), so an earlier step created the generated project path itself. Preflight and lease belong in Production/.runs/run_<runid>/, outside the generated project. Nothing was deleted or overwritten.' -f ($names -join ', '))
+	}
+	return ('An existing output is present and was not modified. Existing entries: {0}. If these are this run''s own artifacts, generate under a new -RunId instead of deleting or overwriting them.' -f ($names -join ', '))
+}
+
 $recipeFile = Join-Path (Join-Path $recipeRoot $Recipe) 'recipe.json'
 $engineBuildFile = Join-Path $engineRootFull 'Engine\Build\Build.version'
 $engineTemplateRoot = Join-Path $engineRootFull 'Templates'
@@ -1194,7 +1265,7 @@ if ([string]::IsNullOrWhiteSpace($engineAssociationValue)) {
 # a project nobody can open from leaving an output directory behind, and it is the only place where
 # a byte-identical lock for two different engine installs can be refused.
 $templatePlugins = @($templateDescriptor.Plugins | Where-Object { $null -ne $_ })
-$projectPluginEntries = @(Get-ProjectPluginEntries -TemplatePlugins $templatePlugins -RequiredPlugins @($recipeData.required_plugins))
+$projectPluginEntries = @(Get-ProjectPluginEntries -TemplatePlugins $templatePlugins -RequiredPlugins @($recipeData.RequiredPlugins))
 
 $destinationName = '{0}_{1}' -f $ProjectName, $RunId
 $destinationPath = [System.IO.Path]::GetFullPath((Join-Path $productionRoot $destinationName))
@@ -1218,13 +1289,13 @@ $null = Get-PluginRecords -Plugins $projectPluginEntries -EngineRoot $engineRoot
 foreach ($payloadName in @('SET.md', 'recipe.json', 'Capture.md')) {
 	$generatorOwnedPaths += ('Recipe\' + $payloadName)
 }
-if ($Recipe -eq 'spectator-explore' -or $Recipe -eq 'third-person-game') {
+if ($hasPlayDelta) {
 	$generatorOwnedPaths += 'Recipe\Play.md'
 }
-if ($Recipe -eq 'spectator-explore') { $generatorOwnedPaths += 'docs\08-online-foundations.md' }
+if ($pluginNames -contains 'MulticaOnlineStarter') { $generatorOwnedPaths += 'docs\08-online-foundations.md' }
 $templateSourceName = if ($materialize) { $ProjectName } else { $null }
 $plannedPaths = Get-PlannedOutputRelativePaths -SourceTemplate $sourceTemplate -EngineTemplateRoot $engineTemplateRoot -TemplateName $templateName -Name $templateSourceName -GeneratorOwnedPaths $generatorOwnedPaths
-if (@($recipeData.required_plugins) -contains 'MulticaOnlineStarter') {
+if (@($recipeData.RequiredPlugins) -contains 'MulticaOnlineStarter') {
 	# The online payload is copied from this repository, not from the engine template, so it is
 	# measured separately instead of being folded into the template walk above.
 	$pluginSourceRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot 'templates\online\MulticaOnlineStarter')).TrimEnd('\', '/')
@@ -1254,7 +1325,7 @@ if (-not $stagingPath.StartsWith($productionPrefix, [System.StringComparison]::O
 # Fail fast with the wording the rename would produce. The rename below stays the authoritative
 # exclusivity decision; this check only avoids copying for an output that already exists.
 if (Test-Path -LiteralPath $destinationPath) {
-	throw "Output already exists; it was not modified: $destinationPath"
+	throw "Output already exists; it was not modified: $destinationPath. $(Get-ExistingOutputDiagnosis $destinationPath)"
 }
 
 $destinationPath = Resolve-ContainedPath -Root $productionRoot -Candidate (Join-Path $productionRoot $destinationName) -Label 'the output directory computed from Production'
@@ -1269,35 +1340,7 @@ public static class MulticaTemplateDirectory {
 }
 '@
 }
-function Get-ExistingOutputDiagnosis([string]$Path) {
-	# The refusal of an existing output directory is correct, but one message for every case makes
-	# an agent read an ordering error as "this run already produced a project". The start procedure
-	# writes preflight and lease to Production/.runs/run_<runid>/, outside the generated project, so a
-	# directory that is empty or holds only that run bookkeeping means an earlier step occupied the
-	# generated path. Report which case this is and never delete or overwrite anything.
-	$names = @()
-	try {
-		$names = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop | ForEach-Object { $_.Name })
-	} catch {
-		return 'The existing directory could not be listed, so it was not modified: ' + $_.Exception.Message
-	}
-	$runBookkeeping = @('LEASE.json', 'Out', 'QA.md', 'preflight.md')
-	if ($names.Count -eq 0) {
-		return 'This is an ordering error, not an existing project: the directory is empty, so an earlier step created the generated project path itself. Preflight and lease belong in Production/.runs/run_<runid>/, outside the generated project. Nothing was deleted or overwritten.'
-	}
-	$unknownNames = @($names | Where-Object { $runBookkeeping -notcontains $_ })
-	if ($unknownNames.Count -eq 0) {
-		return ('This is an ordering error, not an existing project: the directory holds only run bookkeeping ({0}), so an earlier step created the generated project path itself. Preflight and lease belong in Production/.runs/run_<runid>/, outside the generated project. Nothing was deleted or overwritten.' -f ($names -join ', '))
-	}
-	return ('An existing output is present and was not modified. Existing entries: {0}. If these are this run''s own artifacts, generate under a new -RunId instead of deleting or overwriting them.' -f ($names -join ', '))
-}
 
-if (-not [MulticaTemplateDirectory]::CreateDirectory($destinationPath, [IntPtr]::Zero)) {
-	$win32Error = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-	if ($win32Error -eq 183) {
-		throw "Output already exists; it was not modified: $destinationPath. $(Get-ExistingOutputDiagnosis -Path $destinationPath)"
-	}
-	throw "Could not exclusively create the output directory (Win32 $win32Error): $destinationPath"
 
 if (-not [MulticaTemplateDirectory]::CreateDirectory($stagingPath, [IntPtr]::Zero)) {
 	$win32Error = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
@@ -1314,10 +1357,10 @@ try {
 
 	# Every recipe owns its project identity. A raw copy carries the template's own ProjectID and
 	# 'TP_* Template' ProjectName, so two projects generated from different names would share one ID.
-	$gameIniPath = Join-Path $destinationPath 'Config\DefaultGame.ini'
+	$gameIniPath = Join-Path $stagingPath 'Config\DefaultGame.ini'
 	$gameIniIdentity = Set-ProjectIdentity -GameIniPath $gameIniPath -Name $ProjectName
 
-	$projectFile = Join-Path $destinationPath $projectFileName
+	$projectFile = Join-Path $stagingPath $projectFileName
 	if (-not (Test-Path -LiteralPath $projectFile -PathType Leaf)) {
 		throw "The installed template project file was not copied to $projectFileName."
 	}
@@ -1401,7 +1444,7 @@ try {
 	$packDetailLevels = [ordered]@{}
 	foreach ($pack in @($copyReport.SharedContentPacks)) { $packDetailLevels[$pack.Mount] = $pack.DetailLevel }
 	$lock = [ordered]@{
-		schema_version = 4
+		schema_version = 5
 		template_repository = $templateRepository
 		template_commit = $gitCommit
 		template_source_kind = $templateSourceKind
@@ -1431,8 +1474,6 @@ try {
 			normalized_from_section = $gameIniIdentity.NormalizedFromSection
 			created_section = $gameIniIdentity.CreatedSection
 		}
-		recipe = [string]$recipeData.recipe
-		purpose = [string]$recipeData.purpose
 		# What the template's own Config/TemplateDefs.ini contributed to this output. Both copy paths
 		# record it so a later reader can tell which installed content packs were mounted (and at which
 		# detail level) and how many ignore rules were applied, without re-reading the engine install.
@@ -1457,7 +1498,7 @@ try {
 		online_session_identifier = if ($pluginNames -contains 'MulticaOnlineStarter') { 'eiei114.ue5-agent-template:{0}' -f $ProjectName } else { $null }
 		project_differences = $projectDifferences
 	}
-	$lockJson = ConvertTo-Json -InputObject $lock -Depth 12
+
 
 	$recipeOutput = Join-Path $stagingPath 'Recipe'
 	[System.IO.Directory]::CreateDirectory($recipeOutput) | Out-Null
@@ -1468,7 +1509,7 @@ try {
 		Copy-Item -LiteralPath $playSource -Destination (Join-Path $recipeOutput 'Play.md')
 	}
 	if ($pluginNames -contains 'MulticaOnlineStarter') {
-		$onlineGuideTarget = Join-Path $destinationPath 'docs'
+		$onlineGuideTarget = Join-Path $stagingPath 'docs'
 		[System.IO.Directory]::CreateDirectory($onlineGuideTarget) | Out-Null
 		Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\08-online-foundations.md') -Destination (Join-Path $onlineGuideTarget '08-online-foundations.md')
 		$onlinePluginTarget = Join-Path $stagingPath 'Plugins\MulticaOnlineStarter'
@@ -1485,28 +1526,11 @@ try {
 	# the output directory as the project root: a bundled plugin then resolves to the copy the opened
 	# project loads, not to the repository source. A plugin that is enabled and still unresolved here
 	# stops the run before the lock is written.
-	$pluginRecords = (Get-PluginRecords -Plugins $writtenPlugins -EngineRoot $engineRootFull -RepositoryRoot $repoRoot -ProjectRoot $destinationPath).Records
-	$lock = [ordered]@{
-		schema_version = 3
-		template_repository = 'https://github.com/eiei114/ue5-agent-template'
-		template_commit = $gitCommit
-		template_worktree_dirty = $templateDirty
-		engine_template = $templateName
-		engine_version = $engineVersion
-		engine_changelist = [long]$buildData.Changelist
-		identity = [ordered]@{
-			project_file = $projectFileName
-			project_modules = @($moduleNames)
-			engine_association = $engineAssociationValue
-		}
-		recipe = [string]$recipeData.recipe
-		purpose = [string]$recipeData.purpose
-		plugins = $pluginRecords
-		online_session_identifier = if (@($recipeData.required_plugins) -contains 'MulticaOnlineStarter') { 'eiei114.ue5-agent-template:{0}' -f $ProjectName } else { $null }
-		project_differences = $projectDifferences
-	}
-	$lockJson = ConvertTo-Json -InputObject $lock -Depth 12
-	$lockPath = Join-Path $destinationPath 'template-lock.json'
+	$pluginRecords = (Get-PluginRecords -Plugins $writtenPlugins -EngineRoot $engineRootFull -RepositoryRoot $repoRoot -ProjectRoot $stagingPath).Records
+	$lock.plugins = $pluginRecords
+    $lockJson = ConvertTo-Json -InputObject $lock -Depth 12
+
+	$lockPath = Join-Path $stagingPath 'template-lock.json'
 
 	$lockPath = Join-Path $stagingPath 'template-lock.json'
 	# template-lock.json is written last and is the completion marker: a published directory that
@@ -1526,6 +1550,7 @@ try {
 	$publishedSummary = if ($templateCommitPublished -eq $true) { 'commit published' } elseif ($templateCommitPublished -eq $false) { 'commit NOT retrievable from that repository (template_commit_published = false)' } else { 'publication not verified (template_commit_published = null)' }
 	Write-Output "Created $destinationName from the installed $templateName template ($projectFileName, EngineAssociation '$engineAssociationValue', UE $engineVersion, recipe $Recipe; $provenanceSummary; $publishedSummary)."
 
+	$classRedirects = @($copyReport.ClassRedirects)
 	if ($classRedirects.Count -gt 0) {
 		Write-Output ('Class redirects: ' + (@($classRedirects | ForEach-Object { '{0} -> {1}' -f $_.OldClassName, $_.NewClassName }) -join ', '))
 	} elseif ($materialize) {
@@ -1542,7 +1567,7 @@ try {
 		[System.IO.Directory]::Move($stagingPath, $destinationPath)
 	} catch {
 		if (Test-Path -LiteralPath $destinationPath) {
-			throw "Output already exists; it was not modified: $destinationPath"
+			throw "Output already exists; it was not modified: $destinationPath. $(Get-ExistingOutputDiagnosis $destinationPath)"
 		}
 		throw "The staged project could not be published and $destinationPath was not created: $($_.Exception.Message)"
 	}

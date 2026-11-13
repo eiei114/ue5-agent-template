@@ -44,7 +44,7 @@ writer/lease nonce・取得/解放receipt（`scripts/Lease-UETemplateProject.ps1
 | [QA-PLAY-03] 視点/移動/zoom/collision/reset/help/終了 | unverified | 項目別に記録 |
 | [QA-PERF-01] 最新版5分Play・性能 | unverified | 解像度/品質/frame timeの平均/スパイク/観測方法と測定時間 |
 | [QA-AUDIO-01] ゲーム実音の聴取 | unverified | |
-| [QA-IMG-01] エンコード前の画像列検査 | unverified | `evidence/frames-check.json`。start/end(exclusive)/命名/期待解像度、欠番・範囲外・曖昧名・0 byte・decode・解像度の各判定 |
+| [QA-IMG-01] エンコード前の画像列検査 | unverified | `evidence/frames-check.json`。start/end(exclusive)/命名/期待解像度、MRQ Output Frame Step / Frame Number Offset / Handle Frame Count / Zero Pad Frame Numbers / File Name FormatとhelperのFrameStep/FrameNumberOffset/Digits、欠番・範囲外・曖昧名・0 byte・decode・解像度の各判定 |
 | [QA-MRQ-01] MRQ完了通知・exit code | unverified | 通知本文/exit。画像列検査とは別欄に記録 |
 | [QA-MRQ-02] MRQ/ffprobe実測 | unverified | 幅/高さ/fps/frame数/秒数/codec/音声 |
 | [QA-VISUAL-01] 先頭/中間/末尾目視・全編再生 | unverified | |
@@ -61,7 +61,6 @@ writer/lease nonce・取得/解放receipt（`scripts/Lease-UETemplateProject.ps1
 | [QA-NET-07] failed search（`spectator-explore`使用時のみ対象。他は`non-goal`） | unverified | 0件検索・識別子不一致・拒否の通知内容。空検索を成功と扱わない |
 | [QA-NET-08] timeoutの発生（`spectator-explore`使用時のみ対象。他は`non-goal`） | unverified | watchdog（60秒上限）超過の操作・通知・時刻。timeoutを接続成功と扱わない |
 | [QA-NET-09] timeout後の後始末（`spectator-explore`使用時のみ対象。他は`non-goal`） | unverified | 遅延成功したcreate/joinのcleanup結果と、cleanup待ちの間operationを拒否した範囲。発生記録とは別行 |
-| エンコード前の画像列検査 | unverified | `evidence/frames-check.json`。start/end(exclusive)/命名/期待解像度（EXR列は`-Extension .exr`）、欠番・範囲外・曖昧名・0 byte・decode・解像度の各判定。経路B（`mrq-native-mp4`）は元PNG列が無いので本欄を`non-goal`とし、[QA-ENC-01]〜[QA-ENC-03]の記録で代替する（空欄のままpassにしない） |
 | [QA-ENC-01] `encode_path`（書き出し経路） | unverified | `mrq-image-sequence+external-ffmpeg` / `mrq-native-mp4`（他は自由記述）。`docs/05-qa.md`の経路A/Bに対応 |
 | [QA-ENC-02] `mrq_output_setting`（MRQの出力設定名） | unverified | 実際に選んだ表示名（例 `H.264 MP4 [8bit]`、`PNG image sequence`） |
 | [QA-ENC-03] `source_png_sequence`（元PNG列の有無） | unverified | 存在する／存在しない。経路B（direct-MRQ MP4）は「存在しない」と明記し、空欄にしない |
@@ -70,6 +69,12 @@ writer/lease nonce・取得/解放receipt（`scripts/Lease-UETemplateProject.ps1
 
 
 
+
+| [QA-MAC-02] Mac host適格（UE5.8両表の交差） | unverified | macOS/Xcode/CPU/Memory/Metal、出典参照日、`evidence/mac-host.json`（`Test-UEMacHostRequirements.ps1`） |
+| [QA-ENC-04] MP4尺のpreset照合（`Measure-UECaptureEncode.ps1`） | unverified | `evidence/encode-check.json`。期待値はpreset定義から、観測frame数/秒数/解像度/fpsと失敗categoryを記録 |
+| [QA-RIGHTS-02] CREDITS の出所監査 | unverified | `Measure-UECreditsInventory.ps1`を納品dirとproject root双方で実行、Content groupごとの出所を照合 |
+| [QA-DELIVERY-01] 納品READMEの操作表・起動方法・対象版SHA | unverified | `Out/run_<runid>/README.md`、`DELIVERY.json.readme_receipt`、実機で未確認の操作はunverified |
+| [QA-PROC-01] run所有processの回収 | unverified | 対象件数 / 停止件数 / 残存件数 / 帰属不明件数 / 判定(free/held/unknown)、plan/verification/snapshot。unknownはpassにしない |
 
 ## 画像列・通知・MP4・目視・音の独立判定
 

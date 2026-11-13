@@ -1075,7 +1075,7 @@ try {
 	# (one non-empty report per allocated path, minus the deliberately refused ones).
 	Assert-FixtureInputsUnchanged
 	$fixtureCount = $script:fixtureBaselines.Count
-	Assert-True ($fixtureCount -eq 21) "every fixture directory built by the suite is covered by the comparison, got $fixtureCount"
+	Assert-True ($fixtureCount -eq 22) "every fixture directory built by the suite is covered by the comparison, got $fixtureCount"
 	Assert-True (@(Get-FixtureInputDrift).Count -eq 0) 'no fixture directory was modified, added to or removed after it was built'
 	Assert-True (@(Get-ReportDrift).Count -eq 0) 'reports/ holds exactly one non-empty report per allocated report path'
 	Write-Output "PASS: all $fixtureCount fixture directories and the report directory are unchanged since they were built"
