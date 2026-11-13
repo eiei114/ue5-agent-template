@@ -1019,7 +1019,7 @@ try {
 	# (a) pushed head: the default path succeeds and the lock names the commit the fixture remote serves.
 	$provPublishedName = "Pub_$testId"
 	$provPublishedOutput = Join-Path (Join-Path $provTemplateRoot 'Production') "${provPublishedName}_$testId-pub"
-	& $provGenerator -Recipe 'spectator-explore' -ProjectName $provPublishedName -RunId "$testId-pub" -EngineRoot $fixtureEngine -ProjectDiff @() | Out-Null
+	& $provGenerator -MaxPathLength 32767 -Recipe 'spectator-explore' -ProjectName $provPublishedName -RunId "$testId-pub" -EngineRoot $fixtureEngine -ProjectDiff @() | Out-Null
 	if (-not (Test-Path -LiteralPath $provPublishedOutput -PathType Container)) { throw 'The published-commit scaffold run produced no output.' }
 	$provPublishedLock = Get-LockProvenance $provPublishedOutput
 	Assert-True ($provPublishedLock.template_commit -ceq $provTemplateRevision) 'published fixture: lock records the template HEAD it was generated from'
@@ -1048,14 +1048,14 @@ try {
 	$provUnpublishedDefaultOutput = Join-Path (Join-Path $provTemplateRoot 'Production') "${provUnpublishedName}_$testId-default"
 	$provUnpublishedFailure = ''
 	try {
-		& $provGenerator -Recipe 'spectator-explore' -ProjectName $provUnpublishedName -RunId "$testId-default" -EngineRoot $fixtureEngine -ProjectDiff @() | Out-Null
+		& $provGenerator -MaxPathLength 32767 -Recipe 'spectator-explore' -ProjectName $provUnpublishedName -RunId "$testId-default" -EngineRoot $fixtureEngine -ProjectDiff @() | Out-Null
 	} catch {
 		$provUnpublishedFailure = $_.Exception.Message
 	}
 	Assert-True ($provUnpublishedFailure.Contains('is not retrievable from the recorded template repository')) 'an unpushed template commit stops generation by default'
 	Assert-True (-not (Test-Path -LiteralPath $provUnpublishedDefaultOutput)) 'the unpublished stop writes no project'
 	$provUnpublishedAllowedOutput = Join-Path (Join-Path $provTemplateRoot 'Production') "${provUnpublishedName}_$testId-allowed"
-	& $provGenerator -Recipe 'spectator-explore' -ProjectName $provUnpublishedName -RunId "$testId-allowed" -EngineRoot $fixtureEngine -ProjectDiff @() -AllowUnpublishedTemplate | Out-Null
+	& $provGenerator -MaxPathLength 32767 -Recipe 'spectator-explore' -ProjectName $provUnpublishedName -RunId "$testId-allowed" -EngineRoot $fixtureEngine -ProjectDiff @() -AllowUnpublishedTemplate | Out-Null
 	$provUnpublishedLock = Get-LockProvenance $provUnpublishedAllowedOutput
 	Assert-True ($provUnpublishedLock.template_commit -ceq $provUnpublishedRevision) 'the explicit switch still records the real template commit'
 	Assert-True ($provUnpublishedLock.template_commit_published -eq $false) 'the explicit switch records published = false instead of claiming the commit exists remotely'

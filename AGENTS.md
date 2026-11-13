@@ -98,3 +98,5 @@ generatorはコピー前にdescriptorと`Source/`を照合し、既知パター�
 `Config/DefaultGame.ini`の`ProjectID`/`ProjectName`はengineが読む`[/Script/EngineSettings.GeneralProjectSettings]`配下にだけ置く。templateが短い`[ProjectSettings]` headerで持っている場合は長い名前に移し、identity blockが無いtemplateではセクションごと作る。生コピーrecipeもtemplateの`ProjectID`を引き継がず、生成project名から導いた自分の`ProjectID`を持つ。どのrecipeでも同じ短いheaderやtemplate既定の`ProjectName`が残ったままは完了にしない。
 
 旧版は上書きしない。Out/_v1のような旧運用よりrun別の分離を推奨。Outに置いただけで納品とは呼ばない。
+
+lease取得・照合・解放は `scripts/Lease-UETemplateProject.ps1` の `Acquire` / `Test` / `Release`。取得後に `scripts/Start-UETemplateRunProcessSnapshot.ps1` で帰属snapshotを保存する。新規生成の台帳は `Production/.runs/run_<runid>/`、生成先projectは事前に作らない。

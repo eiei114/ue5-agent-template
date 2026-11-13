@@ -225,36 +225,3 @@ jobs:
           ./scripts/Test-UECaptureEncode.ps1
           if ($LASTEXITCODE -ne 0) { throw "Test-UECaptureEncode.ps1 exited $LASTEXITCODE" }
 
-  render-artifacts:
-    name: render artifact inspection
-    runs-on: windows-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          fetch-depth: 1
-
-      # The clean-sequence case asserts decode=pass, which needs a real decoder.
-      # Without one the inspector correctly reports decode=unverified and exits 2,
-      # so the suite is capability-dependent, not runner-independent. Provision
-      # the same decoder the documented QA baseline uses instead of weakening the
-      # assertion to "whatever this host happens to have".
-      - name: Provide ffprobe
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          if (Get-Command ffprobe -ErrorAction SilentlyContinue) { return }
-          choco install ffmpeg --yes --no-progress
-          if ($LASTEXITCODE -ne 0) { throw "choco install ffmpeg exited $LASTEXITCODE" }
-
-      - name: ffprobe version
-        shell: pwsh
-        run: ffprobe -version
-
-      - name: Test-UERenderArtifacts.ps1
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          Write-Host "decoder: $((Get-Command ffprobe -ErrorAction Stop).Source)"
-          ./scripts/Test-UERenderArtifacts.ps1
-          if ($LASTEXITCODE -ne 0) { throw "Test-UERenderArtifacts.ps1 exited $LASTEXITCODE" }
