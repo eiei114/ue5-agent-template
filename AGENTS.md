@@ -14,6 +14,9 @@ README → docs/01-start → 対象工程のdocs。現行Issue・owner指示・�
 6. CREDITS / QA / manifest / SHAを**同じ最終版**へ固定して納品。見た目未検品や旧版ZIPは完成でない。
 7. 自分のrun所有process（範囲は `docs/01-start.md` の「run所有プロセスの範囲」）を同期回収し、自分のleaseだけ解放。共有Chromeは維持指示と所有権に従い触らない。回収はsnapshotの`(process_id, creation_utc_ticks)`で行い、停止対象一覧を実行前に出す。
 
+6. CREDITS / QA / manifest / SHA と`README.md`（操作表）を**同じ最終版**へ固定して納品。見た目未検品や旧版ZIPは完成でない。納品セットの正本と各項目の雛形は`docs/06-delivery.md`の表。
+7. 自分のrun所有processを同期回収し、自分のleaseだけ解放。共有Chromeは維持指示と所有権に従い触らない。
+
 ## セッション切断時も復旧・続行する
 
 制作中にセッション（エージェント／リモート接続等）が切断されても、切断だけで停止・報告待ちにせず、まず既存の許可済み経路で状態と続行可否を照合する。画面復旧は、**Computer Use機能が利用可能で、対象host/projectへの既存の許可済み画面経路を確認できる場合に限る**。いずれかを利用できない場合は接続先や機能を推測せず、画面操作を試みたと記載しない。新規認証・権限設定・代替接続を作らず、照合結果と具体的な不足、観察できた範囲、未実施操作と理由、保存版、次の既存の許可済み手順を記録して復旧操作を停止する。具体的な復旧手順の正本は `docs/01-start.md`。切断自体はprocess終了の証明にならない。現在進行中のUE5制作にも適用する。
@@ -48,6 +51,15 @@ Production/
     Out/run_<runid>/
       preview/ frames/ final/ staging/ extracted-check/ evidence/
       QA.md CREDITS.md DELIVERY.json SHA256SUMS.txt
+
+Production/<Name>_<runid>/
+  <ProjectFile>.uproject / Config/ / Content/ / Source/ [Plugins/]   # materialize_projectなら<Name>、それ以外は<EngineTemplate>
+  Art/                 # 許可済み取得物。Gitテンプレートへ入れない
+  Tools/               # 当該project用。秘密なし
+  Out/run_<runid>/
+    preview/ frames/ final/ staging/ extracted-check/ evidence/
+    README.md QA.md CREDITS.md DELIVERY.json SHA256SUMS.txt
+  LEASE.json           # active所有者のみ。Git外
 ```
 
 preflightとleaseの記録先は`Production/.runs/run_<runid>/`のみ。生成先`Production/<Name>_<runid>/`の内側（`Out/`・`LEASE.json`）に先行して書くと、generatorの排他的mkdirが既存扱いで停止する。生成後にpreflightの内容は`Out/run_<runid>/QA.md`へ移し、leaseの解放記録も台帳dirに残す。

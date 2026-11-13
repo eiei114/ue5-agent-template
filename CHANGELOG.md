@@ -280,6 +280,35 @@ Migration: **existing generated projects are not moved, renamed or regenerated.*
 
 未検証（Unverified Scope）: UE 5.8.4 の MRQ / compile / PIE / Editor / Shipping は本 host で実行していない。実 MRQ が landscape preset で 300 枚出力するかは観測していない。MRQ の既定命名（`ZeroPadFrameNumbers` などの engine 既定）と `docs/05-qa.md` が前提する `%06d`・0 開始の一致も未確認。本変更の根拠は、本 host の ffmpeg/ffprobe 実測と自作 PNG fixture に限る。
 
+## Unreleased — DOT-3448
+
+- 納品セットが要求していた「README操作表」に、雛形・配置先・受領証欄・検査のどれもが無かった。`templates/README.md`を新規に追加し、作品名/Issue/run ID、対象版とREADME自身のSHA-256、起動方法、操作表（視点/移動/zoom/reset/help/終了）、既定解像度・fps・尺、前提、同一版の紐づけ、非目標/未実装、既知の不具合の欄を持つ雛形にした。web上の一般論ではなく、`docs/04-package.md`と`docs/05-qa.md`の実手順に合わせている。
+- `docs/06-delivery.md`の納品セットを表にし、各項目の`Out/run_<runid>/`の配置先と正本（`templates/README.md`等）を1箇所で定義した。`AGENTS.md`の`Out/run_<runid>/`列挙に`README.md`を加え、フォルダ契約と納品セットの不一致（README欠落）を解消した。規則を2箇所に重複して書かず、納品セットを正本にした。
+- 受領証欄を追加した。`templates/DELIVERY.json`に`readme_receipt`（`filename` / `sha256` / `version_sha256` / `operation_table_rows` / `unverified_rows`）と、未定義のまま増やさないための`artifact_kind_vocabulary`（`video_mp4` / `thumbnail` / `shipping_zip` / `readme` / `credits` / `qa` / `delivery_manifest` / `sha256sums`）を置いた。`templates/QA.md`に「納品READMEの操作表・起動方法・対象版SHA」の1行を追加した。
+- `scripts/Test-UETemplateScaffold.ps1`に、`docs/06-delivery.md`の納品セット各項目が`AGENTS.md`の列挙と`templates/`の実ファイルへ解決し、`DELIVERY.json`が`kind`語彙と`readme_receipt`を定義し、`QA.md`がREADMEの行を持つことを機械照合するgroupを追加した。既存8 groupは1件も削っていない。
+- 同じgroupに、isolated fixtureを`git clone`で作り、`templates/README.md`削除、`AGENTS.md`の列挙から`README.md`削除、`QA.md`のREADME行削除、`DELIVERY.json`の`readme_receipt`削除の4通りを当てて、それぞれpathを名指しで落ちることと、復旧すると沈黙することをassertした。gate自体が空assertに戻ればこのgroupが落ちる。
+
+### 実測（本host）
+
+- `pwsh 7.6.9` / `git rev-parse HEAD` = `8f586157c2e58734bdbce90b4d975f8d4f8201f7`（base）+ 本変更: `scripts/Test-UETemplateScaffold.ps1` = **9 group PASS / exit 0**。
+- Windows PowerShell 5.1: 同suite = **9 group PASS / exit 0**。
+- 変更前HEAD `34f2cbb61c8e43901325376ea7c69cb9555f9e32`のtreeに同じgateだけを当てた probe: `PROBLEMS=14`（`templates/README.md`の不在、`AGENTS.md`の列挙欠落、`readme_receipt`不在、`artifact_kind_vocabulary`の`readme`不在、`QA.md`のREADME行不在、納品セット4項目の記載なし）。変更前は落ちる。
+- `scripts/Test-UERenderArtifacts.ps1`は未変更。回帰として実行し、**13 group PASS / exit 0**。
+- `git status --porcelain --untracked-files=all` はsuite実行の前後で不変（suite末尾の比較で確認）。
+
+### 移行
+
+- 既存の納品物と`Production/`の生成物には触れない。`templates/README.md`は新規で、既存作品のREADMEを流用していない。
+- これまでREADME無しで納品した作品は、納品セットの必須項目が欠けたままである。再納品する場合は新runの`Out/run_<runid>/README.md`として`templates/README.md`から作る。旧runの成果物を書き換えない。
+- `DELIVERY.json`の`schema_version`は1のまま。既存の納品記録がある場合は、`readme_receipt`と`artifact_kind_vocabulary`を追加するまで次回の納品は`Unverified`として扱う。
+
+### Unverified Scope
+
+- README操作表の内容が実機で正しいか（実際のキー割当・起動引数・既定解像度）は本hostで検証していない。本変更が固定するのは「雛形があり、納品セット・`AGENTS.md`・`templates/`が一致し、消せば落ちる」という機械的事実だけ。
+- UE Shipping ZIP / Mac `.app`の実梱包物と、実exeの起動は未実行。
+- `artifact_kind_vocabulary`の追加が既存の納品記録と衝突しないかは、実案件の`DELIVERY.json`実物がrepoに無いため未確認。
+- UE install / compile / Editor / PIE / MRQ / render / Shippingは本変更でも実行していない。
+
 ## Unreleased — 動画モーキャプ
 
 - `docs/09-video-mocap.md` を追加した。単眼のダンス動画から MediaPipe で体・手・顔の点を取り、VRM の骨の回転 → VRMA → UE（VRM4U）→ MV にする工程、単眼で取れない量の補い方、確認方法、1 本での実測、残る限界、権利の gate をまとめた。

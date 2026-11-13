@@ -10,6 +10,15 @@
   "lease_released_receipt": null,
   "artifacts": [],
   "artifact_required_fields": ["filename", "bytes", "sha256", "kind", "version", "test_receipt", "delivery_receipt"],
+  "artifact_kind_vocabulary": ["video_mp4", "thumbnail", "shipping_zip", "readme", "credits", "qa", "delivery_manifest", "sha256sums"],
+  "readme_receipt": {
+    "required": true,
+    "filename": null,
+    "sha256": null,
+    "version_sha256": null,
+    "operation_table_rows": null,
+    "unverified_rows": null
+  },
   "rights_receipt": null,
   "qa_receipt": null,
   "unverified_scope": ["populate before delivery"],

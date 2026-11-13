@@ -29,6 +29,9 @@ AIが短い映像または小さな鑑賞シーンを安全に作るための**�
 `templates/` は雛形であり編集しない。`templates/QA.md` を複製して `Production/.runs/run_<runid>/preflight.md` と `LEASE.json` を作り、生成後は `Production/<Name>_<runid>/Out/run_<runid>/` へ移して記入する。生成先 `Production/<Name>_<runid>/` の中には生成前に書かない（配置の正本は [AGENTS.md](AGENTS.md) と [docs/01-start.md](docs/01-start.md)）。
 `Production/` は生成先の空プレースホルダ。通常Gitには制作物を入れない。`Production/.runs/run_<runid>/` は生成前の preflight と lease の台帳で、こちらも `.gitignore` の対象。
 
+`templates/` の記録を新規制作の `Out/run_<runid>/` へ複製して記入する。納品セットの正本と各項目の配置先は[納品](docs/06-delivery.md)の表。`Out/run_<runid>/README.md`（操作表）は`templates/README.md`から作る。
+`Production/` は生成先の空プレースホルダ。通常Gitには制作物を入れない。
+
 ## 新規scaffold
 
 cleanなtemplate checkoutと既存UE installを指定し、同じName/RunIdの出力がないことを確認してから実行する。
