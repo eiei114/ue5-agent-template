@@ -11,6 +11,8 @@
 
 実測（本host、Windows 10.0.26300、pwsh 7.6.9、UE 5.8.4 CL 58902052。変更前のgeneratorは`8f586157`のcheckoutで再現し、engine installは既定の`C:/Program Files/Epic Games/UE_5.8`を使った）: 変更前のgeneratorに新しいsuiteを当てると `ASSERT FAILED: spectator-explore: ProjectID sits under /Script/EngineSettings.GeneralProjectSettings` で落ちる。変更後は9 group PASS / exit 0。実installの`TP_FirstPerson`から生成した`ScoutProbe`/`EmberWatch`は`DefaultGame.ini`のSHA256が`a0a66eda…`で一致し`[ProjectSettings]`のままで`ProjectID`も同一だったが、変更後は前者`d0cec520…` / 後者`d4d8a8fa…`と別のIDを持つ長いheaderになった。`vertical-loop`は変更前CRLFのみ（`7eb70257…`）で、変更後は`6d23a0da…`のidentity block付き。`third-person-game`は`db6237c5…`で`normalized_from_section: null`（templateが既に長いheader）。
 
+`origin/main`（DOT-3157の生コピー経路pack展開、既定map検査を含む）を取り込んだ後、同じ契約を保ったまま再測した: `scripts/Test-UETemplateScaffold.ps1` = **13 group PASS / exit 0**。`git status --porcelain --untracked-files=all` = 0行のworktree（HEAD `ed92887`）で実行し、実installの`TP_FirstPerson`から`PipProbeA`/`PipProbeB`を生成すると`DefaultGame.ini`のSHA256はそれぞれ`36bc6b1d…`/`2bdb523d…`で`ProjectID`も別、同名再生成（`PipProbeA`の別RunId）は`36bc6b1d…`で一致した。`vertical-loop`（`TP_BlankBP`）は`8af7552b…`、`third-person-game`（`TP_ThirdPerson`）は`normalized_from_section: null`で長いheaderのまま自分のIDを持つ。
+
 移行: 既存の生成projectは自動改名・自動移行しない。`default_game_ini_identity`が無い旧lockの作品は、必要なら同じ`ProjectName`で新しいRunIdへ再生成し、lock・`Config/DefaultGame.ini`・作品差分を比較してから差し替える。`ProjectID`重複がZen/DDC/crash reportingに与える実害、UE Editor/PIE/MRQ/Shipping、packaged buildは本変更でも未検証（Unverified）。
 
 ## Unreleased — DOT-3157
