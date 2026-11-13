@@ -58,19 +58,45 @@ LAN sessions advertise the project-scoped identifier written by the scaffold;
 search results with a different identifier are not joined. The scaffold appends
 `[OnlineSubsystem] DefaultPlatformService=Null` and
 `[MulticaOnlineStarter] SessionProjectIdentifier=<value>` to the generated
-project's `Config/DefaultEngine.ini` (the project's own config wins over plugin
-layers, so the switch cannot live in the plugin directory) using the requested
-`-ProjectName` (not the engine template name or run ID), and records the same
-value in `template-lock.json` as `online_session_identifier`. All clients for one
-project must be generated with the same `-ProjectName`; distinct project names
-produce distinct session identifiers. A missing or malformed identifier causes
-host and search/join operations to fail explicitly rather than using a shared
-fallback. Do not hand-edit the setting to bypass the scaffold contract.
+project's `Config/DefaultEngine.ini` using the requested `-ProjectName` (not the
+engine template name or run ID), and records the same value in
+`template-lock.json` as `online_session_identifier`. All clients for one project
+must be generated with the same `-ProjectName`; distinct project names produce
+distinct session identifiers. A missing or malformed identifier causes host and
+search/join operations to fail explicitly rather than using a shared fallback.
+Do not hand-edit the setting to bypass the scaffold contract.
 
-The plugin ships no `Config/` directory of its own for these switch values.
-Engine and project config branches take precedence over plugin layers, so the
-same keys under `Plugins/MulticaOnlineStarter/Config/DefaultEngine.ini` are
-accepted by the engine loader and then never observed by `GConfig`.
+That project file is also **the file to edit when you change the provider**:
+`{PROJECT}/Config/Default{TYPE}.ini` (here `DefaultEngine.ini`) is a project layer the
+engine merges into the `Engine` branch (`Misc/ConfigHierarchy.h:68`). Renaming it to
+`Engine.ini` does not reach the same layer.
+
+Config file names are part of the contract, not just their contents. A plugin config
+file reaches a branch only when its name resolves to one: `Config/Engine.ini` for an
+existing branch (`{PLUGIN}/Config/{TYPE}.ini`, `Misc/ConfigHierarchy.h:79`) or
+`Config/Default<PluginName>.ini` for the plugin's own branch (`:61`). The loader derives
+the branch name by stripping the plugin name and the platform from the file name
+(`Engine/Source/Runtime/Core/Private/Misc/ConfigCacheIni.cpp:7275`); a name that matches
+no known branch (`Engine`, `Game`, `Input`, … — `Misc/ConfigCacheIni.h:101-111`) is found
+on disk, logged only at `Verbose`, and then discarded (`ConfigCacheIni.cpp:7294-7301`).
+A file named `Config/DefaultEngine.ini` is exactly that case: `DefaultEngine` is not a
+branch. The plugin therefore ships no `Config/` directory, and
+`scripts/Test-UETemplateScaffold.ps1` checks the resolved carrier names (of the generated
+project config and of the plugin directory) rather than grepping file bodies.
+
+Null is also what you get when nothing is configured: `LoadDefaultSubsystem` falls back to
+`NULL_SUBSYSTEM` when no provider is set or the configured one fails to load
+(`Engine/Plugins/Online/OnlineSubsystem/Source/Private/OnlineSubsystemModule.cpp:205-221`).
+An unread provider line therefore still yields Null, so "Null is in effect" is not evidence
+that the setting was read. Check the carrier name and the value before claiming a switch.
+
+Migration: projects generated before this contract carry
+`Plugins/MulticaOnlineStarter/Config/DefaultEngine.ini`, which the engine never resolves to a
+branch. Nothing rewrites them automatically — regenerate with a new RunId, or write
+`[OnlineSubsystem] DefaultPlatformService=Null` into the generated project's
+`Config/DefaultEngine.ini` and record that in the project's QA notes. Renaming the old file to
+`Config/Engine.ini` would turn it into a plugin modification layer, but that path is not verified
+here, so it is not the recommended migration.
 
 The plugin has no EOS/Steam switch. Do not point it at EOS or Steam and
 call this helper a working adapter: their login, product/AppID, invitation,
