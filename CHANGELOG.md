@@ -62,6 +62,34 @@
 
 移行：既存 project・`Production/`・`Out/` の生成物には触れない。inventory は現行 tree の分類であり、新しい top-level ディレクトリを新設する変更は同じ commit で `bundled`/`not_bundled` を更新する（更新しないと R3 で落ちる）。UE の install/compile/Editor/PIE/MRQ/render は本変更で一切実行していない（Unverified Scope のまま）。
 
+## Unreleased — DOT-3118
+
+- recipe層の合成を**名前の直書きからデータ駆動へ**移した。`scripts/New-UETemplateScaffold.ps1` の `-Recipe` から `ValidateSet` を廃止し、`templates/recipes/<Recipe>/recipe.json` の実在とスキーマ検証で受ける。recipeディレクトリを追加するだけで新層が使え、generatorの編集は不要。存在しない名前は停止し、出力ディレクトリを作らない。
+- `if ($Recipe -eq 'spectator-explore')` / `-eq 'third-person-game'` の分岐を削除した。`Play.md` のコピー可否は**recipeディレクトリに`Play.md`が実在するか**で、`Capture.md`は全recipe必須、`Plugins/MulticaOnlineStarter`・`docs/08-online-foundations.md`・`Config/DefaultEngine.ini` のonline設定は**`required_plugins`に`MulticaOnlineStarter`が含まれるか**で決まる。lock・`.uproject`の`Plugins[]`・実体のtreeが同じデータから生成される。
+- `recipe.json` のスキーマ検証を追加。`schema_version`（実装は`1`のみ）/ `recipe` / `purpose` / `engine_template` の欠落・型不正・空文字、`required_plugins`の非配列・空要素・重複・未知plugin、`materialize_project`の非bool、`Capture.md`の欠落をすべて**生成前の停止条件**にした。不明を`""`としてlockへ書かない。
+- recipe識別子を一本化。lockの`recipe`は**実際に合成したディレクトリ名**とし、`recipe.json`の`recipe`がディレクトリ名と一致しない場合は**停止**する。`recipe.json`側の名前を黙って採用しない。
+- `purpose` の契約を実態に合わせた。**合成判断には使わない**（composition・plugin・Play差分は変えない）が、`recipe.json` は `Recipe/recipe.json` へ逐語コピーされ `template-lock.json` にも記録されるため、`purpose` だけを変えるとこの**2ファイルは実際に変わる**。回帰testはファイル集合とその他のbyte一致を比較し、この2ファイルは「変わることが期待値」として別にassertする（従来の断言はこの2ファイルを比較対象から外していたため、差分を隠していた）。
+- 未知recipe名の失敗メッセージが「選択肢」として列挙するディレクトリを、`recipe.json` を持つものだけに限った。`templates/recipes/common/` は `SET.md` だけを持ち選択できないのに案内されていた（その名前で実行すると同じ失敗が再現する）。回帰testで `common` が一覧に載らないことと `spectator-explore` / `vertical-loop` が載ることをassertした。
+- suiteのcleanup検証を修正した。`%TEMP%` の recipe fixture root の残留assertが、直後の `$cleanupProblems = @(Get-ProductionResidue …)` 代入で**捨てられていた**（temp rootが漏れてもcleanと表示されるdead check）。代入後に移し、両rootの残留を同じ檢查に含めた。
+- `scripts/Test-UETemplateScaffold.ps1` に recipe層の assertion group を5つ追加（既存8 → 13 group）。データ追加だけで生成できること／`Play.md`の有無で合成が変わること／`required_plugins`の増減が`Plugins/`・descriptor・lockへ同時に反映されること／`purpose`がcompositionを変えないこと（lockとコピーされた`recipe.json`だけが変わる）／データ不一致（名前不一致・field欠落・未知plugin・`Capture.md`欠落・未知recipe名・`recipe.json`非所持ディレクトリ）が**出力ディレクトリを作らず停止**すること／既存2recipeの`Recipe/`・`recipe`・`purpose`・plugin集合が不変であること。fixtureはrepoの`Production/`ではなく短い一時ディレクトリにcloneする（clone下の`Production/<Name>_<runid>/`はWindowsのpath長を超えるため）。
+- `docs/07-architecture.md` に「recipeを追加する手順」を新設（置くファイル、`recipe.json`の必須field、`required_plugins`と`Plugins/`の関係、`purpose`の扱い、lockに載る項目）。`docs/01-start.md`の「選択可能な値はgeneratorの`ValidateSet`」、`README.md`、`docs/08-online-foundations.md`の「game-and-capture recipeにだけコピー」を新契約へ揃えた。
+
+### 測定（本host、UEを起動しない範囲）
+
+`pwsh 7.6.9` と Windows PowerShell 5.1 の両方で `scripts/Test-UETemplateScaffold.ps1` は **13 group PASS / exit 0**（既存8 groupの出力はそのままに recipe層5 group を追加）。変更前 `adfb5ee` に同じ fixture を当てると、R1（recipe追加のみ）は exit 1 / R2（名前ゲート開放）・R3（`purpose`変更）・S1（`required_plugins`縮小）・T1（名前不一致）・T2（field欠落）は **exit 0 のまま食い違う lock と実体を出力**した（本Issueの baseline を再現）。変更後は同じ入力でR1が成功し、R2/S1/T1/T2 は停止、R3 は設計どおりcompositionが同一でlockとコピーされた`Recipe/recipe.json`だけが変わる。
+
+### 移行
+
+- **既存の生成済みprojectは再生成しない。** 生成物の`Recipe/`・`Plugins/`・`template-lock.json`の変更は、次のRunIdで生成した新projectだけに現れる。
+- 以前に「game-and-capture」として生成したprojectが`required_plugins`を縮小/拡張したrecipeで作られていた場合は、lockの`plugins`と実ファイルが食い違っている可能性がある。`Plugins/MulticaOnlineStarter`の有無とlockの`plugins`を実物で突き合わせ、必要なら新RunIdで生成し直す。旧lockを手で書き換えない。
+- recipeを追加しただけのrepoで既存2recipeの生成結果は変わらない（回帰assertionで固定）。
+
+### Unverified Scope
+
+- UE 5.8.4の起動 / compile / Editor / PIE / 2-client LAN / MRQ / render / Shipping は本変更で一切実行していない。本変更はPowerShell generator・回帰suite・docs層に閉じる。
+- 本hostに実UE installは無く、計測は合成Engine fixture（`Engine/Build/Build.version` 5.8.4 / CL 58902052、`Templates/TP_FirstPerson` / `TP_BlankBP` / `TP_ThirdPerson`、engine plugin descriptor 4本）に対する生成の実測である。実UE installに対する生成成功の証明ではない。
+- 新recipeの意味づけ（受入条件・撮影手順）はデータを置く人の責任であり、generatorはファイルの実在・整合しか検査しない。
+
 ## Unreleased — DOT-3187
 
 - `templates/online/MulticaOnlineStarter` の provider 設定は、engine が読まない名前の carrier に置かれていた。旧 `Config/DefaultEngine.ini` は UE 5.8.4 の plugin config loader が `{PLUGIN}/Config/{TYPE}.ini`（既存 branch を変更する layer）にも `{PLUGIN}/Config/Default<PluginName>.ini`（plugin 自身の branch）にも解決できず、`ConfigCacheIni.cpp:7275` で `DefaultEngine` という branch 名を作った後 `:7294-7301` で Verbose ログだけ残して捨てる。`[OnlineSubsystem] DefaultPlatformService=Null` は宣言だけが残り、`GEngineIni` には届いていなかった。

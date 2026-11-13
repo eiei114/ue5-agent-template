@@ -5,10 +5,10 @@
 | 層 | 責務 | 実装状態 |
 |---|---|---|
 | 共通基盤 | host・lease・環境構築・素材権利・検品・納品 | 既存docsと記録書式 |
-| ジャンルrecipe | 鑑賞・探索等の固有設定、受入条件 | `spectator-explore` recipeを追加 |
+| ジャンルrecipe | 鑑賞・探索等の固有設定、受入条件 | `templates/recipes/<recipe>/` を置くだけで追加できる（手順は下節）。既存 `spectator-explore` / `third-person-game` / `vertical-loop` |
 | 用途部品 | プレイ／撮影。ジャンル別は両対応が基本 | `Play.md` / `Capture.md`に差分を分離 |
 | 三人称ゲーム | 公式TP_ThirdPersonをウィザード同等に実体化（名前置換・共有pack・redirect） | `third-person-game` recipe（`materialize_project`） |
-| 映像専用 | 縦動画・ループ等、操作不要の入口 | `vertical-loop` capture-only recipeを追加 |
+| 映像専用 | 縦動画・ループ等、操作不要の入口 | `vertical-loop` capture-only recipe（`Play.md` を持たない） |
 | オンライン | 小人数listen server、session、replication | Null/LAN starter pluginと方式比較を追加。実測範囲はQA参照 |
 | project generator | installed Engineの公式templateから新規project生成 | `scripts/New-UETemplateScaffold.ps1`。排他的作成/上書き禁止、`TemplateDefs.ini`適用、project identity照合、既定map照合あり |
 | 検品helper | エンコード前の画像列を読み取り専用で照合 | `scripts/Measure-UERenderArtifacts.ps1`。fixture回帰は`scripts/Test-UERenderArtifacts.ps1` |
@@ -28,6 +28,63 @@ generatorはEngineの既存templateをコピーし、recipe文書・online plugi
 | `SharedContentPacks`の`DetailLevels` tuple | 個別には解釈しない（per-mount detail resolutionはDOT-3135の担当） | 同左 |
 
 generator自身がmap/Sequence/`.uasset`を捏造しない。
+
+generatorはrecipe名を一切見ない。`-Recipe` は `templates/recipes/<Recipe>/recipe.json` を指す名前であり、合成内容は recipe.json のデータと recipe ディレクトリに実際に置かれたファイルだけで決まる。
+
+## recipeを追加する手順
+
+`-Recipe` に新しい値を足すために generator を編集する必要はない。以下を置けばそのまま生成できる（回帰は `scripts/Test-UETemplateScaffold.ps1` の recipe層 group）。
+
+1. `templates/recipes/<Recipe>/` を作る。ディレクトリ名がそのまま `-Recipe` の値になる（`^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$`、大文字小文字は区別）。
+2. `recipe.json` を置く。必須fieldは次の5つ。
+
+| field | 型 | 契約 |
+|---|---|---|
+| `schema_version` | 整数 | generatorが実装している値は `1` のみ。他の値を書くと生成前に停止する |
+| `recipe` | 文字列 | **ディレクトリ名と完全一致**すること（大文字小文字も含む）。一致しない場合は停止する |
+| `purpose` | 文字列 | 用途の記録。`game-and-capture` / `capture-only` を使う。**合成判断には使わない**（lockとコピーされた`recipe.json`だけが変わる。下記） |
+| `engine_template` | 文字列 | `EngineRoot/Templates/<名前>/<名前>.uproject` が存在する公式template名（例 `TP_FirstPerson` / `TP_BlankBP` / `TP_ThirdPerson`） |
+| `required_plugins` | 文字列の配列 | 有効化するplugin名。`MovieRenderPipeline` / `MulticaOnlineStarter` / `OnlineSubsystem` / `OnlineSubsystemNull` / `OnlineSubsystemUtils` のいずれか。重複・空要素・未知の名前は停止 |
+
+任意fieldは `materialize_project`（真偽値、既定`false`）。`true` にするとtemplateの`Config/TemplateDefs.ini`を適用して`<Name>.uproject`・`Source/<Name>`へ実体化し、`ProjectName` をC++識別子に制限する。
+3. `Capture.md` を置く。全recipe必須。無い場合は停止する。
+4. `Play.md` は**任意**。置いたrecipeは `Recipe/Play.md` を出力し、置かないrecipeは出力しない。これがプレイ差分の有無を決める唯一の入力であり、recipe名ではない。
+
+`recipe.json` / `Capture.md` / `Play.md` は生成物の `Recipe/` へ逐語コピーされる。`SET.md` は `templates/recipes/common/SET.md` の1つだけが全recipeに共通で入る。このため `templates/recipes/common/` のような `recipe.json` を持たないディレクトリは recipe ではなく、`-Recipe` に指定しても選択肢として案内されない（未知recipeとして停止する）。
+
+### `purpose` の契約（合成を変えない、lockとコピーだけが変わる）
+
+`purpose` は**合成判断に使わない**。合成（どのtemplateをコピーするか、plugin一式を入れるか、`docs/08`を同梱するか、`Recipe/Play.md`を出すか）は `engine_template` / `required_plugins` / recipeディレクトリに実在するファイルだけで決まる。同じデータと同じファイル構成を持つ2つのrecipeは、`purpose` が違っても**同じファイル集合・同じplugin構成・同じPlay差分**を出す。
+
+ただし `recipe.json` は生成物の `Recipe/recipe.json` へ**逐語コピー**されるので、`purpose` だけを書き換えると生成物の次の2ファイルは実際に変わる。
+
+| ファイル | `purpose` 変更時の挙動 |
+|---|---|
+| `Recipe/recipe.json` | 変わる（recipeデータの逐語コピーなので、その`purpose`行がそのまま出る） |
+| `template-lock.json` | 変わる（`purpose` を記録する） |
+| 上記以外（template由来のtree、`Plugins/`、`Recipe/`の他ファイル、`.uproject`） | 変わらない（byte一致） |
+
+回帰testはこの契約をそのままassertする。ファイル集合（composition）と上記2ファイル以外のbyte一致を比較し、`Recipe/recipe.json` と `template-lock.json` は**変わることが期待値**として別にassertする。したがって「同一tree」という主張はこの2ファイルを含まない意味であり、lockの`purpose`とコピーされた`recipe.json`は用途の記録として読む。用途の意味づけはrecipe本文（`Capture.md` / `Play.md`）と作品側QAで表す。field追加で合成を変えたい場合は `schema_version` を上げ、generatorの対応と回帰を同時に足す。
+
+### `required_plugins` と `Plugins/` の関係（単一の真実）
+
+| 宣言 | 生成物 |
+|---|---|
+| `MulticaOnlineStarter` を含む | `Plugins/MulticaOnlineStarter/` にplugin一式をコピーし、`.uproject`の`Plugins[]`で有効化し、`docs/08-online-foundations.md` を同梱し、`Config/DefaultEngine.ini` に `DefaultPlatformService=Null` と `SessionProjectIdentifier` を書き、lockにplugin版と`online_session_identifier`を記録する |
+| 含まない | 上記のどれも生成しない（`Plugins/` ディレクトリ自体を作らない） |
+| その他のplugin | `.uproject`の`Plugins[]`で有効化し、lockの`plugins.<名前>`にdescriptorの`VersionName`（無ければ`Version`）を記録する。descriptorが見つからない、または版が空なら停止 |
+
+つまり「宣言」と「実体」は同じデータから生成される。片方だけ更新した状態は作れない。
+
+### lock に載る項目
+
+`template-lock.json`（`schema_version: 2`）は、recipe層では `recipe` / `purpose` / `plugins` / `online_session_identifier` を記録する。`recipe` は**実際に合成したディレクトリ名**（`recipe.json` の `recipe` と一致していることを生成前に検査済み）であり、CLIで選んだ値とlockの値が食い違うことはない。
+
+### 追加時の確認
+
+- 新recipeは新しい `RunId` で生成し、既存projectを上書きしない。
+- `Recipe/` の中身、`.uproject`の`Plugins[]`、`template-lock.json` の `recipe` / `purpose` / `plugins` を実物と突き合わせる。
+- 既存2recipeの生成結果を変えないこと。`scripts/Test-UETemplateScaffold.ps1` のrecipe層 groupが、データだけを足した生成・`Play.md` の有無・`required_plugins` の増減・停止条件・既存recipeの回帰を固定している。
 
 ### project identity契約（1つだけ）
 
@@ -52,7 +109,7 @@ lockは`schema_version: 2`で、上記3項目を`identity`に持つ。単位は�
 
 ## lockと更新手順
 
-lockはtemplate commit SHA、clean/dirty状態、UE version/changelist、Engine/plugin version、recipe/use、作品差分、project identityを固定する。実作はcommit済み・cleanなtemplateから生成する。dirty時の生成は拒否し、テストだけ明示的な`-AllowDirtyTemplate`を使う。
+lockはtemplate commit SHA、clean/dirty状態、UE version/changelist、Engine/plugin version、recipe/use、作品差分、project identityを固定する。`recipe`/`purpose`はrecipe.jsonから、`plugins`は`required_plugins`から生成される。実作はcommit済み・cleanなtemplateから生成する。dirty時の生成は拒否し、テストだけ明示的な`-AllowDirtyTemplate`を使う。
 
 共通更新は新RunIdの空Production directoryへ生成し、既存projectを上書きせず、lock・作品差分・移行手順・対象版の検品結果を比較する。UE/Plugin更新の自動伝播はしない。
 

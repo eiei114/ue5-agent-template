@@ -19,7 +19,7 @@
 
 ## 小さな実装
 
-`templates/online/MulticaOnlineStarter`はUE Online Subsystem interfaceを使うC++ plugin scaffold。generatorがgame-and-capture recipeにだけコピーし、生成projectの`Config/DefaultEngine.ini`（`{PROJECT}/Config/Default{TYPE}.ini` layer）に`[OnlineSubsystem] DefaultPlatformService=Null`を書く。
+`templates/online/MulticaOnlineStarter`はUE Online Subsystem interfaceを使うC++ plugin scaffold。generatorは `required_plugins` に `MulticaOnlineStarter` を宣言したrecipeにだけコピーし（recipe名では判断しない）、生成projectの`Config/DefaultEngine.ini`（`{PROJECT}/Config/Default{TYPE}.ini` layer）に`[OnlineSubsystem] DefaultPlatformService=Null`を書く。
 
 - **設定の置き場所は名前も契約**。plugin側の設定は`{PLUGIN}/Config/{TYPE}.ini`（既存branchを変更する場合。例`Config/Engine.ini`）か`{PLUGIN}/Config/Default<PluginName>.ini`（plugin自身のbranch）に置く（`Misc/ConfigHierarchy.h:61,79`、runtime側`ConfigCacheIni.cpp:7275`でファイル名からbranch名を機械的に導く）。既知branch（`Engine`/`Game`/… 、`Misc/ConfigCacheIni.h:101-111`）に解決しない名前は、ローダがファイルを見つけた後に`Verbose`ログだけで捨てる（`ConfigCacheIni.cpp:7294-7301`）。`Plugins/<Plugin>/Config/DefaultEngine.ini`は`DefaultEngine`がbranchでないためこの経路に当たり、**書いた設定が無音で効かない**。現在のpluginは`Config/`を同梱せず、回帰testは本文一致ではなくcarrier名の解決規則を検査する。
 - **Nullは未設定でも得られる**。`LoadDefaultSubsystem`はprovider未設定または指定providerのロード失敗時に`NULL_SUBSYSTEM`へfallbackする（`OnlineSubsystemModule.cpp:205-221`）。よって「Nullで動いている」は「設定が読まれた」証拠にならない。provider差し替えを主張する前に、carrier名と値をproject configで確認する。

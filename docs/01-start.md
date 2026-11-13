@@ -12,13 +12,13 @@ Windows offlineなら新規buildをqueueして成功扱いしない。MacBookは
 
 ### 通常経路：recipeを選んでscaffoldする
 
-| Recipe | Engine template | 用途 | scaffoldのidentity | 必須plugin |
+| Recipe | Engine template | 用途 | scaffoldのidentity | 宣言するplugin（`required_plugins`） |
 |---|---|---|---|---|
 | `spectator-explore` | `TP_FirstPerson` | ゲーム＋撮影（探索・鑑賞） | `materialize_project`指定なし（false）。templateをコピーし、`.uproject`名とmodule名は`TP_FirstPerson`のまま | `MovieRenderPipeline`、`OnlineSubsystem`、`OnlineSubsystemNull`、`OnlineSubsystemUtils`、`MulticaOnlineStarter` |
 | `vertical-loop` | `TP_BlankBP` | 撮影専用（capture-only）。gameplayを必須にしない | `materialize_project`指定なし（false）。templateをコピーし、`.uproject`名とmodule名は`TP_BlankBP`のまま | `MovieRenderPipeline` |
 | `third-person-game` | `TP_ThirdPerson` | ゲーム＋撮影（三人称） | `materialize_project: true`。template規則を適用し、`.uproject`名・`Source`・moduleを`ProjectName`へ置換 | `MovieRenderPipeline` |
 
-recipeの正本は各 [`recipe.json`](../templates/recipes/)、選択可能な値はgeneratorの`ValidateSet`。`third-person-game`は`ProjectName`をC++識別子（英字始まり、英数字と`_`のみ）にする。scaffoldの引数例：
+recipeの正本は各 [`recipe.json`](../templates/recipes/)。選択可能な値は `templates/recipes/` 配下で **`recipe.json` を持つ** ディレクトリ名で、generatorに直書きされた一覧ではなくデータで決まる（`SET.md` だけを持つ `templates/recipes/common/` はrecipeではない）。新しいrecipeの追加手順（必要なファイル・`recipe.json`の必須field・`required_plugins`と`Plugins/`の関係・`purpose`の契約）は[構造と更新](07-architecture.md)を参照。`third-person-game`は`ProjectName`をC++識別子（英字始まり、英数字と`_`のみ）にする。scaffoldの引数例：
 
 ```powershell
 .\scripts\New-UETemplateScaffold.ps1 `
@@ -30,7 +30,7 @@ recipeの正本は各 [`recipe.json`](../templates/recipes/)、選択可能な�
 
 例の`RunId`は形式を示す値なので、実行時には新しい一意のrun IDへ置き換える。
 
-`-Recipe`には上表のいずれかを指定する。実行前に既存UEのversion/path、当該templateと必要なtoolchainを確認し、`Production/<ProjectName>_<runid>/`が未使用であることを確かめる。生成後は`template-lock.json`の`identity`と`.uproject`のplugin設定を照合してからEditorで開く。generatorはidentityの照合に失敗したら停止し、既存projectを上書きしない。実際のmap/Sequence/作品Contentは生成しない。
+`-Recipe`には `templates/recipes/` にある`recipe.json`付きのレシピ名（上表の3つと、追加したレシピ）を指定する。存在しない名前と`recipe.json`を持たないディレクトリはgeneratorのデータ検証で停止し、出力ディレクトリを作らない。実行前に既存UEのversion/path、当該templateと必要なtoolchainを確認し、`Production/<ProjectName>_<runid>/`が未使用であることを確かめる。生成後は`template-lock.json`の`identity`と`.uproject`のplugin設定を照合してからEditorで開く。generatorはidentityの照合に失敗したら停止し、既存projectを上書きしない。実際のmap/Sequence/作品Contentは生成しない。
 
 ### 手動fallback：Project Browserを使う場合
 
