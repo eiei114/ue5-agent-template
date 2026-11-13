@@ -50,6 +50,7 @@ project identityの契約は1つだけ。`scripts/New-UETemplateScaffold.ps1`は
 
 - `materialize_project: true`のrecipe（`third-person-game`）は、template自身の`Config/TemplateDefs.ini`をUEウィザードと同じ規則で適用するため、`<Name>.uproject` / `Source/<Name>` / `Modules[].Name = <Name>`になる。
 - それ以外のrecipe（`spectator-explore` / `vertical-loop`）は生コピーするため、template名（`TP_FirstPerson` / `TP_BlankBP`）がそのまま残る。ここで`.uproject`だけrenameすると`Source/**/*.Build.cs`と食い違う。
+- renameを適用しない生コピー経路でも、template自身の`Config/TemplateDefs.ini`は読む。`FoldersToIgnore` / `FilesToIgnore`で`Media/`や`Config/TemplateDefs.ini`を出力に残さず、`SharedContentPacks`を`Content/<Mount>`へ展開する（`spectator-explore`なら`Characters` / `LevelPrototyping` / `Input` / `Weapons`）。既定mapを開くのに必要なpackを落として成功を名乗らない。展開結果は`template-lock.json`の`shared_content_packs`で確認できる。
 
 generatorはコピー前にdescriptorと`Source/`を照合し、既知パターンに一致しなければ**推測で続行せず停止**して未一致pathを列挙する。コピー後にもコピー物同士で同じ照合を行い、食い違えばdescriptorを書き換えずに停止する。生成後に`.uproject`を手でrenameしない。identityは`template-lock.json`の`identity`（`project_file` / `project_modules` / `engine_association`、`schema_version: 2`）に記録され、そこで確認できる。
 
