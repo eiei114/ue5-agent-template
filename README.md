@@ -55,21 +55,17 @@ template repoのclone先は**短い絶対path**にする（例`C:\gh\ue5-agent-t
 
 コード境界とNull/LAN手順は`templates/online/MulticaOnlineStarter/README.md`および[方式比較](docs/08-online-foundations.md)を参照。
 
-## エンコード前の画像列検査
+## エンコード前の画像列検査と尺検査
 
-MRQ後の`frames/`をencodeする前に、期待範囲と実ファイルを照合する。読み取り専用で、画像の改名・修復・削除をしない。
+MRQ後の`frames/`をencodeする前に、期待範囲と実ファイルを照合する。読み取り専用で、画像の改名・修復・削除をしない。**presetの数値（解像度・fps・秒数・frame数・範囲）は`templates/CAPTURE-PRESETS.json`だけが持つ。** 手順は、まずpreset定義からコマンドを生成して表示し、その行をそのまま使う。
 
 ```powershell
-.\scripts\Measure-UERenderArtifacts.ps1 `
-  -FramesDirectory '<project>\Out\run_<runid>\frames' `
-  -StartNumber 0 `
-  -EndNumberExclusive 240 `
-  -ExpectedWidth 1080 `
-  -ExpectedHeight 1920 `
-  -ReportPath '<project>\Out\run_<runid>\evidence\frames-check.json'
+.\scripts\Get-UECaptureEncodePlan.ps1 -Preset vertical
 ```
 
-欠番・範囲外・曖昧名・0 byte・decode不能・解像度不一致を検出し、reportを新規作成する。終了codeはpass=0/fail=1/unverified=2。通知/exit、画像列、MP4、目視、音は別判定として扱う（[検品](docs/05-qa.md)）。回帰は`scripts/Test-UERenderArtifacts.ps1`。UE実機のMRQ・ffprobe・映像/音/loopの実測は未検証（Unverified）。
+出力の`FRAMES-CHECK`行を`Measure-UERenderArtifacts.ps1`に、`FFMPEG`/`FFPROBE`行をencodeと計測に、`INSPECT`行を尺の検査に使う。数値を文書から転記しない。
+
+`Measure-UERenderArtifacts.ps1`は欠番・範囲外・曖昧名・0 byte・decode不能・解像度不一致を検出し、reportを新規作成する。終了codeはpass=0/fail=1/unverified=2。**`-frames:v`は出力frame数の上限であり尺の検証ではない**ので、encode後に`Measure-UECaptureEncode.ps1`がpreset定義の期待frame数・秒数・解像度・fpsを実測と照合する（`evidence/encode-check.json`）。不一致はfail、測れない（ffprobe不在・timeout・video stream数が1でない）はunverifiedで、どちらもpassにしない。通知/exit、画像列、MP4、目視、音は別判定として扱う（[検品](docs/05-qa.md)）。回帰は`scripts/Test-UERenderArtifacts.ps1`と`scripts/Test-UECaptureEncode.ps1`。UE実機のMRQ・ffprobe・映像/音/loopの実測は未検証（Unverified）。
 
 ## GitHubから開始
 

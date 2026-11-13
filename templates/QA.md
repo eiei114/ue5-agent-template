@@ -14,6 +14,27 @@ host/OS/UE/SDK/GPU/RAM/disk：
 指定model/effort / 保存値 / 実session / 応答 / quota観測範囲：
 writer/lease nonce・取得/解放receipt（`scripts/Lease-UETemplateProject.ps1` の Acquire出力 / Releaseが残す `LEASE_RELEASED.<runid>.json`）：
 
+## 撮影preset（期待値の出所）
+
+期待値は`templates/CAPTURE-PRESETS.json`のpreset定義から転記する。**ここに手書きした数値を期待値にしない。** 実測を見てから期待値を決めない。`fps × 秒数 = frame数`は定義側で導出され、`Measure-UECaptureEncode.ps1`が同じ定義で照合する。
+
+```powershell
+.\scripts\Get-UECaptureEncodePlan.ps1 -Preset <vertical|landscape>
+```
+
+| 項目 | 記入 |
+|---|---|
+| preset名（`vertical` / `landscape`） | |
+| 期待frame数（preset定義の`fps × 秒数`） | |
+| 期待秒数 | |
+| 期待解像度（幅×高さ） | |
+| 期待fps | |
+| 期待画像列の範囲（start / end-exclusive） | |
+| 期待値の転記元（`templates/CAPTURE-PRESETS.json`のpreset名と確認日） | |
+| encodeに使った`-frames:v`の値と、それがpresetの期待frame数と一致するか | |
+
+`-frames:v`は出力frame数の**上限**であり、尺の検証ではない。元画像列が短ければ短いままexit 0で出力される。
+
 | 項目 | pass/fail/unverified/non-goal | 対象版/hash・実測・証拠 |
 |---|---|---|
 | [QA-BUILD-01] 新規project生成・Editor build | unverified | 生成したproject名・Editor buildのtargetと結果 |
@@ -45,13 +66,16 @@ writer/lease nonce・取得/解放receipt（`scripts/Lease-UETemplateProject.ps1
 | [QA-ENC-02] `mrq_output_setting`（MRQの出力設定名） | unverified | 実際に選んだ表示名（例 `H.264 MP4 [8bit]`、`PNG image sequence`） |
 | [QA-ENC-03] `source_png_sequence`（元PNG列の有無） | unverified | 存在する／存在しない。経路B（direct-MRQ MP4）は「存在しない」と明記し、空欄にしない |
 
+
 ## 画像列・通知・MP4・目視・音の独立判定
 
 1項目のpassを他項目へ読み替えない。特に次を守る。
 
 - 通知成功/exit 0があっても、画像列の負例（欠番・余分なframe・0 byte・decode不能・解像度不一致）をpassにしない。
 - 画像列がpassでも、render成功・全編目視・音・loopを合格にしない。
-- MP4のframe数だけでは、元画像列の欠番・余分を排除できない。
+- MP4のframe数だけでは、元の画像列の欠番・余分を排除できない。
+- **ffmpegのencodeがexit 0でも尺の合格にしない。** `-frames:v`は上限であり、短い画像列は短いMP4として成功裡に出力される。尺は`Measure-UECaptureEncode.ps1`がpreset定義と照合した結果で判定する。
+- ffprobeが報告した値を見てから「期待値」を書き換えない。期待値はpreset定義のみ。
 - 音声streamの存在は聴取ではない。
 - 解像度や範囲を入力しなかった項目は`unverified`と書き、空欄のままpassにしない。
 - Mac hostの判定は、EpicのUE5.8表とAppleのXcode対応表の**交差**で出す。片方の表だけでpassにしない。観測値が無い欄は`unverified`、公開表に記載の無い版も`unverified`とし、passに丸めない。
