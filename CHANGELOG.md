@@ -540,8 +540,6 @@ Measured on this host (Windows 10.0.26300, Windows PowerShell 5.1.26100.9711, pw
 
 Unverified Scope: 本変更で UE 5.8.4 の起動 / compile / Editor build / PIE / 2-client Null/LAN / MRQ は **一切実行していない**。`Logout` 時点の engine 呼出順は、本 host の実 install にある engine source（`Controller.cpp:595-612`、`GameModeBase.cpp:179-188`）を read-only で参照したもので、plugin の compile 成否や実 2-client の人数減算を観測したものではない。上記の test も本 host では実行しておらず（UE 非起動のため）、`Multica.Online.PlayerCount.Connected` の合否は未観測。
 
-## Unreleased — DOT-3395 — 2026-11-13
-
 ## Unreleased — DOT-3395 — 2026-11-09
 
 - 画像列QA helperは、`FramesDirectory`またはreport親pathにjunction/symlink等のreparse pointが含まれる場合に、実効出力境界を確認できないため検査前に拒否する。reportがjunction経由で画像列へ書き込まれるのを防ぐ回帰fixtureを追加した。

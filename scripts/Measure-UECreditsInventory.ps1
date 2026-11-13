@@ -108,6 +108,13 @@ function Resolve-AuditTargets([string]$TargetPath) {
 	foreach ($ancestor in $ancestors) {
 		$candidate = Join-Path $ancestor 'Content'
 		if (Test-Path -LiteralPath $candidate -PathType Container) { $contentCandidates += $candidate }
+		$outRoot = Join-Path $ancestor 'Out'
+		if (Test-Path -LiteralPath $outRoot -PathType Container) {
+			foreach ($runDir in @(Get-ChildItem -LiteralPath $outRoot -Directory -Force)) {
+				$runContent = Join-Path $runDir.FullName 'Content'
+				if (Test-Path -LiteralPath $runContent -PathType Container) { $contentCandidates += $runContent }
+			}
+		}
 	}
 	$creditsCandidates = @()
 	foreach ($ancestor in $ancestors) {

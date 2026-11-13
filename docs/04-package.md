@@ -63,7 +63,7 @@ Epicの`Xcode 26.4 は Unreal Engine と互換でない`が単一buildを指す�
 
 ### Epicの2要件はAppleの対応表で両立しない
 
-Appleの[Xcode 対応表](https://developer.apple.com/support/xcode/)（SDK and system requirements、参照日2026-11-05）では、Xcode 26 / 26.0.1 / 26.1 / 26.1.1 / 26.2 / 26.3 の対応OSは macOS Sequoia 15.6〜macOS Tahoe 26.x、Xcode 26.4.1以降は macOS Tahoe 26.2〜macOS Tahoe 26.x、Xcode 16.x は macOS Sonoma 14.5〜macOS Sequoia 15.x である。
+Appleの[Xcode 対応表](https://developer.apple.com/support/xcode/)（SDK and system requirements、参照日2026-11-05）では、Xcode 26 / 26.0.1 / 26.1 / 26.1.1 / 26.2 / 26.3 の対応OSは macOS Sequoia 15.6〜macOS Tahoe 26.x、Xcode 26.4.1以降は macOS Tahoe 26.2〜macOS Tahoe 26.xである。Xcode 16系はUEの最低26.0未満のためhost適格判定に使用しない。
 
 この表とEpicの表を突き合わせると、Epicの「最低macOS = Sonoma 14.5」とEpicの「最低Xcode = 26.0」は同じhostでは成立しない（Xcode 26.0はAppleの表でmacOS 15.6以上を要求する）。どちらの表が誤記かは本テンプレートでは判定しない。
 

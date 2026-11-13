@@ -100,7 +100,7 @@ function Get-LowerBoundVersion {
 	}
 
 	$trimmed = $Text.Trim()
-	$numericMatch = [regex]::Match($trimmed, '(\d+(?:\.\d+)?)')
+	$numericMatch = [regex]::Match($trimmed, '^(\d+(?:\.\d+)*)$')
 	if ($numericMatch.Success) {
 		$candidate = $null
 		try { $candidate = [version]$numericMatch.Groups[1].Value } catch { $candidate = $null }
@@ -260,7 +260,7 @@ function Get-MacHostVerdict {
 	$processorLabel = ''
 	if (-not [string]::IsNullOrWhiteSpace($Inputs.ProcessorFamily)) {
 		$processorLabel = $Inputs.ProcessorFamily.Trim()
-		if ($processorLabel -imatch '^(m[0-9]+|apple[\s-]?silicon|arm64)$') {
+		if ($processorLabel -imatch '^((apple\s+)?m[0-9]+(\s+(pro|max|ultra))?|apple[\s-]?silicon|arm64)$') {
 			$processorState = 'pass'
 			$processorDetail = "Epic minimum processor (Apple Silicon M1/M2): observed '$processorLabel' is Apple Silicon"
 		} elseif ($processorLabel -imatch '^(intel|x86[_-]?64|x64|i[3579]|core$)') {

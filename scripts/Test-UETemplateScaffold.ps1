@@ -618,11 +618,17 @@ function Get-DeliveryContractProblems {
 			if ($cell -notmatch '^[-: ]{3,}$') { $separatorOnly = $false; break }
 		}
 		if ($separatorOnly) { continue }
+		$rowNames = New-Object System.Collections.Generic.List[string]
+		$rowTemplates = New-Object System.Collections.Generic.List[string]
 		foreach ($cell in $cells) {
 			foreach ($token in @([regex]::Matches($cell, '[^`\s]+') | ForEach-Object { $_.Value })) {
-				if ($token -match '^templates/[A-Za-z0-9._/-]+$') { $documentedTemplates.Add($token) }
-				elseif ($token -match '^[A-Za-z0-9_.-]+\.(md|json|txt)$') { $documentedNames.Add($token) }
+				if ($token -match '^templates/[A-Za-z0-9._/-]+$') { $documentedTemplates.Add($token); $rowTemplates.Add($token) }
+				elseif ($token -match '^[A-Za-z0-9_.-]+\.(md|json|txt)$') { $documentedNames.Add($token); $rowNames.Add($token) }
 			}
+		}
+		foreach ($template in $rowTemplates) {
+			$templateName = [IO.Path]::GetFileName($template)
+			if ($rowNames -notcontains $templateName) { $problems.Add("docs/06-delivery.md: the row that points at $template does not place $templateName") }
 		}
 	}
 	Add-SetDifference $problems $documentedNames $requiredDeliverables 'docs/06-delivery.md: the delivery set does not name {0}' 'docs/06-delivery.md: names {0}, which is not part of the delivery set'
@@ -1367,7 +1373,7 @@ try {
 	Assert-True ($engineSectionIndex -ge 0 -and $firstClassRedirectIndex -gt $engineSectionIndex) 'class redirects live in [/Script/Engine.Engine] like the wizard writes them'
 	Assert-True ($coreRedirectsIndex -gt $firstClassRedirectIndex) 'the package redirect section is appended after the class redirects, not replaced'
 	$materializedStdout = & $generator -Recipe 'third-person-game' -ProjectName "Sz_$testId" -RunId "$testId-a" -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -MaxPathLength 32767 -SkipTemplatePublishCheck
-	$sizeOutput = $outputPaths[6]
+	$sizeOutput = Join-Path $productionRoot "Sz_${testId}_$testId-a"
 	Assert-True (($materializedStdout -join "`n") -match '(?m)^Class redirects: TP_ThirdPersonCharacter -> Sz_') 'the generator reports the class redirects it wrote'
 	Assert-True (Test-Path -LiteralPath (Join-Path $sizeOutput 'Config\DefaultEngine.ini')) 'the reporting generator wrote its output'
 	$tpGameIni = [System.IO.File]::ReadAllText((Join-Path $tpOutput 'Config\DefaultGame.ini'))
@@ -1844,7 +1850,7 @@ try {
 	$measuredLongest = [int]$measuredMatch.Groups[1].Value
 	$measuredHeadroom = [int]$measuredMatch.Groups[2].Value
 	Assert-True ($measuredHeadroom -eq ($unboundedPathBudget - $measuredLongest)) 'the reported headroom is the declared budget minus the measured longest path'
-	Assert-True (Test-Path -LiteralPath (Join-Path $outputPaths[6] 'template-lock.json')) 'an unbounded budget still generates the project'
+	Assert-True (Test-Path -LiteralPath (Join-Path (Join-Path $productionRoot 'PthB_ok1_budget') 'template-lock.json')) 'an unbounded budget still generates the project'
 
 	Invoke-Generator 'spectator-explore' 'PthB_eq1' 'budget' @() $measuredLongest
 	$equalBudgetOutput = Join-Path $productionRoot 'PthB_eq1_budget'
@@ -1889,7 +1895,7 @@ try {
 	# depth is computed from the length the success case reported, so this fixture keeps working when
 	# the tree or the developer's checkout path changes. Only the directory depth differs between the
 	# stop below and the success right after it.
-	$relativeLongest = $measuredLongest - ($outputPaths[6].Length + 1)
+	$relativeLongest = $measuredLongest - ((Join-Path $productionRoot 'PthB_ok1_budget').Length + 1)
 	$deepOutputName = 'PthB_dk1_dk'
 	$deepRootLengthNeeded = 259 - $relativeLongest - ($deepOutputName.Length + '\Production'.Length) + 1
 	$deepRootLengthNeeded = [Math]::Max($deepRootLengthNeeded, $fixtureRoot.Length + 120)
@@ -2604,7 +2610,7 @@ try {
 		Write-FixtureJson (Join-Path $partialEngine $pluginFixture.RelativePath) '{"FileVersion":3,"Version":1,"VersionName":"1.0"}'
 	}
 	$midFailRun = "$testId-retry"
-	$midFailOutput = $outputPaths[6]
+	$midFailOutput = Join-Path $productionRoot "${midFailName}_$testId-retry"
 	$midFailFailure = ''
 	try { Invoke-GeneratorAt $generator $partialEngine 'spectator-explore' $midFailName $midFailRun @() } catch { $midFailFailure = $_.Exception.Message }
 	Assert-True ($midFailFailure.Contains('Required plugin metadata is missing')) 'a missing plugin descriptor stops generation after template staging'
