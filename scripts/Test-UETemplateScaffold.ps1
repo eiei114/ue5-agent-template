@@ -182,7 +182,7 @@ function Write-FixtureRulesTemplate([string]$TemplateRoot, [string]$TemplateName
 	Write-FixtureJson (Join-Path $TemplateRoot 'Config\DefaultGame.ini') "[/Script/EngineSettings.GeneralProjectSettings]`r`nProjectID=(A=1,B=2,C=3,D=4)`r`nProjectName=Rules Template`r`n"
 }
 
-function Write-FixtureTemplate([string]$TemplateRoot, [string]$TemplateName, [string]$ModuleName) {
+function Write-FixtureTemplate([string]$TemplateRoot, [string]$TemplateName, [string]$ModuleName, [string]$DefaultEngineText) {
 	# Builds an installed-engine template fixture with real Modules/Source shape so the previous
 	# `Modules: []` shortcut cannot hide an unresolved project identity.
 	[System.IO.Directory]::CreateDirectory($TemplateRoot) | Out-Null
@@ -194,7 +194,18 @@ function Write-FixtureTemplate([string]$TemplateRoot, [string]$TemplateName, [st
 	Write-FixtureJson (Join-Path $TemplateRoot ('Source\' + $TemplateName + 'Target.cs')) ("using UnrealBuildTool;`n`npublic class {0}Target : TargetRules`n{{`n}}`n" -f $TemplateName)
 	# The installed New Project templates ship Config/DefaultEngine.ini; the online recipe appends
 	# its provider/session section to that copied project file.
-	Write-FixtureJson (Join-Path $TemplateRoot 'Config\DefaultEngine.ini') "[/Script/EngineSettings.GameMapsSettings]`r`nGameDefaultMap=/Game/ThirdPerson/Lvl_ThirdPerson.Lvl_ThirdPerson`r`n"
+	if ([string]::IsNullOrWhiteSpace($DefaultEngineText)) {
+		$DefaultEngineText = "[/Script/EngineSettings.GameMapsSettings]`r`nGameDefaultMap=/Engine/Maps/Templates/OpenWorld`r`n"
+	}
+	Write-FixtureJson (Join-Path $TemplateRoot 'Config\DefaultEngine.ini') $DefaultEngineText
+}
+
+function Write-FixtureTemplateDefs([string]$TemplateRoot, [string[]]$Lines) {
+	# Every installed template ships Config/TemplateDefs.ini; the generator now reads it for the
+	# raw-copy recipes too, so the fixture has to carry a real one instead of only the
+	# TP_ThirdPerson fixture that the materialize group uses.
+	[System.IO.Directory]::CreateDirectory((Join-Path $TemplateRoot 'Config')) | Out-Null
+	[System.IO.File]::WriteAllText((Join-Path $TemplateRoot 'Config\TemplateDefs.ini'), ($Lines -join "`r`n"), [System.Text.UTF8Encoding]::new($false))
 }
 
 function Set-FixtureRecipeTemplate([string]$RepositoryRoot, [string]$RecipeName, [string]$TemplateName) {
@@ -220,8 +231,47 @@ try {
 
 	$firstPersonTemplate = Join-Path $fixtureEngine 'Templates\TP_FirstPerson'
 	$blankTemplate = Join-Path $fixtureEngine 'Templates\TP_BlankBP'
-	Write-FixtureTemplate $firstPersonTemplate 'TP_FirstPerson' 'TP_FirstPerson'
+	# Mirrors the installed TP_FirstPerson shape: the default map lives in the template's own Content and
+	# references shared packs (Characters / LevelPrototyping / Input) that engine supplies separately, plus
+	# the Media/ thumbnails and Config/TemplateDefs.ini the template's own ignore rules exclude.
+	Write-FixtureTemplate $firstPersonTemplate 'TP_FirstPerson' 'TP_FirstPerson' ("[/Script/EngineSettings.GameMapsSettings]`r`nEditorStartupMap=/Game/FirstPerson/Lvl_FirstPerson.Lvl_FirstPerson`r`nGameDefaultMap=/Game/FirstPerson/Lvl_FirstPerson.Lvl_FirstPerson`r`nGlobalDefaultGameMode=/Game/FirstPerson/Blueprints/BP_FirstPersonGameMode.BP_FirstPersonGameMode_C`r`n")
+	Write-FixtureTemplateDefs $firstPersonTemplate @(
+		'[/Script/GameProjectGeneration.TemplateProjectDefs]',
+		'FoldersToIgnore=Media',
+		'FilesToIgnore="%TEMPLATENAME%.uproject"',
+		'FilesToIgnore="%TEMPLATENAME%.png"',
+		'FilesToIgnore="Config/TemplateDefs.ini"',
+		'FilesToIgnore="Config/config.ini"',
+		'SharedContentPacks=(MountName="Characters",DetailLevels=("High"))',
+		'SharedContentPacks=(MountName="LevelPrototyping",DetailLevels=("High"))',
+		'SharedContentPacks=(MountName="Input",DetailLevels=("High"))',
+		'EditDetailLevelPreference="High"'
+	)
+	Write-FixtureJson (Join-Path $firstPersonTemplate 'Content\FirstPerson\Lvl_FirstPerson.umap') 'binary Lvl_FirstPerson'
+	Write-FixtureJson (Join-Path $firstPersonTemplate 'Content\FirstPerson\Blueprints\BP_FirstPersonGameMode.uasset') 'binary BP_FirstPersonGameMode'
+	Write-FixtureJson (Join-Path $firstPersonTemplate 'Media\TP_FirstPerson.png') 'thumbnail fixture'
+	Write-FixtureJson (Join-Path $firstPersonTemplate 'Media\TP_FirstPerson_Preview.png') 'thumbnail fixture'
+	Write-FixtureJson (Join-Path $firstPersonTemplate 'Config\config.ini') 'GameName=TP_FirstPerson'
+	Write-FixtureJson (Join-Path $fixtureEngine 'Templates\TemplateResources\High\Characters\Content\Mannequins\Meshes\SK_Mannequin.uasset') 'pack Characters'
+	Write-FixtureJson (Join-Path $fixtureEngine 'Templates\TemplateResources\High\Characters\Content\Mannequins\Anims\Unarmed\ABP_Unarmed.uasset') 'pack Characters'
+	Write-FixtureJson (Join-Path $fixtureEngine 'Templates\TemplateResources\High\LevelPrototyping\Content\Meshes\SM_Cube.uasset') 'pack LevelPrototyping'
+	Write-FixtureJson (Join-Path $fixtureEngine 'Templates\TemplateResources\High\LevelPrototyping\Content\Materials\MI_DefaultColorway.uasset') 'pack LevelPrototyping'
+	Write-FixtureJson (Join-Path $fixtureEngine 'Templates\TemplateResources\High\Input\Content\Actions\IA_Jump.uasset') 'pack Input'
+	Write-FixtureJson (Join-Path $fixtureEngine 'Templates\TemplateResources\High\Input\Content\IMC_Default.uasset') 'pack Input'
+
+	# TP_BlankBP declares no SharedContentPacks and its default map is engine content, so the raw-copy
+	# path is checked here for the ignore rules alone.
 	Write-FixtureTemplate $blankTemplate 'TP_BlankBP' 'TP_BlankBP'
+	Write-FixtureTemplateDefs $blankTemplate @(
+		'[/Script/GameProjectGeneration.TemplateProjectDefs]',
+		'FoldersToIgnore=Media',
+		'FilesToIgnore="%TEMPLATENAME%.uproject"',
+		'FilesToIgnore="%TEMPLATENAME%.png"',
+		'FilesToIgnore="Config/TemplateDefs.ini"',
+		'FilesToIgnore="Config/config.ini"'
+	)
+	Write-FixtureJson (Join-Path $blankTemplate 'Media\TP_BlankBP.png') 'thumbnail fixture'
+	Write-FixtureJson (Join-Path $blankTemplate 'Media\TP_BlankBP_Preview.png') 'thumbnail fixture'
 
 	$thirdPersonTemplate = Join-Path $fixtureEngine 'Templates\TP_ThirdPerson'
 	Write-FixtureJson (Join-Path $thirdPersonTemplate 'TP_ThirdPerson.uproject') '{"FileVersion":3,"EngineAssociation":"","Modules":[{"Name":"TP_ThirdPerson","Type":"Runtime"}],"Plugins":[]}'
@@ -329,7 +379,12 @@ try {
 	$expectedSessionIdentifier = "eiei114.ue5-agent-template:$projectName"
 	$otherSessionIdentifier = "eiei114.ue5-agent-template:$otherProjectName"
 	Assert-True ($pluginConfig.Contains("SessionProjectIdentifier=$expectedSessionIdentifier")) 'generated project config carries the requested stable project key'
-	Assert-True ($pluginConfig.Contains('GlobalDefaultGameMode') -eq $false) 'the scaffold adds no template-specific GameMode override to the project config'
+	# The raw-copy path keeps the template's own GameMode line (the fixture mirrors the installed
+	# TP_FirstPerson config), so the check is that the template value survives unchanged and that the
+	# scaffold appends no second override of its own.
+	Assert-True ($pluginConfig.Contains('GlobalDefaultGameMode') -eq $true) 'raw copy keeps the template default GameMode line'
+	$gameModeLineCount = ([regex]::Matches($pluginConfig, '(?m)^GlobalDefaultGameMode=')).Count
+	Assert-True ($gameModeLineCount -eq 1) 'the generator does not add a second template-specific GameMode override'
 	# Negative case: a carrier named so the engine cannot resolve it must be reported. This is the
 	# defect this issue records: a body-only assertion stayed green while the declared provider was
 	# thrown away by the loader, because the file name never mapped to a branch.
@@ -373,6 +428,27 @@ try {
 	$otherLockData = [System.IO.File]::ReadAllText((Join-Path $otherOutput 'template-lock.json')) | ConvertFrom-Json
 	Assert-True ($otherPluginConfig.Contains("SessionProjectIdentifier=$otherSessionIdentifier")) 'a different project name writes its own effective session identifier'
 	Assert-True ($otherLockData.online_session_identifier -ceq $otherSessionIdentifier -and $otherSessionIdentifier -cne $expectedSessionIdentifier) 'different project names produce different lock identifiers'
+	# The raw-copy path must honour the template's own Config/TemplateDefs.ini. Without it the project
+	# opens on a default map whose shared packs (Characters / LevelPrototyping / Input) are absent while
+	# the generator still prints success, and the template-only Media/ thumbnails plus TemplateDefs.ini
+	# itself leak into the output.
+	foreach ($packName in @('Characters', 'LevelPrototyping', 'Input')) {
+		Assert-True (Test-Path -LiteralPath (Join-Path $firstOutput "Content\$packName") -PathType Container) "raw copy installs the declared shared content pack $packName"
+	}
+	Assert-True (Test-Path -LiteralPath (Join-Path $firstOutput 'Content\Characters\Mannequins\Meshes\SK_Mannequin.uasset') -PathType Leaf) 'raw copy installs the pack payload under Content/<Mount>'
+	Assert-True (Test-Path -LiteralPath (Join-Path $firstOutput 'Content\LevelPrototyping\Meshes\SM_Cube.uasset') -PathType Leaf) 'raw copy installs the LevelPrototyping pack'
+	Assert-True (Test-Path -LiteralPath (Join-Path $firstOutput 'Content\Input\Actions\IA_Jump.uasset') -PathType Leaf) 'raw copy installs the Input pack'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $firstOutput 'Media'))) 'raw copy honours FoldersToIgnore for Media'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $firstOutput 'Config\TemplateDefs.ini'))) 'raw copy honours FilesToIgnore for Config/TemplateDefs.ini'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $firstOutput 'Config\config.ini'))) 'raw copy honours FilesToIgnore for Config/config.ini'
+	Assert-True (Test-Path -LiteralPath (Join-Path $firstOutput 'Content\FirstPerson\Lvl_FirstPerson.umap')) 'the raw-copied project contains the map its own config opens'
+	Assert-True (@($lockData.shared_content_packs) -join ',' -ceq 'Characters,LevelPrototyping,Input') 'lock records the shared content packs copied into the project'
+	Assert-True ($lockData.shared_content_pack_detail_levels.Characters -ceq 'High' -and $lockData.shared_content_pack_detail_levels.Input -ceq 'High') 'lock records the detail level each pack was mounted from'
+	Assert-True ($lockData.template_defs_ignore_rules.folders_to_ignore -eq 1) 'lock records how many folder ignore rules the template declared'
+	Assert-True ($lockData.template_defs_ignore_rules.files_to_ignore -eq 4) 'lock records how many file ignore rules the template declared'
+	$otherLockPacks = @($otherLockData.shared_content_packs) -join ','
+	Assert-True ($otherLockPacks -ceq 'Characters,LevelPrototyping,Input') 'the pack list does not depend on the project name'
+	Write-Output 'PASS: raw-copy recipe applies TemplateDefs.ini ignore rules and mounts shared content packs'
 	Write-Output 'PASS: game+capture recipe, official template copy, online plugin, and deterministic lock'
 
 	Invoke-Generator 'vertical-loop' $loopProjectName "$testId-a" @('capture: 1080x1920')
@@ -389,6 +465,9 @@ try {
 	Assert-True (Test-Path -LiteralPath (Join-Path $loopOutput 'Recipe\Capture.md')) 'video-only recipe has capture instructions'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $loopOutput 'Recipe\Play.md'))) 'video-only recipe does not add a play delta'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $loopOutput 'Plugins\MulticaOnlineStarter'))) 'video-only recipe does not add online gameplay code'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $loopOutput 'Media'))) 'video-only recipe honours the blank template FoldersToIgnore for Media'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $loopOutput 'Config\TemplateDefs.ini'))) 'video-only recipe honours the blank template FilesToIgnore'
+	Assert-True (@($loopLock.shared_content_packs).Count -eq 0) 'a template without SharedContentPacks records an empty pack list instead of an invented one'
 	Write-Output 'PASS: capture-only vertical-loop recipe'
 
 	$tpName = "Tp_$testId"
@@ -417,7 +496,7 @@ try {
 	Assert-True ((([System.IO.File]::ReadAllText((Join-Path $tpOutput 'template-lock.json'))) | ConvertFrom-Json).engine_template -eq 'TP_ThirdPerson') 'lock records the third-person engine template'
 	Assert-GeneratorFails { Invoke-Generator 'third-person-game' 'Bad-Name' "$testId-bad" @() } 'materialized recipe rejects non-identifier project names'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $productionRoot "Bad-Name_$testId-bad"))) 'invalid materialized project name creates no output'
-	Write-Output 'PASS: third-person recipe materializes the installed template into <ProjectName>.uproject and Source/<ProjectName>'
+	Write-Output 'PASS: third-person recipe materializes the official template like the New Project wizard'
 
 	# --- TemplateDefs.ini rule engine (DOT-3135) -----------------------------------------------
 	# Each group below runs the materialize path in an isolated clone, because the fixture recipe has to
@@ -584,7 +663,6 @@ try {
 	Assert-True ($fallbackPack.detail_level -eq 'High' -and $fallbackPack.declared -eq $false) 'lock records the fall back level and that it was not the declared one'
 	Write-Output 'PASS: a declared detail level that the engine lacks is replaced by an explicit, recorded fall back'
 
-
 	Assert-GeneratorFails { Invoke-Generator 'spectator-explore' "..\escape_$testId" 'path-test' @() } 'path traversal project name is rejected'
 	Assert-GeneratorFails { Invoke-Generator 'spectator-explore' "TestExplore_$testId" '..\escape' @() } 'path traversal run ID is rejected'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $productionRoot "escape_$testId"))) 'path traversal did not create an out-of-scope directory'
@@ -645,6 +723,60 @@ try {
 	Assert-True (-not (Test-Path -LiteralPath $driftOutput)) 'identity stop writes no raw-copied project'
 	Write-Output 'PASS: unresolvable project identity stops generation instead of emitting a raw copy'
 
+	# The generated project's own Config declares the map it opens. If that map is only available
+	# through a declared shared content pack, the pack copy has to happen before the check; if it is
+	# missing altogether the generator must stop instead of printing `Created ...` over a project
+	# whose first documented step (open, press Play) lands on an unresolved map.
+	$packMapTemplateName = 'TP_PackMapDrift'
+	$packMapTemplateRoot = Join-Path $fixtureEngine ('Templates\' + $packMapTemplateName)
+	Write-FixtureTemplate $packMapTemplateRoot $packMapTemplateName 'TP_PackMapDrift' ("[/Script/EngineSettings.GameMapsSettings]`r`nGameDefaultMap=/Game/LevelPrototyping/Lvl_Prototype.Lvl_Prototype`r`nEditorStartupMap=/Game/LevelPrototyping/Lvl_Prototype.Lvl_Prototype`r`n")
+	Write-FixtureTemplateDefs $packMapTemplateRoot @(
+		'[/Script/GameProjectGeneration.TemplateProjectDefs]',
+		'FoldersToIgnore=Media',
+		'FilesToIgnore="%TEMPLATENAME%.uproject"',
+		'FilesToIgnore="Config/TemplateDefs.ini"',
+		'EditDetailLevelPreference="High"'
+	)
+	Write-FixtureJson (Join-Path $fixtureEngine 'Templates\TemplateResources\High\LevelPrototyping\Content\Lvl_Prototype.umap') 'binary Lvl_Prototype'
+	$packMapRepoRoot = Join-Path $fixtureRoot 'PackMapDriftTemplate'
+	& git -C $repoRoot clone --quiet --local --no-hardlinks --no-tags --no-checkout $repoRoot $packMapRepoRoot
+	if ($LASTEXITCODE -ne 0) { throw 'Could not create the isolated pack-map repository fixture.' }
+	& git -C $packMapRepoRoot checkout --quiet --detach $templateRevision
+	if ($LASTEXITCODE -ne 0) { throw "Could not check out revision $templateRevision in the isolated pack-map repository fixture." }
+	[System.IO.Directory]::CreateDirectory((Join-Path $packMapRepoRoot 'Production')) | Out-Null
+	$packMapGenerator = Join-Path $packMapRepoRoot 'scripts\New-UETemplateScaffold.ps1'
+	Copy-Item -LiteralPath $generator -Destination $packMapGenerator -Force
+	Set-FixtureRecipeTemplate $packMapRepoRoot 'vertical-loop' $packMapTemplateName
+
+	# Positive half: declare the pack that carries the default map and generation has to succeed with
+	# the map present in the output.
+	[System.IO.File]::AppendAllText((Join-Path $packMapTemplateRoot 'Config\TemplateDefs.ini'), "`r`nSharedContentPacks=(MountName=`"LevelPrototyping`",DetailLevels=(`"High`"))`r`n", [System.Text.UTF8Encoding]::new($false))
+	$packMapProjectName = "PackMap_$testId"
+	$packMapOutput = Join-Path (Join-Path $packMapRepoRoot 'Production') "${packMapProjectName}_ok"
+	& $packMapGenerator -Recipe 'vertical-loop' -ProjectName $packMapProjectName -RunId 'ok' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate | Out-Null
+	Assert-True (Test-Path -LiteralPath (Join-Path $packMapOutput 'Content\LevelPrototyping\Lvl_Prototype.umap')) 'the default map check accepts a map provided by a declared shared content pack'
+	Assert-True ((([System.IO.File]::ReadAllText((Join-Path $packMapOutput 'template-lock.json'))) | ConvertFrom-Json).shared_content_packs -contains 'LevelPrototyping') 'lock records the pack that supplied the default map'
+	Write-Output 'PASS: default map resolution accepts pack-provided maps'
+
+	# Negative half: the same template with the pack declaration removed. The map is now nowhere in the
+	# output, so the generator must stop before writing the lock and reporting success.
+	$packMapDefsPath = Join-Path $packMapTemplateRoot 'Config\TemplateDefs.ini'
+	$packMapDefsText = [System.IO.File]::ReadAllText($packMapDefsPath)
+	[System.IO.File]::WriteAllText($packMapDefsPath, ($packMapDefsText -replace '(?m)^SharedContentPacks=.*$', ''), [System.Text.UTF8Encoding]::new($false))
+	$missingMapProjectName = "NoMap_$testId"
+	$missingMapFailure = ''
+	try {
+		& $packMapGenerator -Recipe 'vertical-loop' -ProjectName $missingMapProjectName -RunId 'missing-map' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate | Out-Null
+	} catch {
+		$missingMapFailure = $_.Exception.Message
+	}
+	$missingMapOutput = Join-Path (Join-Path $packMapRepoRoot 'Production') "${missingMapProjectName}_missing-map"
+	Assert-True ($missingMapFailure.Contains('Default map check stopped')) 'a declared default map missing from the output stops the generator'
+	Assert-True ($missingMapFailure.Contains('/Game/LevelPrototyping/Lvl_Prototype')) 'the stop names the declared map package path'
+	Assert-True ($missingMapFailure.Contains('Content/LevelPrototyping/Lvl_Prototype.umap')) 'the stop names the missing asset path instead of guessing'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $missingMapOutput 'template-lock.json'))) 'the default map stop happens before the lock is written, so success is never recorded'
+	Write-Output 'PASS: a missing default map stops generation instead of reporting success'
+
 	$existingOutput = $outputPaths[3]
 	[System.IO.Directory]::CreateDirectory($existingOutput) | Out-Null
 	$sentinel = Join-Path $existingOutput 'KEEP.txt'
@@ -665,8 +797,6 @@ try {
 	if (Test-Path -LiteralPath $fixtureRoot -PathType Container) {
 		Remove-Item -LiteralPath $fixtureRoot -Recurse -Force
 	}
-	# The fixture may live outside Production/ when the checkout is deep, so both locations are
-	# checked: Production/ must keep only the tracked placeholder, and the fixture root must be gone.
 	$cleanupProblems = @(Get-ProductionResidue | ForEach-Object { "Production/ residual entry after cleanup: $_" })
 	if (Test-Path -LiteralPath $fixtureRoot) { $cleanupProblems += "fixture root still exists: $fixtureRoot" }
 	$finalCheckoutStatus = @(& git -C $repoRoot status --porcelain --untracked-files=all)
