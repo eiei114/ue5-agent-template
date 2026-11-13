@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "source_document": "docs/PROVENANCE.md",
+  "guard": "scripts/Test-UETemplateProvenance.ps1",
+  "last_reviewed": "2026-11-13",
+  "bundled": [
+    ".github/workflows/verify.yml",
+    ".gitignore",
+    "AGENTS.md",
+    "CHANGELOG.md",
+    "LICENSE-NOTICE.md",
+    "Production/PLACEHOLDER.md",
+    "README.md",
+    "docs/*",
+    "scripts/*",
+    "templates/*"
+  ],
+  "not_bundled": [
+    "Engine/*",
+    "Content/*",
+    "Out/*",
+    "Art/*",
+    "Saved/*",
+    "Binaries/*",
+    "Intermediate/*",
+    "DerivedDataCache/*",
+    "release/*",
+    "*.uasset",
+    "*.umap",
+    "*.fbx",
+    "*.wav",
+    "*.mp3",
+    "*.mp4",
+    "*.zip",
+    "*.pak",
+    "*.utoc",
+    "*.ucas",
+    "*.bundle",
+    "*.app",
+    "*.exe",
+    "*.dll"
+  ]
+}
