@@ -57,6 +57,14 @@ template repoのclone先は**短い絶対path**にする（例`C:\gh\ue5-agent-t
 
 パス長に注意: 上の例の出力folder名は`EmberWatch_<36文字のrun ID>`なので生成先は`<clone root>` + `\Production\` + 47文字になり、その下の最長fileはproject rootからさらに115文字下にある（pluginの`Private/Tests`配下、`Plugins\MulticaOnlineStarter\Source\MulticaOnlineStarter\Private\Tests\MulticaOnlineDeferredDestroyCleanupTests.cpp`）。clone rootが85文字を超えると260文字を越える。`C:\gh\ue5-agent-template`（24文字）程度にすると余裕が取れる。予算を超える場合は`-MaxPathLength`を明示し、その理由と実測最長pathをQAに残す。
 
+
+映像専用は`-Recipe vertical-loop`を選ぶ。三人称ゲーム（アクション・探索・街）は`-Recipe third-person-game`で、`<ProjectName>.uproject`／`Source/<ProjectName>`へ名前を置換した状態で生成する（ProjectNameはC++識別子）。`spectator-explore`と`vertical-loop`はtemplateを生コピーするのでprojectファイル名はtemplate名のまま（`TP_FirstPerson.uproject` / `TP_BlankBP.uproject`）で、`<ProjectName>.uproject`にはならない。どちらの場合も生成後の`template-lock.json`で`identity.project_file` / `identity.project_modules` / `identity.engine_association`、作品差分、plugin identityを確認してからEditorで開く。plugin identityは次の3点で照合する。
+
+1. 生成`.uproject`の`Plugins`配列（`Name`と`Enabled`）
+2. `template-lock.json`の`plugins` — 同じ`Name`が同じ件数だけあり、`enabled_in_project`が`.uproject`の`Enabled`と一致する
+3. `plugins.<Name>.version` — そのinstallの`.uplugin`の`VersionName`と一致する（`unknown`は「読めなかった」であり、版が一致したという意味ではない）
+
+templateがenableするpluginが当該Engine installに存在しない場合、generatorは`.uproject`もlockも書かずに停止し、未解決plugin名と探索pathを列挙する。templateのdescriptorと`Source/`が一致しない場合も同様に生コピーを出さず停止する。更新で既存作品を再生成/上書きしない。
 コード境界とNull/LAN手順は`templates/online/MulticaOnlineStarter/README.md`および[方式比較](docs/08-online-foundations.md)を参照。
 
 ## エンコード前の画像列検査と尺検査

@@ -54,11 +54,13 @@ recipeの正本は各 [`recipe.json`](../templates/recipes/)。選択可能な�
 
 clone先の推奨は`C:\gh\ue5-agent-template`のような短いpath。実測（2026-11-12、`spectator-explore`／`EmberWatch` + 36文字のrun ID）では、clone root 85文字（生成先144文字）で最長260文字、clone root 86文字（145文字）で最長261文字となり、86文字以上では新しい予算検査が停止する。同じ入力で旧generatorはclone root 86文字でも成功扱いで261文字のtreeを書いた。
 
+`-Recipe`には上表のいずれかを指定する。実行前に既存UEのversion/path、当該templateと必要なtoolchainを確認し、`Production/<ProjectName>_<runid>/`が未使用であることを確かめる。生成後は`template-lock.json`の`identity`と`plugins`を生成`.uproject`と照合してからEditorで開く — 照合するのは、`.uproject`の`Plugins`配列の`Name`/`Enabled`が`plugins`の同じ`Name`/`enabled_in_project`と一致すること、`plugins.<Name>.version`が当該installの`.uplugin`の`VersionName`と一致すること（`unknown`は版が読めなかったという意味で、一致ではない）。generatorはidentityの照合に失敗したら停止し、**enableするpluginが当該Engine installに無い場合も出力directoryを作らずに停止**してplugin名と探索pathを列挙する。既存projectを上書きしない。実際のmap/Sequence/作品Contentは生成しない。
+
 ### 手動fallback：Project Browserを使う場合
 
 scaffold scriptが使えない場合に限り、recipe表のEngine templateを選ぶ（`spectator-explore`=`TP_FirstPerson`、`vertical-loop`=`TP_BlankBP`、`third-person-game`=`TP_ThirdPerson`）。Recipeの用途に合わせた選択であり、First Person C++やgameplayは一律必須ではない。Starter Contentは不要なら無効にする。
 
-Project BrowserはUE側のtemplate materialize規則でprojectを作るため、特に`vertical-loop`/`spectator-explore`では、scaffoldの`materialize_project: false`（template名を維持）と同じ出力にならない。手動生成物をscaffold生成物と同等と見なしたり、`.uproject`だけをrenameしたりしない。`.uproject`・`Modules[].Name`・`Source/**/[Module].Build.cs`が一致すること、`EngineAssociation`が非空であることを確認する。generatorが付与するrecipe文書・plugin payload・`template-lock.json`はProject Browserでは生成されないため、手動でlockを捏造・編集せず、選択recipe/template・UE版・確認したidentityを`QA.md`に記録する。必須pluginが利用可能でない、またはrecipeの記録物が必要な場合はscaffold生成物と同等と扱わず、通常経路が使えるまで停止する。RoomSevenをコピー元にしない。
+Project BrowserはUE側のtemplate materialize規則でprojectを作るため、特に`vertical-loop`/`spectator-explore`では、scaffoldの`materialize_project: false`（template名を維持）と同じ出力にならない。手動生成物をscaffold生成物と同等と見なしたり、`.uproject`だけをrenameしたりしない。`.uproject`・`Modules[].Name`・`Source/**/[Module].Build.cs`が一致すること、`EngineAssociation`が非空であることを確認する。generatorが付与するrecipe文書・plugin payload・`template-lock.json`はProject Browserでは生成されないため、手動でlockを捏造・編集せず、選択recipe/template・UE版・確認したidentityを`QA.md`に記録する。**Project Browserは「このinstallにpluginが在るか」の検証をしないので、手動経路では`.uproject`の`Plugins`全件の`.uplugin`実在を自分で確認し、結果を`QA.md`に書く**（lockに載るはずだったplugin版も同様）。必須pluginが利用可能でない、またはrecipeの記録物が必要な場合はscaffold生成物と同等と扱わず、通常経路が使えるまで停止する。RoomSevenをコピー元にしない。
 
 ### 生成後の制作確認
 

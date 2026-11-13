@@ -188,6 +188,28 @@ lockはtemplate commit SHA、clean/dirty状態、UE version/changelist、Engine/
 
 **変更理由:** 共通環境の二重管理を避けながら、同じsetのプレイ/撮影と映像専用入口を小さく始める。生成時のdependency driftをlockで可視化し、template更新で制作中作品を壊さない。
 
+lockは`schema_version: 3`で、上記3項目を`identity`に持ち、plugin identityを`plugins`に持つ。単位は作品（`Production/<Name>_<runid>/template-lock.json`）であり、identityを手で書き換えない。
+
+### plugin identity契約（1つだけ）
+
+| 項目 | 契約 | 確認先 |
+|---|---|---|
+| 記録範囲 | `plugins`は生成`.uproject`の`Plugins`配列の**全entry**を、`Name`の昇順で1件ずつ持つ。recipeの`required_plugins`だけを記録しない（template出来のpluginも載る） | 生成`.uproject`の`Plugins`、`template-lock.json`の`plugins`のkey集合 |
+| 各entryの形 | `{ version, source, enabled_in_project }`。`version`はそのinstallの`.uplugin`の`VersionName`（空なら`Version`）、読めなければ文字列`unknown`。`source`は`project`／`repository`／`engine`。`enabled_in_project`は生成`.uproject`で`Enabled: true`かどうか | `plugins.<Name>`、実`.uplugin` |
+| 実在検証 | 生成`.uproject`で`Enabled: true`のpluginは、コピー前に`.uplugin`の実在を確認する。存在しなければ**出力directoryを作らずに停止**し、未解決plugin名と探索したpathを列挙する | generatorの例外、`scripts/Test-UETemplateScaffold.ps1`の`PhantomPlugin`負例 |
+| 探索順 | 生成projectの`Plugins/<Name>/<Name>.uplugin` → repoの`templates/online/<Name>/<Name>.uplugin` → engineの`Engine/Plugins/<Category>/<Name>/<Name>.uplugin` → `Engine/Plugins/**`の再帰探索。固定mapに無いplugin名でも止まらない | `plugins.<Name>.source` |
+| 版を捏造しない | `.uplugin`から読めない版は`unknown`として残し、推測値・既定値を入れない。`engine_version`/`engine_changelist`は`Engine/Build/Build.version`のみを写し、plugin版を混ぜない | `plugins.<Name>.version` |
+
+同一の`ProjectName`/`RunId`/`ProjectDiff`を、plugin集合か版が違う2つのEngine installで生成した場合、`plugins`が違うのでlockはbyte一致しない。
+
+## lockと更新手順
+
+lockはtemplate commit SHA、clean/dirty状態、UE version/changelist、Engine/plugin version、recipe/use、作品差分、project identityを固定する。「Engine/plugin version」は2つを指す — **Engine build**（`engine_version`/`engine_changelist`、`Engine/Build/Build.version`の写し）と、**生成projectがenableするpluginの版**（`plugins.<Name>.version`、各`.uplugin`の写し）。lockに載らないpluginは無い。実作はcommit済み・cleanなtemplateから生成する。dirty時の生成は拒否し、テストだけ明示的な`-AllowDirtyTemplate`を使う。
+
+共通更新は新RunIdの空Production directoryへ生成し、既存projectを上書きせず、lock・作品差分・移行手順・対象版の検品結果を比較する。UE/Plugin更新の自動伝播はしない。
+
+**変更理由:** 共通環境の二重管理を避けながら、同じsetのプレイ/撮影と映像専用入口を小さく始める。生成時のdependency driftをlockで可視化し、template更新で制作中作品を壊さない。plugin側のdriftも同じlockで見えるようにした（記録範囲を`.uproject`の実体に合わせ、存在しないpluginを有効化したまま成功しない）。
+
 方式比較とsource別の費用・制約は[docs/08-online-foundations.md](08-online-foundations.md)。Null/LANを初期動作とし、EOS/Steamは設定と実測を満たす独立adapter候補として扱う。
 
 初期は1repoで共通文書を参照し、再利用が実証された部品のみPlugin化する。深いBlueprint継承、ジャンルごとの全量fork、submoduleの大量追加は避ける。

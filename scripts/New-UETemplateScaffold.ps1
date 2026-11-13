@@ -530,6 +530,124 @@ function Get-PlannedOutputRelativePaths([string]$SourceTemplate, [string]$Engine
 }
 
 function Copy-TemplateTreeImpl([string]$SourceTemplate, [string]$Destination, [string]$TemplateName, [string]$Name, [string]$EngineTemplateRoot, [string]$ProjectFileName, [switch]$Materialize) {
+
+# Plugin identity contract: the `.uproject` is what the engine reads, so the lock records every
+# plugin entry of the generated project (not only the recipe's required_plugins) and every enabled
+# entry's `.uplugin` is resolved on this install before anything is copied. UE 5.8 nests plugins
+# one to four directories under Engine/Plugins, so the search walks the category directories first
+# and only then scans the whole tree. A version that cannot be read is recorded as the explicit
+# value `unknown`; it is never invented.
+function Find-PluginDescriptor {
+	# Returns the resolved `.uplugin` path for one plugin name, or a Path of $null. `Searched` carries
+	# every path that was tried, so a stop can list them instead of saying "missing plugin".
+	param(
+		[Parameter(Mandatory = $true)][string]$PluginName,
+		[Parameter(Mandatory = $true)][string]$EngineRoot,
+		[Parameter(Mandatory = $true)][string]$RepositoryRoot,
+		[Parameter(Mandatory = $true)][string]$ProjectRoot
+	)
+	$enginePluginsRoot = Join-Path $EngineRoot 'Engine\Plugins'
+	$searched = [System.Collections.Generic.List[string]]::new()
+	# The generated project's own Plugins directory wins: it is the copy the opened project loads.
+	$direct = @(
+		[pscustomobject]@{ Source = 'project'; Path = (Join-Path $ProjectRoot ('Plugins\{0}\{0}.uplugin' -f $PluginName)) },
+		[pscustomobject]@{ Source = 'repository'; Path = (Join-Path $RepositoryRoot ('templates\online\{0}\{0}.uplugin' -f $PluginName)) },
+		[pscustomobject]@{ Source = 'engine'; Path = (Join-Path $enginePluginsRoot ('{0}\{0}.uplugin' -f $PluginName)) }
+	)
+	foreach ($candidate in $direct) {
+		$searched.Add($candidate.Path)
+		if (Test-Path -LiteralPath $candidate.Path -PathType Leaf) {
+			return [pscustomobject]@{ Name = $PluginName; Path = [System.IO.Path]::GetFullPath($candidate.Path); Source = $candidate.Source; Searched = $searched.ToArray() }
+		}
+	}
+	if (Test-Path -LiteralPath $enginePluginsRoot -PathType Container) {
+		foreach ($category in @(Get-ChildItem -LiteralPath $enginePluginsRoot -Directory -Force)) {
+			$categoryPath = Join-Path $category.FullName ('{0}\{0}.uplugin' -f $PluginName)
+			$searched.Add($categoryPath)
+			if (Test-Path -LiteralPath $categoryPath -PathType Leaf) {
+				return [pscustomobject]@{ Name = $PluginName; Path = [System.IO.Path]::GetFullPath($categoryPath); Source = 'engine'; Searched = $searched.ToArray() }
+			}
+		}
+		foreach ($nestedPath in @([System.IO.Directory]::EnumerateFiles($enginePluginsRoot, '*.uplugin', [System.IO.SearchOption]::AllDirectories))) {
+			if ([System.IO.Path]::GetFileName($nestedPath) -cne ('{0}.uplugin' -f $PluginName)) { continue }
+			$resolvedPath = [System.IO.Path]::GetFullPath($nestedPath)
+			$searched.Add($resolvedPath)
+			return [pscustomobject]@{ Name = $PluginName; Path = $resolvedPath; Source = 'engine'; Searched = $searched.ToArray() }
+		}
+	}
+	return [pscustomobject]@{ Name = $PluginName; Path = $null; Source = 'unresolved'; Searched = $searched.ToArray() }
+}
+
+function Get-PluginRecords {
+	# Builds the `plugins` block of the lock from the plugin entries of the generated descriptor.
+	# Every entry is recorded with its version, where it came from and whether the project enables
+	# it. An enabled entry that resolves to no `.uplugin` stops the run and names every path that
+	# was searched, so a project that cannot open is never written with exit 0.
+	param(
+		[Parameter(Mandatory = $true)][AllowEmptyCollection()]$Plugins,
+		[Parameter(Mandatory = $true)][string]$EngineRoot,
+		[Parameter(Mandatory = $true)][string]$RepositoryRoot,
+		[Parameter(Mandatory = $true)][string]$ProjectRoot
+	)
+	$problems = [System.Collections.Generic.List[string]]::new()
+	$nameSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+	foreach ($entry in @($Plugins | Where-Object { $null -ne $_ })) {
+		$pluginName = [string]$entry.Name
+		if ([string]::IsNullOrWhiteSpace($pluginName)) {
+			$problems.Add('the project descriptor has a Plugins entry without a Name')
+			continue
+		}
+		$null = $nameSet.Add($pluginName)
+	}
+	[string[]]$orderedNames = @($nameSet)
+	[Array]::Sort($orderedNames, [System.StringComparer]::Ordinal)
+	$records = [ordered]@{}
+	[string[]]$enabledNames = @()
+	foreach ($pluginName in $orderedNames) {
+		$enabled = @($Plugins | Where-Object { $null -ne $_ -and [string]$_.Name -ceq $pluginName -and $_.Enabled -eq $true }).Count -gt 0
+		$resolution = Find-PluginDescriptor -PluginName $pluginName -EngineRoot $EngineRoot -RepositoryRoot $RepositoryRoot -ProjectRoot $ProjectRoot
+		$version = 'unknown'
+		if (-not [string]::IsNullOrWhiteSpace([string]$resolution.Path)) {
+			$pluginJson = Get-Content -Raw -LiteralPath $resolution.Path | ConvertFrom-Json
+			if (-not [string]::IsNullOrWhiteSpace([string]$pluginJson.VersionName)) { $version = [string]$pluginJson.VersionName }
+			elseif (-not [string]::IsNullOrWhiteSpace([string]$pluginJson.Version)) { $version = [string]$pluginJson.Version }
+		} elseif ($enabled) {
+			$problems.Add(('enabled plugin "{0}" has no readable .uplugin on this install; searched: {1}' -f $pluginName, (@($resolution.Searched) -join '; ')))
+		}
+		$records[$pluginName] = [ordered]@{
+			version = $version
+			source = [string]$resolution.Source
+			enabled_in_project = $enabled
+		}
+		if ($enabled) { $enabledNames += $pluginName }
+	}
+	if ($problems.Count -gt 0) {
+		throw ('Plugin identity check stopped: the generated project would enable plugin(s) that cannot be resolved on this install, so no project was produced. ' + ($problems -join ' | '))
+	}
+	return [pscustomobject]@{ Records = $records; EnabledNames = $enabledNames }
+}
+
+function Get-ProjectPluginEntries {
+	# The plugin entries the generated descriptor will carry: the installed template's own entries
+	# plus the recipe's required_plugins, which are always enabled. Returns plain objects so the
+	# caller can compare and record them before anything is copied.
+	param(
+		[Parameter(Mandatory = $true)][AllowEmptyCollection()]$TemplatePlugins,
+		[Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$RequiredPlugins
+	)
+	$entries = @($TemplatePlugins | Where-Object { $null -ne $_ })
+	foreach ($pluginName in $RequiredPlugins) {
+		$existing = $entries | Where-Object { [string]$_.Name -ceq [string]$pluginName } | Select-Object -First 1
+		if ($null -eq $existing) {
+			$entries += [pscustomobject]@{ Name = [string]$pluginName; Enabled = $true }
+		} else {
+			$existing.Enabled = $true
+		}
+	}
+	return $entries
+}
+
+function Copy-MaterializedTemplate([string]$SourceTemplate, [string]$Destination, [string]$TemplateName, [string]$Name, [string]$EngineTemplateRoot) {
 	$defsPath = Join-Path $SourceTemplate 'Config\TemplateDefs.ini'
 	if (-not (Test-Path -LiteralPath $defsPath -PathType Leaf)) { throw "The template has no Config/TemplateDefs.ini to copy from: $defsPath" }
 	$defs = Read-TemplateDefs -Path $defsPath -TemplateName $TemplateName
@@ -918,6 +1036,14 @@ if ([string]::IsNullOrWhiteSpace($engineAssociationValue)) {
 	throw "Project identity check stopped: no EngineAssociation could be derived for $projectFileName. No project was copied."
 }
 
+# Plugin identity check, before anything exists on disk: the project descriptor this run will write
+# enables the installed template's own plugins plus the recipe's required_plugins, so every one of
+# them has to resolve to a real `.uplugin` on this install. Stopping here keeps a run that would emit
+# a project nobody can open from leaving an output directory behind, and it is the only place where
+# a byte-identical lock for two different engine installs can be refused.
+$templatePlugins = @($templateDescriptor.Plugins | Where-Object { $null -ne $_ })
+$projectPluginEntries = @(Get-ProjectPluginEntries -TemplatePlugins $templatePlugins -RequiredPlugins @($recipeData.required_plugins))
+
 $destinationName = '{0}_{1}' -f $ProjectName, $RunId
 $destinationPath = [System.IO.Path]::GetFullPath((Join-Path $productionRoot $destinationName))
 $separator = [System.IO.Path]::DirectorySeparatorChar
@@ -925,6 +1051,10 @@ $productionPrefix = $productionRoot.TrimEnd([System.IO.Path]::DirectorySeparator
 if (-not $destinationPath.StartsWith($productionPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
 	throw 'The computed output directory escapes Production.'
 }
+# This is the pre-copy gate: it throws before the exclusive output directory is created, so a run
+# that would enable an unresolvable plugin leaves nothing on disk.
+$null = Get-PluginRecords -Plugins $projectPluginEntries -EngineRoot $engineRootFull -RepositoryRoot $repoRoot -ProjectRoot $destinationPath
+
 
 # ---------------------------------------------------------------------------------------------
 # Path-length budget. The repository records 260 characters as a real failure it already hit
@@ -1065,6 +1195,18 @@ try {
 	$projectJson = ConvertTo-Json -InputObject $projectDescriptor -Depth 30
 	[System.IO.File]::WriteAllText($projectFile, $projectJson + [Environment]::NewLine, $utf8NoBom)
 
+
+	# The copy is now on disk, so the descriptor that was actually written is what the lock has to
+	# describe. Its plugin set must be exactly the set the pre-copy check resolved.
+	$writtenPlugins = @($projectDescriptor.Plugins | Where-Object { $null -ne $_ })
+	$writtenPluginNames = @($writtenPlugins | ForEach-Object { [string]$_.Name })
+	[Array]::Sort($writtenPluginNames, [System.StringComparer]::Ordinal)
+	$checkedPluginNames = @($projectPluginEntries | ForEach-Object { [string]$_.Name })
+	[Array]::Sort($checkedPluginNames, [System.StringComparer]::Ordinal)
+	if (($writtenPluginNames -join ',') -cne ($checkedPluginNames -join ',')) {
+		throw 'Plugin identity check stopped: the written project descriptor carries a plugin set the pre-copy check did not verify, so the lock was not written.'
+	}
+
 	$differenceSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
 	foreach ($difference in $ProjectDiff) {
 		$normalizedDifference = $difference.Trim()
@@ -1112,6 +1254,7 @@ try {
 	}
 	$lockJson = ConvertTo-Json -InputObject $lock -Depth 12
 
+
 	# Composition is driven by the recipe data and the files the recipe ships, never by its name:
 	# Capture.md is required, Play.md exists when the recipe ships one, and the online payload is
 	# selected by required_plugins. Lock, project descriptor and tree therefore share one truth.
@@ -1137,6 +1280,31 @@ try {
 			-Identifier ('eiei114.ue5-agent-template:{0}' -f $ProjectName)
 	}
 
+	# Every copy that can place a `.uplugin` under the project is done, so the records are built with
+	# the output directory as the project root: a bundled plugin then resolves to the copy the opened
+	# project loads, not to the repository source. A plugin that is enabled and still unresolved here
+	# stops the run before the lock is written.
+	$pluginRecords = (Get-PluginRecords -Plugins $writtenPlugins -EngineRoot $engineRootFull -RepositoryRoot $repoRoot -ProjectRoot $destinationPath).Records
+	$lock = [ordered]@{
+		schema_version = 3
+		template_repository = 'https://github.com/eiei114/ue5-agent-template'
+		template_commit = $gitCommit
+		template_worktree_dirty = $templateDirty
+		engine_template = $templateName
+		engine_version = $engineVersion
+		engine_changelist = [long]$buildData.Changelist
+		identity = [ordered]@{
+			project_file = $projectFileName
+			project_modules = @($moduleNames)
+			engine_association = $engineAssociationValue
+		}
+		recipe = [string]$recipeData.recipe
+		purpose = [string]$recipeData.purpose
+		plugins = $pluginRecords
+		online_session_identifier = if (@($recipeData.required_plugins) -contains 'MulticaOnlineStarter') { 'eiei114.ue5-agent-template:{0}' -f $ProjectName } else { $null }
+		project_differences = $projectDifferences
+	}
+	$lockJson = ConvertTo-Json -InputObject $lock -Depth 12
 	$lockPath = Join-Path $destinationPath 'template-lock.json'
 	[System.IO.File]::WriteAllText($lockPath, $lockJson + [Environment]::NewLine, $utf8NoBom)
 
