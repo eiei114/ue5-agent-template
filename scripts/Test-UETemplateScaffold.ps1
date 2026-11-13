@@ -1461,6 +1461,94 @@ try {
 	Assert-QaTemplateContract $qaCopyPath
 	Write-Output 'PASS: dropping a QA acceptance row fails the row contract and names the missing row'
 
+	# Format coverage: the installed engine templates write the same FolderRenames tuple two ways —
+	# `", To="` (TP_Blank and TP_SIM_Blank, the two spaced templates that actually carry Source/)
+	# and `",To="`. A spaced rule used to be dropped without a word: the descriptor was renamed while
+	# Source/ kept the template's module directory. One fixture writes both forms, writes the other
+	# tuple keys with surrounding spaces, and carries one known-key line this reader cannot interpret.
+	$formatTemplateName = 'TP_SpacedRenames'
+	$formatTemplateRoot = Join-Path $fixtureEngine ('Templates\' + $formatTemplateName)
+	Write-FixtureTemplate $formatTemplateRoot $formatTemplateName $formatTemplateName
+	Write-FixtureJson (Join-Path $formatTemplateRoot 'Config\TemplateDefs.ini') (@(
+		'[/Script/GameProjectGeneration.TemplateProjectDefs]',
+		'FoldersToIgnore=Media',
+		'FilesToIgnore="Config/TemplateDefs.ini"',
+		'FolderRenames=(From="Source/%TEMPLATENAME%", To="Source/%PROJECTNAME%")',
+		'FolderRenames=(From="Content/Template",To="Content/Project")',
+		'FolderRenames=(From="Content/Template2",To="Content/Project2") ; trailing text the previous reader accepted',
+		'ReplacementsInFiles=(Extensions=("cpp","h","ini","cs"), From="%TEMPLATENAME%", To="%PROJECTNAME%", bCaseSensitive=false)',
+		'SharedContentPacks=( MountName = "SpacedPack" , DetailLevels=("Standard") )',
+		'SharedContentPacks=(MountName=Variant_Shooter, DetailLevels=("Standard"))',
+		'EditDetailLevelPreference = "Standard"'
+	) -join "`r`n")
+	Write-FixtureJson (Join-Path $formatTemplateRoot 'Content\Template\Lvl_Loose.umap') 'binary Content/Template'
+	Write-FixtureJson (Join-Path $formatTemplateRoot 'Content\Template2\Lvl_Trailing.umap') 'binary Content/Template2'
+	Write-FixtureJson (Join-Path $formatTemplateRoot 'Media\Ignored.png') 'ignored'
+	Write-FixtureJson (Join-Path $fixtureEngine 'Templates\TemplateResources\Standard\SpacedPack\Content\Packed\P.uasset') 'spaced pack'
+
+	$formatRepoRoot = Join-Path $fixtureRoot 'Fmt'
+	& git -C $repoRoot clone --quiet --local --no-hardlinks --no-tags --no-checkout $repoRoot $formatRepoRoot
+	if ($LASTEXITCODE -ne 0) { throw 'Could not create the isolated TemplateDefs format repository fixture.' }
+	& git -C $formatRepoRoot checkout --quiet --detach $templateRevision
+	if ($LASTEXITCODE -ne 0) { throw "Could not check out revision $templateRevision in the isolated TemplateDefs format repository fixture." }
+	[System.IO.Directory]::CreateDirectory((Join-Path $formatRepoRoot 'Production')) | Out-Null
+	$formatGenerator = Join-Path $formatRepoRoot 'scripts\New-UETemplateScaffold.ps1'
+	Copy-Item -LiteralPath $generator -Destination $formatGenerator -Force
+	Set-FixtureRecipeTemplate $formatRepoRoot 'third-person-game' $formatTemplateName
+
+	$formatProjectName = 'Fmt' + $testId.Substring(0, 12)
+	$formatOutput = Join-Path (Join-Path $formatRepoRoot 'Production') "${formatProjectName}_a"
+	$formatWarnings = @()
+	& $formatGenerator -Recipe 'third-person-game' -ProjectName $formatProjectName -RunId 'a' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -WarningVariable +formatWarnings -WarningAction Continue | Out-Null
+	Assert-True (Test-Path -LiteralPath (Join-Path $formatOutput "Source\$formatProjectName\$formatProjectName.Build.cs")) 'a spaced FolderRenames tuple renames the module directory too'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $formatOutput "Source\$formatTemplateName"))) 'a spaced FolderRenames tuple leaves no template module directory behind'
+	Assert-True (Test-Path -LiteralPath (Join-Path $formatOutput 'Content\Project\Lvl_Loose.umap')) 'an unspaced FolderRenames tuple outside Source is also applied'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $formatOutput 'Content\Template'))) 'the unspaced FolderRenames source folder is gone'
+	# Parity guard: the previous reader accepted a rule followed by trailing text because its pattern
+	# was unanchored. Widening must not narrow, so that line still applies and is still not reported.
+	Assert-True (Test-Path -LiteralPath (Join-Path $formatOutput 'Content\Project2\Lvl_Trailing.umap')) 'a FolderRenames rule followed by trailing text is still applied'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $formatOutput 'Content\Template2'))) 'the trailing-text FolderRenames source folder is gone'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $formatOutput 'Media'))) 'spaced FoldersToIgnore is applied'
+	Assert-True (Test-Path -LiteralPath (Join-Path $formatOutput 'Content\SpacedPack\Packed\P.uasset')) 'spaced SharedContentPacks and spaced EditDetailLevelPreference are applied'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $formatOutput 'Content\Variant_Shooter'))) 'an uninterpretable SharedContentPacks line applies nothing'
+	$formatWarningText = @($formatWarnings) -join "`n"
+	Assert-True ($formatWarningText.Contains('not understood')) 'an uninterpretable known-key line is reported as a warning instead of being skipped silently'
+	Assert-True ($formatWarningText.Contains('MountName=Variant_Shooter')) 'the warning names the line that was dropped'
+	Assert-True (-not $formatWarningText.Contains('trailing text')) 'a rule the previous reader accepted is not reported as uninterpretable'
+	$formatDescriptor = [System.IO.File]::ReadAllText((Join-Path $formatOutput "$formatProjectName.uproject")) | ConvertFrom-Json
+	Assert-True ($formatDescriptor.Modules[0].Name -ceq $formatProjectName) 'a spaced FolderRenames tuple keeps descriptor and Source/ in agreement'
+	$formatLock = [System.IO.File]::ReadAllText((Join-Path $formatOutput 'template-lock.json')) | ConvertFrom-Json
+	Assert-True (@($formatLock.identity.project_modules) -join ',' -ceq $formatProjectName) 'the lock records the module name the spaced rule produced'
+	Write-Output 'PASS: TemplateDefs.ini accepts spaced and unspaced separators and reports uninterpretable known-key lines'
+
+	# The warning must not become the whole contract: a FolderRenames line the reader cannot parse
+	# leaves the template's own module directory in place, so the run has to stop on the identity
+	# check instead of printing a success message for a project that cannot find its module.
+	$silentTemplateName = 'TP_SilentRenames'
+	$silentTemplateRoot = Join-Path $fixtureEngine ('Templates\' + $silentTemplateName)
+	Write-FixtureTemplate $silentTemplateRoot $silentTemplateName $silentTemplateName
+	Write-FixtureJson (Join-Path $silentTemplateRoot 'Config\TemplateDefs.ini') (@(
+		'[/Script/GameProjectGeneration.TemplateProjectDefs]',
+		'FilesToIgnore="Config/TemplateDefs.ini"',
+		'FolderRenames=(From="Source/%TEMPLATENAME%" To="Source/%PROJECTNAME%")'
+	) -join "`r`n")
+	Set-FixtureRecipeTemplate $formatRepoRoot 'third-person-game' $silentTemplateName
+	$silentProjectName = 'Drp' + $testId.Substring(0, 12)
+	$silentOutput = Join-Path (Join-Path $formatRepoRoot 'Production') "${silentProjectName}_b"
+	$silentWarnings = @()
+	$silentFailure = ''
+	try {
+		& $formatGenerator -Recipe 'third-person-game' -ProjectName $silentProjectName -RunId 'b' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -WarningVariable +silentWarnings -WarningAction Continue | Out-Null
+	} catch {
+		$silentFailure = $_.Exception.Message
+	}
+	$silentWarningText = @($silentWarnings) -join "`n"
+	Assert-True (-not $silentWarningText.Contains('FilesToIgnore')) 'a line that parses produces no warning'
+	Assert-True ($silentWarningText.Contains('FolderRenames=(From="Source/%TEMPLATENAME%" To=')) 'a FolderRenames line the reader cannot parse is reported'
+	Assert-True ($silentFailure.Contains('Project identity check stopped')) 'an unparsed module rename stops the run instead of reporting success'
+	Assert-True ($silentFailure.Contains('Source/TP_SilentRenames')) 'the stop names the source path that kept the template module name'
+	Write-Output 'PASS: a FolderRenames line the reader drops stops the run through the identity check'
+
 	# The generated project's own Config declares the map it opens. If that map is only available
 	# through a declared shared content pack, the pack copy has to happen before the check; if it is
 	# missing altogether the generator must stop instead of printing `Created ...` over a project
