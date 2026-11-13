@@ -8,6 +8,7 @@
 |---|---|---|
 | 映像（MP4） | `final/` | 生成物。雛形なし（検査は`docs/05-qa.md`） |
 | thumbnail | `final/` | 生成物。雛形なし |
+| ソースZIP | `final/` | 生成物。雛形なし（sourceは実行版ではない） |
 | 実行版ZIP | `final/` | 生成物。雛形なし（梱包は`docs/04-package.md`） |
 | README操作表 | `README.md` | `templates/README.md` |
 | CREDITS | `CREDITS.md` | `templates/CREDITS.md` |
@@ -83,3 +84,5 @@ pathに改行を含む追跡物は `git ls-files`（改行区切り）では分�
 3. 許可Windowsでdocs/01-startの小project smoke。可能なら同期Shipping/MP4まで。
 4. GitHub URLとvisibilityをreadback。作成済み/commit済み/push済み/起動確認済みを別々に記録。
 5. Issueをin_reviewへ。blockedや一部成果を完成/Doneにしない。
+
+source納品もREADME/CREDITS/QA/DELIVERY.json/SHA256SUMS.txtを同一版で揃え、source ZIPを加える（kind=`source_zip`）。push/public前はindex監査だけでなく `scripts/Test-UETemplatePublishSurface.ps1 -PushRevision HEAD` で配信する全履歴のpath形状も監査する。履歴にcredential等が残れば、indexから消しただけでは通過しない。

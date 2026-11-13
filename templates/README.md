@@ -12,7 +12,6 @@
 | 納品種別（映像 / 実行版 / ソースZIP） | |
 | 納品ファイル名 | |
 | 対象版のSHA-256（MP4またはShipping ZIP） | |
-| README自身のSHA-256（記入後に採る） | |
 | host / OS / UE / plugin版 | |
 | 制作日 / 記入者 | |
 
@@ -45,7 +44,7 @@ UE版 / plugin版 / 必要素材と権利範囲（`CREDITS.md`が正本）/ 必�
 
 ## 同一版であること
 
-- 対象版（MP4またはShipping ZIP）のSHA-256と、このREADMEのSHA-256を両方書く。
+- 対象版（MP4またはShipping ZIP）のSHA-256を書く。README自身のhashは本文に書かず、外部のDELIVERY.jsonとSHA256SUMS.txtにだけ保存する。
 - 同じ2つの値を`DELIVERY.json`の`artifacts[]`（`kind`は`artifact_kind_vocabulary`の語彙）と`readme_receipt`へ書く。
 - SHA-256を採った後にZIP/MP4/READMEを編集したら採り直す。README自身のhashは最後に採る。
 - 旧runのREADME・MP4・manifestの値を持ってこない。`Out/run_<runid>/`の同一版だけを指す。

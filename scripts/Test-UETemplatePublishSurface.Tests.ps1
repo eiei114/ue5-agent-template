@@ -263,6 +263,7 @@ try {
 		Add-FixtureIndexPath $caseSensitive $relative 'fixture'
 	}
 	Commit-FixtureIndex $caseSensitive 'upper-case generated directories'
+	& git -C $caseSensitive config core.ignorecase true
 	$foldedAudit = Invoke-Audit $caseSensitive
 	Assert-AuditFails $foldedAudit @(
 		'FAIL: generation-output: OUT/x.txt',

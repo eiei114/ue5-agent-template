@@ -56,10 +56,10 @@ $leaseRunId = "$testId-lease"
 $outRunId = "$testId-out"
 
 # The longest names the generator's ValidatePattern accepts (ProjectName 40, RunId 64).
-$maxName = 'P' + ('x' * 39)
-$maxRun = 'a' * 64
+$maxName = 'P' + $testId + ('x' * 7)
+$maxRun = $testId + ('a' * 32)
 $maxNameOutputPath = Join-Path $productionRoot ('{0}_{1}' -f $maxName, $maxRun)
-$pathBudgetMaterializedName = 'PthM_' + ('m' * 35)
+$pathBudgetMaterializedName = 'PthM_' + $testId + 'mmm'
 
 $midFailName = "Mid_$testId"
 $lateFailName = "Late_$testId"
@@ -81,12 +81,12 @@ $outputNames = @(
 	"${existingProjectName}_$leaseRunId",
 	"${existingProjectName}_$outRunId"
 
-	'PthB_ok1_budget',
-	'PthB_eq1_budget',
-	'PthB_no1_budget',
-	('{0}_budget' -f ('PthM_' + ('m' * 35))),
+	("PthB_ok1_$testId"),
+	("PthB_eq1_$testId"),
+	("PthB_no1_$testId"),
+	(('{0}_' + $testId) -f ('PthM_' + $testId + 'mmm')),
 	('{0}_{1}' -f $maxName, $maxRun),
-	('{0}_{1}' -f $maxName, ('b' * 64))
+	('{0}_{1}' -f $maxName, ($testId + ('b' * 32)))
 
 	"Sz_${testId}_$testId-a"
 
@@ -661,6 +661,7 @@ function Get-DeliveryContractProblems {
 	} else {
 		$deliveryData = $null
 		try { $deliveryData = [System.IO.File]::ReadAllText($deliveryTemplate) | ConvertFrom-Json } catch { $problems.Add('templates/DELIVERY.json: not valid JSON (' + $_.Exception.Message + ')') }
+		if ($null -eq $deliveryData) { $problems.Add('templates/DELIVERY.json: empty or null manifest') }
 		if ($null -ne $deliveryData) {
 			$requiredFields = @($deliveryData.artifact_required_fields)
 			if (-not ($requiredFields -contains 'kind')) { $problems.Add('templates/DELIVERY.json: artifact_required_fields does not require the kind field') }
@@ -671,6 +672,7 @@ function Get-DeliveryContractProblems {
 				$problems.Add('templates/DELIVERY.json: readme_receipt is missing')
 			} else {
 				$receiptFields = @($deliveryData.readme_receipt.PSObject.Properties.Name)
+				if ($deliveryData.readme_receipt.required -ne $true) { $problems.Add('templates/DELIVERY.json: readme_receipt must remain required') }
 				foreach ($receiptField in @('filename', 'sha256', 'version_sha256')) {
 					if (-not ($receiptFields -contains $receiptField)) { $problems.Add('templates/DELIVERY.json: readme_receipt does not carry ' + $receiptField) }
 				}
@@ -683,7 +685,7 @@ function Get-DeliveryContractProblems {
 		$readmeRow = $false
 		foreach ($line in [System.IO.File]::ReadAllLines($qaTemplate)) {
 			$trimmedLine = $line.Trim()
-			if ($trimmedLine.StartsWith('|') -and $trimmedLine.Contains('README')) { $readmeRow = $true; break }
+			if ($trimmedLine.StartsWith('|') -and $trimmedLine.Contains('README') -and $trimmedLine.Contains('readme_receipt') -and $trimmedLine.Contains('SHA')) { $readmeRow = $true; break }
 		}
 		if (-not $readmeRow) { $problems.Add('templates/QA.md: no row checks that the delivered README points at the same build') }
 	}
@@ -711,7 +713,8 @@ function Get-CppCodeOnly([string]$Text) {
 	# only the code. One pass with alternation keeps the remaining text in order.
 	# Limits (deliberate): `#if 0` regions and raw string literals are not parsed, so a module whose
 	# only entry point sits inside a disabled block is still accepted.
-	$pattern = '(?s)(?<block>/\*.*?\*/)|(?<line>//[^\r\n]*)|(?<string>"(?:\\.|[^"\\\r\n])*")|(?<char>''(?:\\.|[^''\\\r\n])*'')'
+	$pattern = '(?s)(?<raw>R"(?<delimiter>[^ ()\\	
+]{0,16})\([\s\S]*?\)\k<delimiter>")|(?<block>/\*.*?\*/)|(?<line>//[^\r\n]*)|(?<string>"(?:\\.|[^"\\\r\n])*")|(?<char>''(?:\\.|[^''\\\r\n])*'')'
 	return [regex]::Replace($Text, $pattern, '')
 }
 
@@ -1485,7 +1488,14 @@ try {
 	)
 	Assert-True ($fromCase.Report.Failure.Contains('Project identity check stopped')) 'a From that occurs nowhere does not rewrite the module name, so generation stops instead of publishing a mismatched tree'
 	Assert-True ($fromCase.Report.Failure.Contains("Source/$fromName/$fromName.Build.cs")) 'the stop names the unmatched module path'
-	Assert-True ([System.IO.File]::ReadAllText((Join-Path $fromCase.Output "Source\$fromName\Private\$fromName.cpp")) -ceq "// $fromTemplate module impl") 'a From that occurs nowhere replaces nothing in the file body'
+	# Atomic publication removes failed staging. Test the unchanged body through the very same
+	# shipped transformation function, and separately require absence of a partial public output.
+	$generatorAst = [System.Management.Automation.Language.Parser]::ParseFile($generator, [ref]$null, [ref]$null)
+	$ruleFunction = $generatorAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-TemplateRules' }, $true)
+	Invoke-Expression $ruleFunction.Extent.Text
+	$noMatchRule = [pscustomobject]@{ Extensions=@('cpp'); From='Zzz_NoSuchSymbol'; To=$fromName; CaseSensitive=$true }
+	Assert-True ((Invoke-TemplateRules -Text "// $fromTemplate module impl" -Rules @($noMatchRule) -Extension 'cpp') -ceq "// $fromTemplate module impl") 'a From that occurs nowhere replaces nothing in the file body'
+	Assert-True (-not (Test-Path -LiteralPath $fromCase.Output)) 'identity failure publishes no partial tree'
 	Write-Output 'PASS: a From that matches nothing replaces nothing and the identity mismatch stops the run'
 
 	# Keys this generator does not implement (wizard metadata) are reported instead of dropped. The chosen
@@ -1775,7 +1785,7 @@ try {
 	$installAEngine = Join-Path $fixtureRoot 'InstallAEngineRoot'
 	$installBEngine = Join-Path $fixtureRoot 'InstallBEngineRoot'
 	New-FixtureEngineRoot $installAEngine '{"MajorVersion":5,"MinorVersion":8,"PatchVersion":4,"Changelist":0,"CompatibleChangelist":58902052}'
-	New-FixtureEngineRoot $installBEngine '{"MajorVersion":5,"MinorVersion":8,"PatchVersion":4,"Changelist":0,"CompatibleChangelist":44201111,"IsLicenseeVersion":1}'
+	New-FixtureEngineRoot $installBEngine '{"MajorVersion":5,"MinorVersion":8,"PatchVersion":4,"Changelist":0,"CompatibleChangelist":44201111}'
 	Invoke-EngineGenerator 'vertical-loop' $installAProjectName "$testId-a" @() $installAEngine
 	Invoke-EngineGenerator 'vertical-loop' $installBProjectName "$testId-b" @() $installBEngine
 	$installAOutput = $outputPaths[8]
@@ -1805,6 +1815,7 @@ try {
 		New-FixtureEngineRoot $caseEngine $missingCase.Json
 		$caseProjectName = "Mf$($missingCase.Label)_$testId"
 		$caseOutput = Join-Path $productionRoot ("{0}_{1}-mf" -f $caseProjectName, $testId)
+        $outputPaths += $caseOutput
 		$caseFailure = ''
 		try {
 			Invoke-EngineGenerator 'vertical-loop' $caseProjectName "$testId-mf" @() $caseEngine
@@ -1844,33 +1855,33 @@ try {
 			Remove-Item -LiteralPath $budgetPath -Recurse -Force
 		}
 	}
-	$budgetProbeOutput = Invoke-GeneratorCaptured 'spectator-explore' 'PthB_ok1' 'budget' @() $unboundedPathBudget
+	$budgetProbeOutput = Invoke-GeneratorCaptured 'spectator-explore' 'PthB_ok1' $testId @() $unboundedPathBudget
 	$measuredMatch = [regex]::Match($budgetProbeOutput, 'longest planned path (\d+) characters, (\d+) characters of headroom')
 	Assert-True ($measuredMatch.Success) 'the generator reports the longest planned path and its headroom on success'
 	$measuredLongest = [int]$measuredMatch.Groups[1].Value
 	$measuredHeadroom = [int]$measuredMatch.Groups[2].Value
 	Assert-True ($measuredHeadroom -eq ($unboundedPathBudget - $measuredLongest)) 'the reported headroom is the declared budget minus the measured longest path'
-	Assert-True (Test-Path -LiteralPath (Join-Path (Join-Path $productionRoot 'PthB_ok1_budget') 'template-lock.json')) 'an unbounded budget still generates the project'
+	Assert-True (Test-Path -LiteralPath (Join-Path (Join-Path $productionRoot ("PthB_ok1_$testId")) 'template-lock.json')) 'an unbounded budget still generates the project'
 
-	Invoke-Generator 'spectator-explore' 'PthB_eq1' 'budget' @() $measuredLongest
-	$equalBudgetOutput = Join-Path $productionRoot 'PthB_eq1_budget'
+	Invoke-Generator 'spectator-explore' 'PthB_eq1' $testId @() $measuredLongest
+	$equalBudgetOutput = Join-Path $productionRoot ("PthB_eq1_$testId")
 	Assert-True (Test-Path -LiteralPath (Join-Path $equalBudgetOutput 'template-lock.json')) 'a budget exactly equal to the longest planned path still generates the project'
 	Assert-True (Test-Path -LiteralPath (Join-Path $equalBudgetOutput 'Plugins\MulticaOnlineStarter\MulticaOnlineStarter.uplugin')) 'the budget check does not drop the online plugin payload'
 
 	$tightBudget = $measuredLongest - 1
 	$budgetFailure = ''
-	try { Invoke-Generator 'spectator-explore' 'PthB_no1' 'budget' @() $tightBudget } catch { $budgetFailure = $_.Exception.Message }
+	try { Invoke-Generator 'spectator-explore' 'PthB_no1' $testId @() $tightBudget } catch { $budgetFailure = $_.Exception.Message }
 	Assert-True ($budgetFailure.Contains([string]$measuredLongest)) 'the budget stop names the measured longest path length'
 	Assert-True ($budgetFailure.Contains("{0}-character budget" -f $tightBudget)) 'the budget stop names the budget it compared against'
 	Assert-True ($budgetFailure.Contains('over the')) 'the budget stop states how far the tree exceeds the budget'
 	Assert-True ($budgetFailure.Contains('shallower directory')) 'the budget stop suggests a concrete way to shorten the path'
-	Assert-True (-not (Test-Path -LiteralPath (Join-Path $productionRoot 'PthB_no1_budget'))) 'a budget stop happens before the exclusive mkdir, so no output directory exists'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $productionRoot ("PthB_no1_$testId")))) 'a budget stop happens before the exclusive mkdir, so no output directory exists'
 
 	# Default budget (no -MaxPathLength), driven by the longest names the generator accepts. This is
 	# the case an agent hits by following the documented example with a full GUID run ID. Whether it
 	# stops depends on how deep this checkout is, so the expectation is derived from the measured
 	# length instead of assuming the developer's path.
-	$maxNameProbeRun = ('b' * 64)
+	$maxNameProbeRun = ($testId + ('b' * 32))
 	$maxNameProbe = (& $generator -Recipe 'spectator-explore' -ProjectName $maxName -RunId $maxNameProbeRun -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -SkipTemplatePublishCheck -MaxPathLength $unboundedPathBudget) -join "`n"
 	$maxNameProbePath = Join-Path $productionRoot ('{0}_{1}' -f $maxName, $maxNameProbeRun)
 	if (Test-Path -LiteralPath $maxNameProbePath -PathType Container) { Remove-Item -LiteralPath $maxNameProbePath -Recurse -Force }
@@ -1895,14 +1906,15 @@ try {
 	# depth is computed from the length the success case reported, so this fixture keeps working when
 	# the tree or the developer's checkout path changes. Only the directory depth differs between the
 	# stop below and the success right after it.
-	$relativeLongest = $measuredLongest - ((Join-Path $productionRoot 'PthB_ok1_budget').Length + 1)
+	$relativeLongest = $measuredLongest - ((Join-Path $productionRoot ("PthB_ok1_$testId")).Length + 1)
 	$deepOutputName = 'PthB_dk1_dk'
 	$deepRootLengthNeeded = 259 - $relativeLongest - ($deepOutputName.Length + '\Production'.Length) + 1
 	$deepRootLengthNeeded = [Math]::Max($deepRootLengthNeeded, $fixtureRoot.Length + 120)
 	$deepSegment = 'd' * ($deepRootLengthNeeded - $fixtureRoot.Length - 1)
 	$deepParent = Join-Path $fixtureRoot $deepSegment
 	[System.IO.Directory]::CreateDirectory($deepParent) | Out-Null
-	& git -C $repoRoot clone --quiet --local --no-hardlinks --no-tags --no-checkout $repoRoot $deepRepoRoot
+	$deepRepoRoot = Join-Path $deepParent 'repo'
+	& git -c core.longpaths=true -C $repoRoot clone --quiet --local --no-hardlinks --no-tags --no-checkout $repoRoot $deepRepoRoot
 	if ($LASTEXITCODE -ne 0) { throw 'Could not create the isolated deep-path repository fixture.' }
 	& git -C $deepRepoRoot checkout --quiet --detach $templateRevision
 	if ($LASTEXITCODE -ne 0) { throw "Could not check out revision $templateRevision in the isolated deep-path repository fixture." }
@@ -1927,7 +1939,7 @@ try {
 	$materializedOutput = (& $generator -Recipe 'third-person-game' -ProjectName $pathBudgetMaterializedName -RunId 'budget' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -SkipTemplatePublishCheck -MaxPathLength $unboundedPathBudget) -join "`n"
 	$materializedMatch = [regex]::Match($materializedOutput, 'longest planned path (\d+) characters')
 	Assert-True ($materializedMatch.Success) 'the materializing recipe reports its measured longest path too'
-	$materializedDir = Join-Path $productionRoot ('{0}_budget' -f $pathBudgetMaterializedName)
+	$materializedDir = Join-Path $productionRoot (('{0}_' + $testId) -f $pathBudgetMaterializedName)
 	$actualLongest = (Get-ChildItem -LiteralPath $materializedDir -Recurse -File -Force | ForEach-Object { $_.FullName.Length } | Measure-Object -Maximum).Maximum
 	Assert-True ([int]$materializedMatch.Groups[1].Value -eq $actualLongest) 'the measured longest path equals the longest file actually written for a materializing recipe'
 	Write-Output 'PASS: path-length budget stops before output creation and reports the measured longest path'

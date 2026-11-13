@@ -1148,7 +1148,6 @@ if ($null -ne $engineIsPromotedBuild) {
 $engineBranchName = Get-BuildVersionField $buildData 'BranchName'
 if ($null -ne $engineBranchName) {
 	$engineBranchName = [string]$engineBranchName
-	if ([string]::IsNullOrWhiteSpace($engineBranchName)) { $engineBranchName = $null }
 }
 # UE itself does not use the raw Changelist as the build identity, and it does not simply prefer the
 # larger number either. Epic's Engine/Source/Runtime/Core/Private/Modules/BuildVersion.cpp:21-24
@@ -1300,7 +1299,7 @@ if (@($recipeData.RequiredPlugins) -contains 'MulticaOnlineStarter') {
 	# The online payload is copied from this repository, not from the engine template, so it is
 	# measured separately instead of being folded into the template walk above.
 	$pluginSourceRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot 'templates\online\MulticaOnlineStarter')).TrimEnd('\', '/')
-	foreach ($pluginFile in Get-ChildItem -LiteralPath $pluginSourceRoot -Recurse -File -Force) {
+	foreach ($pluginFile in Get-ChildItem -LiteralPath $pluginSourceRoot -Recurse -Force) {
 		$plannedPaths.Add('Plugins\MulticaOnlineStarter\' + $pluginFile.FullName.Substring($pluginSourceRoot.Length + 1).Replace('\', '/'))
 	}
 }
@@ -1343,7 +1342,7 @@ public static class MulticaTemplateDirectory {
 }
 
 
-if (-not [MulticaTemplateDirectory]::CreateDirectory($stagingPath, [IntPtr]::Zero)) {
+if (-not [MulticaTemplateDirectory]::CreateDirectory(("\\?\" + $stagingPath), [IntPtr]::Zero)) {
 	$win32Error = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
 	throw "Could not exclusively create the staging directory (Win32 $win32Error): $stagingPath"
 }

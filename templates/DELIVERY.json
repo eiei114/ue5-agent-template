@@ -9,8 +9,26 @@
   "effective_model_effort": null,
   "lease_released_receipt": null,
   "artifacts": [],
-  "artifact_required_fields": ["filename", "bytes", "sha256", "kind", "version", "test_receipt", "delivery_receipt"],
-  "artifact_kind_vocabulary": ["video_mp4", "thumbnail", "shipping_zip", "readme", "credits", "qa", "delivery_manifest", "sha256sums"],
+  "artifact_required_fields": [
+    "filename",
+    "bytes",
+    "sha256",
+    "kind",
+    "version",
+    "test_receipt",
+    "delivery_receipt"
+  ],
+  "artifact_kind_vocabulary": [
+    "video_mp4",
+    "thumbnail",
+    "shipping_zip",
+    "readme",
+    "credits",
+    "qa",
+    "delivery_manifest",
+    "sha256sums",
+    "source_zip"
+  ],
   "readme_receipt": {
     "required": true,
     "filename": null,
@@ -21,7 +39,9 @@
   },
   "rights_receipt": null,
   "qa_receipt": null,
-  "unverified_scope": ["populate before delivery"],
+  "unverified_scope": [
+    "populate before delivery"
+  ],
   "github_url": null,
   "github_visibility": null,
   "publication_authorized": false,

@@ -162,8 +162,8 @@ function Get-AppleMacOsFloor {
 	param($XcodeLowerBound)
 
 	if ($null -eq $XcodeLowerBound) { return $null }
-	if ($XcodeLowerBound -ge [version]'26.0' -and $XcodeLowerBound -lt [version]'26.4') { return [version]'15.6' }
-	if ($XcodeLowerBound -ge [version]'26.4.1' -and $XcodeLowerBound -lt [version]'26.5') { return [version]'26.2' }
+	if ($XcodeLowerBound.ToString() -match '^26\.(0(\.1)?|1(\.1)?|2|3)$') { return [version]'15.6' }
+	if ($XcodeLowerBound -eq [version]'26.4.1') { return [version]'26.2' }
 	return $null
 }
 
@@ -245,6 +245,10 @@ function Get-MacHostVerdict {
 			$cross = Test-MinimumVersion -Observed $macOs -Threshold $appleFloor -Label "Epic/Apple cross-check (Apple requires macOS $appleFloor for Xcode $($xcode.value))"
 			$crossState = $cross.state
 			$crossDetail = $cross.detail
+			if ($null -ne $macOs.value -and $macOs.value -ge [version]'27.0') {
+				$crossState = 'unverified'
+				$crossDetail = 'Apple table records macOS only through 26.x; this observation is outside the recorded range'
+			}
 		}
 	}
 	$checks.Add([ordered]@{
@@ -670,20 +674,15 @@ $inputSet = [ordered]@{
 	RunId = $RunId
 }
 
-if ([string]::IsNullOrWhiteSpace($MacOSVersion) -and [string]::IsNullOrWhiteSpace($XcodeVersion) -and
-	[string]::IsNullOrWhiteSpace($ProcessorFamily) -and $null -eq $MemoryGB -and [string]::IsNullOrWhiteSpace($MetalSupported)) {
-	throw 'Invalid input: no host observation was supplied. Pass at least one of -MacOSVersion, -XcodeVersion, -ProcessorFamily, -MemoryGB, -MetalSupported (observed values only; the tool does not read the host itself).'
-}
-
 $result = Get-MacHostVerdict -Inputs $inputSet
+if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
+	try { $written = Write-VerdictReport -Path $ReportPath -Report $result.report }
+	catch { Write-Output "REPORT ERROR: $($_.Exception.Message)"; exit 3 }
+	Write-Output "REPORT: $written"
+}
 Write-Output "VERDICT: $($result.verdict)"
 foreach ($check in $result.checks) {
 	Write-Output ("CHECK: {0} = {1} - {2}" -f $check.check, $check.state, $check.detail)
-}
-
-if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
-	$written = Write-VerdictReport -Path $ReportPath -Report $result.report
-	Write-Output "REPORT: $written"
 }
 
 exit (Exit-CodeForVerdict $result.verdict)

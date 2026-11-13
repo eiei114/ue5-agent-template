@@ -2,7 +2,9 @@
 param(
 	# Worktree to audit. Defaults to the repository that contains this script.
 	[Parameter(Position = 0)]
-	[string]$RepoRoot
+	[string]$RepoRoot,
+	# For push/public checks include all history reachable from this revision (normally HEAD).
+	[string]$PushRevision = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -105,9 +107,8 @@ function Invoke-GitNul([string[]]$GitArguments) {
 }
 
 function Invoke-GitText([string[]]$GitArguments) {
-	$arguments = @('-C', $RepoRoot) + $GitArguments
-	$output = @(& git @arguments 2>&1)
-	return @{ ExitCode = $LASTEXITCODE; Lines = @($output | ForEach-Object { [string]$_ }) }
+	$result = Invoke-GitNul $GitArguments
+	return @{ ExitCode = $result.ExitCode; Lines = @(($result.Records -join "`0") -split "`r?`n"); StdErr = $result.StdErr }
 }
 
 # ------------------------------------------------------------- path-shape rules
@@ -122,7 +123,7 @@ $script:ShapeRules = @(
 	},
 	@{
 		Category = 'distribution-binary'
-		Pattern = '(?:\.(?:bundle|7z|rar|tar|gz|tgz|bz2|xz|exe|dll|pdb|lib|so|dylib|uasset|umap|pak|utoc|ucas|mp4|mov|wav|mp3|fbx|psd))$'
+		Pattern = '(?:\.(?:zip|bundle|7z|rar|tar|gz|tgz|bz2|xz|exe|dll|pdb|lib|so|dylib|uasset|umap|pak|utoc|ucas|mp4|mov|wav|mp3|fbx|psd))$'
 	},
 	@{
 		Category = 'credential'
@@ -134,7 +135,7 @@ $script:ShapeRules = @(
 	},
 	@{
 		Category = 'credential'
-		Pattern = '(?:^|/)[^/]*credentials[^/]*$'
+		Pattern = '(?:^|/)(?:[^/]*credentials[^/]*|client_secret[^/]*)$'
 	}
 )
 
@@ -146,7 +147,7 @@ $script:ProductionAllowList = @('Production/PLACEHOLDER.md')
 function Get-ShapeCategories([string]$Path) {
 	$matched = New-Object System.Collections.Generic.List[string]
 	foreach ($rule in $script:ShapeRules) {
-		if ([regex]::IsMatch($Path, $rule.Pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+		if ([regex]::IsMatch($Path, $rule.Pattern, ([System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [System.Text.RegularExpressions.RegexOptions]::CultureInvariant))) {
 			$matched.Add($rule.Category)
 		}
 	}
@@ -190,16 +191,16 @@ function Test-MarkdownLinks([string[]]$TrackedPaths) {
 		$exact.Add($tracked) | Out-Null
 		$folded.Add($tracked.ToLowerInvariant()) | Out-Null
 	}
-	$linkPattern = '\[[^\]]*\]\(([^)\s]+)\)'
+	$linkPattern = '\[[^\]]*\]\(<?([^>\s)]+)>?(?:\s+"[^"]*")?\)|^\s*\[[^\]]+\]:\s*<?([^>\s]+)>?'
 	foreach ($path in $TrackedPaths) {
 		if (-not $path.ToLowerInvariant().EndsWith('.md')) { continue }
-		$full = Join-Path $RepoRoot ($path -replace '/', '\')
-		if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { continue }
+		$blob = Invoke-GitNul @('show', ('":' + $path.Replace('"', '\"') + '"'))
+		if ($blob.ExitCode -ne 0) { Add-Finding 'environment' "cannot read indexed Markdown: $path"; continue }
 		$lineNumber = 0
-		foreach ($line in ([System.IO.File]::ReadAllText($full) -split "`r?`n")) {
+		foreach ($line in (($blob.Records -join "`0") -split "`r?`n")) {
 			$lineNumber++
 			foreach ($match in [regex]::Matches($line, $linkPattern)) {
-				$target = $match.Groups[1].Value
+				$target = if ($match.Groups[1].Success) { $match.Groups[1].Value } else { $match.Groups[2].Value }
 				if ($target -match '^[a-zA-Z][a-zA-Z0-9+.-]*:') { continue }
 				if ($target.StartsWith('#')) { continue }
 				$target = ($target -split '#')[0]
@@ -256,6 +257,17 @@ if ($tracked.Records.Count -eq 0) {
 
 $trackedPaths = @($tracked.Records)
 $script:TrackedCount = $trackedPaths.Count
+
+if (-not [string]::IsNullOrWhiteSpace($PushRevision)) {
+	if ($PushRevision -notmatch '^[A-Za-z0-9_./-]+$' -or $PushRevision.StartsWith('-')) {
+		Add-Finding 'environment' 'invalid push revision'; Complete-Audit 2
+	}
+	$history = Invoke-GitNul @('log', '--format=', '--name-only', '-z', $PushRevision, '--')
+	if ($history.ExitCode -ne 0) { Add-Finding 'environment' 'cannot inspect proposed push history'; Complete-Audit 2 }
+	foreach ($historicPath in @($history.Records | ForEach-Object { $_.TrimStart("`r", "`n") } | Sort-Object -Unique)) {
+		foreach ($category in (Get-ShapeCategories $historicPath)) { Add-Finding $category ("history: " + $historicPath) }
+	}
+}
 
 # The verdict comes from these rules only; `.gitignore` is not consulted.
 foreach ($path in $trackedPaths) {

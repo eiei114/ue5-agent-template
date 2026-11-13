@@ -64,7 +64,7 @@ Production/<Name>_<runid>/
 
 preflightとleaseの記録先は`Production/.runs/run_<runid>/`のみ。生成先`Production/<Name>_<runid>/`の内側（`Out/`・`LEASE.json`）に先行して書くと、generatorの排他的mkdirが既存扱いで停止する。生成後にpreflightの内容は`Out/run_<runid>/QA.md`へ移し、leaseの解放記録も台帳dirに残す。
 
-`Out/run_<runid>/CREDITS.md`は1階層上の`Content/`（作品のasset本体）の出所を説明する。監査は`scripts/Measure-UECreditsInventory.ps1`に**納品dirとproject rootのどちらを渡しても同じ結論**になること（片方だけの実行は証拠にならない）。engine同梱contentは`Content/`の先頭ディレクトリ単位で`出所区分 (origin)`と`同梱形態 (bundle)`を別行に書く（契約は`templates/CREDITS.md`、記入の正本は`template-lock.json`の`shared_content_packs`）。
+`Out/run_<runid>/CREDITS.md`は2階層上の`Content/`（作品のasset本体）の出所を説明する。監査は`scripts/Measure-UECreditsInventory.ps1`に**納品dirとproject rootのどちらを渡しても同じ結論**になること（片方だけの実行は証拠にならない）。engine同梱contentは`Content/`の先頭ディレクトリ単位で`出所区分 (origin)`と`同梱形態 (bundle)`を別行に書く（契約は`templates/CREDITS.md`、記入の正本は`template-lock.json`の`shared_content_packs`）。
 
 project identityの契約は1つだけ。`scripts/New-UETemplateScaffold.ps1`はインストール済みUE公式templateから生成し、**projectファイル名・`Modules[].Name`・`Source/<Module>`は常に互いに一致**していなければならない。`EngineAssociation`は`Engine/Build/Build.version`から導いた値（例`5.8`）を必ず書き込む。
 

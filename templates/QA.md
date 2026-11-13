@@ -70,7 +70,7 @@ writer/lease nonce・取得/解放receipt（`scripts/Lease-UETemplateProject.ps1
 
 
 
-| [QA-MAC-02] Mac host適格（UE5.8両表の交差） | unverified | macOS/Xcode/CPU/Memory/Metal、出典参照日、`evidence/mac-host.json`（`Test-UEMacHostRequirements.ps1`） |
+| [QA-MAC-02] Mac host適格（UE5.8両表の交差） | unverified | macOS版/Xcode版/プロセッサ/Memory/Metal/判定/出典参照日。`scripts/Test-UEMacHostRequirements.ps1`のreport（`evidence/mac-host.json`） |
 | [QA-ENC-04] MP4尺のpreset照合（`Measure-UECaptureEncode.ps1`） | unverified | `evidence/encode-check.json`。期待値はpreset定義から、観測frame数/秒数/解像度/fpsと失敗categoryを記録 |
 | [QA-RIGHTS-02] CREDITS の出所監査 | unverified | `Measure-UECreditsInventory.ps1`を納品dirとproject root双方で実行、Content groupごとの出所を照合 |
 | [QA-DELIVERY-01] 納品READMEの操作表・起動方法・対象版SHA | unverified | `Out/run_<runid>/README.md`、`DELIVERY.json.readme_receipt`、実機で未確認の操作はunverified |

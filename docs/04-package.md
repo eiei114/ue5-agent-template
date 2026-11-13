@@ -86,3 +86,7 @@ Appleの[Xcode 対応表](https://developer.apple.com/support/xcode/)（SDK and 
 - https://dev.epicgames.com/documentation/en-us/unreal-engine/macos-development-requirements-for-unreal-engine
 
 仕様根拠と当該hostの成功証拠は別物。本テンプレートのUAT/Mac実行は未検証。
+
+ZIP内のREADMEは操作方法のみのbundled版とし、包んでいるZIPの最終hashを含めない。最終ZIP hashとREADME receiptはZIP外の納品セットへ保存する。`Out/run_<runid>/README.md`は外部receipt用であり、最終ZIP hashを書いた版をZIPへ戻さない。
+
+Mac host checkerの終了codeはpass=0/fail=1/unverified=2、report保存失敗は3（host判定ではない）。

@@ -53,14 +53,18 @@ function Read-CreditsRows([string]$Path) {
 	$originIndex = -1
 	$bundleIndex = -1
 	$hasHeader = $false
-	$inFence = $false
+	$fenceCharacter = ''
+	$fenceLength = 0
 	$rows = @()
 	foreach ($line in $lines) {
 		$trimmed = $line.Trim()
 		# A fenced block is documentation, not a record: CREDITS.md shows an example table inside
 		# one, and that example must not be read as the work's own credits.
-		if ($trimmed.StartsWith('```')) { $inFence = -not $inFence; continue }
-		if ($inFence) { continue }
+		if ($fenceLength -gt 0) {
+			if ($trimmed -match ('^' + [regex]::Escape($fenceCharacter) + '{' + $fenceLength + ',}\s*$')) { $fenceLength = 0 }
+			continue
+		}
+		if ($trimmed -match '^(`{3,}|~{3,})') { $fenceCharacter = $Matches[1].Substring(0,1); $fenceLength = $Matches[1].Length; continue }
 		if (-not $trimmed.StartsWith('|')) { continue }
 		if ($trimmed -match '^\|[\s|:-]*-[\s|:-]*\|?$') { continue }
 		$cells = @($trimmed.Trim('|').Split('|') | ForEach-Object { $_.Trim() })
@@ -76,6 +80,8 @@ function Read-CreditsRows([string]$Path) {
 		$bundle = if ($bundleIndex -ge 0 -and $bundleIndex -lt $cells.Count) { $cells[$bundleIndex] } else { '' }
 		$rows += [pscustomobject]@{
 			Text = ($cells -join ' | ')
+			AssetName = $cells[0]
+			ProjectPath = $cells[$cells.Count - 1]
 			Origin = $origin
 			Bundle = $bundle
 			DeclaresOrigin = $origin -in @('engine-template', 'shared-content-pack', 'third-party', 'original')
@@ -174,7 +180,8 @@ if ($assetReport.Total -gt 0 -and @($credits.Rows | Where-Object { $_.DeclaresOr
 	Write-Output ("FAIL: {0}" -f $failures[$failures.Count - 1])
 }
 foreach ($group in $assetReport.Groups) {
-	$matched = @($credits.Rows | Where-Object { $_.DeclaresOrigin -and $_.Text.Contains($group.Name) })
+	$groupPattern = '(?<![A-Za-z0-9_])' + [regex]::Escape($group.Name) + '(?![A-Za-z0-9_])'
+	$matched = @($credits.Rows | Where-Object { $_.DeclaresOrigin -and (($_.AssetName -cmatch $groupPattern) -or ($_.ProjectPath -cmatch $groupPattern)) })
 	if ($matched.Count -eq 0) {
 		$failures += ('Content group "{0}" ({1} asset(s)) is not named by any CREDITS.md row that states its origin' -f $group.Name, $group.Assets)
 		Write-Output ("FAIL: {0}" -f $failures[$failures.Count - 1])
