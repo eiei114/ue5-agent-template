@@ -1399,6 +1399,13 @@ try {
 	if ($copiedIdentity.Problems.Count -gt 0) {
 		throw ('Project identity check stopped: the copied project/module identity does not match the copied Source/ tree, so the project descriptor was not rewritten. Unmatched paths: ' + ($copiedIdentity.Problems -join '; '))
 	}
+	if ($materialize) {
+		foreach ($module in @($copiedIdentity.Modules)) {
+			if ($module -cne $ProjectName) {
+				throw "Project identity check stopped: $projectFileName requires module $ProjectName, but the declared rules left Source/$module/$module.Build.cs unchanged. No partial project was published."
+			}
+		}
+	}
 	[string[]]$moduleNames = @($copiedIdentity.Modules)
 	if ($null -eq $projectDescriptor.PSObject.Properties['EngineAssociation']) {
 		$projectDescriptor | Add-Member -MemberType NoteProperty -Name EngineAssociation -Value $engineAssociationValue

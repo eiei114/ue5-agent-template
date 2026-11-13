@@ -59,6 +59,32 @@ try {
     }
     Write-Output 'PASS: complete credits groups, tilde fences, symmetric Content ambiguity'
 
+    $contract = Join-Path $scratch 'Contract'
+    foreach ($relative in @('AGENTS.md','docs/06-delivery.md','templates/README.md','templates/QA.md','templates/CREDITS.md','templates/DELIVERY.json')) {
+        $target = Join-Path $contract $relative
+        [IO.Directory]::CreateDirectory((Split-Path -Parent $target)) | Out-Null
+        Copy-Item -LiteralPath (Join-Path $repoRoot $relative) -Destination $target
+    }
+    $suite = Join-Path $PSScriptRoot 'Test-UETemplateScaffold.ps1'
+    Invoke-Expression (Import-TestFunction $suite 'Add-SetDifference')
+    Invoke-Expression (Import-TestFunction $suite 'Get-DeliveryContractProblems')
+    Assert-Review (@(Get-DeliveryContractProblems $contract).Count -eq 0) 'original delivery contract passes'
+    $manifestPath = Join-Path $contract 'templates/DELIVERY.json'
+    $manifest = [IO.File]::ReadAllText($manifestPath)
+    [IO.File]::WriteAllText($manifestPath, '')
+    Assert-Review ((@(Get-DeliveryContractProblems $contract) -join '; ').Contains('empty or null')) 'empty manifest cannot bypass field checks'
+    $optional = $manifest | ConvertFrom-Json
+    $optional.readme_receipt.required = $false
+    [IO.File]::WriteAllText($manifestPath, ($optional | ConvertTo-Json -Depth 20))
+    Assert-Review ((@(Get-DeliveryContractProblems $contract) -join '; ').Contains('must remain required')) 'README receipt cannot become optional'
+    [IO.File]::WriteAllText($manifestPath, $manifest)
+    $deliveryDoc = Join-Path $contract 'docs/06-delivery.md'
+    $text = [IO.File]::ReadAllText($deliveryDoc)
+    $swapped = $text.Replace('templates/README.md','templates/swap.md').Replace('templates/QA.md','templates/README.md').Replace('templates/swap.md','templates/QA.md')
+    [IO.File]::WriteAllText($deliveryDoc, $swapped)
+    Assert-Review ((@(Get-DeliveryContractProblems $contract) -join '; ').Contains('does not place')) 'swapping template cells cannot preserve the delivery contract'
+    Write-Output 'PASS: empty manifest, optional receipt and swapped delivery templates are rejected'
+
     $fixture = Join-Path $scratch 'Publish'
     [IO.Directory]::CreateDirectory((Join-Path $fixture 'Production')) | Out-Null
     & git init --quiet $fixture
