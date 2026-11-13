@@ -24,7 +24,8 @@ $script:repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $script:ownershipScript = Join-Path $PSScriptRoot 'UETemplateProcessOwnership.ps1'
 $script:startScript = Join-Path $PSScriptRoot 'Start-UETemplateRunProcessSnapshot.ps1'
 $script:stopScript = Join-Path $PSScriptRoot 'Stop-UETemplateRunProcesses.ps1'
-$script:leaseScript = Join-Path $PSScriptRoot 'Test-UETemplateLease.ps1'
+$script:leaseScript = Join-Path $PSScriptRoot 'Get-UETemplateLeaseVerdict.ps1'
+$script:leaseProtocolScript = Join-Path $PSScriptRoot 'Lease-UETemplateProject.ps1'
 . $script:ownershipScript
 
 $testId = [Guid]::NewGuid().ToString('N')
@@ -126,15 +127,17 @@ function Invoke-ProcessScript([string]$ScriptPath, [string[]]$Arguments) {
 }
 
 function New-LeaseFile([string]$RunId, [int]$WriterPid, [string]$SnapshotPath) {
+	# The shape docs/01-start.md defines: exactly the 8 lease fields of
+	# scripts/Lease-UETemplateProject.ps1, plus the optional process_snapshot reference.
 	$lease = [pscustomobject]@{
 		run_id           = $RunId
 		issue_id         = 'DOT-3225'
 		host             = [System.Net.Dns]::GetHostName()
 		project_realpath = (Join-Path $fixtureRoot ('Project_' + $RunId))
-		acquired_at_utc  = [datetime]::UtcNow.ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
+		acquired_utc     = [datetime]::UtcNow.ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
 		nonce            = $testId
 		writer_phase     = 'active'
-		writer_pid       = $WriterPid
+		pid              = $WriterPid
 	}
 	if (-not [string]::IsNullOrWhiteSpace($SnapshotPath)) {
 		$lease | Add-Member -NotePropertyName 'process_snapshot' -NotePropertyValue ([pscustomobject]@{
@@ -170,7 +173,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Could not record the checkout status before te
 try {
 	[System.IO.Directory]::CreateDirectory($fixtureRoot) | Out-Null
 
-	# --- group 1: snapshot capture keeps writer_pid and adds the attribution evidence -------------
+	# --- group 1: snapshot capture keeps pid and adds the attribution evidence ------------------
 	$chain = Start-ChainFixture
 	$writerId = [int]$chain.Id
 	$tree = Wait-ChainLeaf -WriterId $writerId
@@ -209,14 +212,51 @@ try {
 	)
 	Assert-True ($captureWithLease.exit_code -eq 0) ("lease-attached capture exits 0, got {0}: {1}" -f $captureWithLease.exit_code, $captureWithLease.stderr)
 	$leaseAfter = Read-UETemplateJsonFile -Path $leasePath -Description 'lease'
-	Assert-True ($null -ne $leaseAfter.writer_pid -and [int]$leaseAfter.writer_pid -eq $writerId) 'the lease keeps writer_pid'
-	foreach ($field in @('run_id', 'issue_id', 'host', 'project_realpath', 'acquired_at_utc', 'nonce', 'writer_phase')) {
+	Assert-True ($null -ne $leaseAfter.pid -and [int]$leaseAfter.pid -eq $writerId) 'the lease keeps the documented pid field'
+	foreach ($field in @('run_id', 'issue_id', 'host', 'project_realpath', 'acquired_utc', 'nonce', 'writer_phase')) {
 		Assert-True ((ConvertTo-Json -InputObject @{ v = $leaseBefore.$field } -Depth 6 -Compress) -ceq (ConvertTo-Json -InputObject @{ v = $leaseAfter.$field } -Depth 6 -Compress)) ("recording the snapshot leaves lease field {0} unchanged" -f $field)
 	}
 	Assert-True ($null -ne $leaseAfter.process_snapshot) 'the lease gains a process_snapshot reference'
 	Assert-True ([string]$leaseAfter.process_snapshot.path -eq (Join-Path $fixtureRoot 'snapshot-lease.json')) 'the snapshot reference points at the captured snapshot'
 	Assert-True (([string]$leaseAfter.process_snapshot.sha256) -match '^[0-9A-Fa-f]{32,64}$') 'the snapshot reference carries its hash'
-	Write-Output 'PASS: snapshot records writer/boundary/table; the lease keeps writer_pid and gains only a process_snapshot reference'
+	Write-Output 'PASS: snapshot records writer/boundary/table; the lease keeps pid and gains only a process_snapshot reference'
+
+	# --- group 1b: the shipped lease protocol accepts the attribution reference --------------------
+	# The lease is written by scripts/Lease-UETemplateProject.ps1 (DOT-3042), which rejects fields that
+	# docs/01-start.md does not define. process_snapshot is the one optional field this change adds, so it
+	# must be readable by the same script while every undefined field is still refused.
+	$fixtureHost = [System.Net.Dns]::GetHostName()
+	$protocolDirectory = Join-Path $fixtureRoot 'protocol-lease'
+	[System.IO.Directory]::CreateDirectory($protocolDirectory) | Out-Null
+	$acquire = Invoke-ProcessScript $script:leaseProtocolScript @(
+		'-Action', 'Acquire', '-ProjectDirectory', $protocolDirectory, '-RunId', 'runProto',
+		'-IssueId', 'DOT-3225', '-WriterPhase', 'edit', '-ProductionRoot', $fixtureRoot, '-HostName', $fixtureHost,
+		'-WriterProcessId', ([string]$writerId)
+	)
+	Assert-True ($acquire.exit_code -eq 0) ("the lease protocol acquires a lease, got {0}: {1}" -f $acquire.exit_code, ($acquire.stderr + $acquire.stdout))
+	$protocolLeasePath = Join-Path $protocolDirectory 'LEASE.json'
+	$protocolCapture = Invoke-ProcessScript $script:startScript @(
+		'-RunId', 'runProto', '-WriterProcessId', ([string]$writerId),
+		'-SnapshotPath', (Join-Path $protocolDirectory 'process-snapshot.json'), '-LeasePath', $protocolLeasePath
+	)
+	Assert-True ($protocolCapture.exit_code -eq 0) ("the run records its snapshot on the acquired lease, got {0}: {1}" -f $protocolCapture.exit_code, $protocolCapture.stderr)
+	$protocolTest = Invoke-ProcessScript $script:leaseProtocolScript @(
+		'-Action', 'Test', '-ProjectDirectory', $protocolDirectory, '-RunId', 'runProto', '-ProductionRoot', $fixtureRoot, '-HostName', $fixtureHost
+	)
+	Assert-True ($protocolTest.exit_code -eq 0) ("the lease protocol still reads a lease that carries process_snapshot, got {0}: {1}" -f $protocolTest.exit_code, ($protocolTest.stderr + $protocolTest.stdout))
+	Assert-True ($protocolTest.stdout.Contains('LEASE STATE: active')) 'the lease with a recorded snapshot is reported active'
+	Assert-True ($protocolTest.stdout.Contains('owns=true')) 'the owning run is recognised'
+	$undefinedFieldLease = Read-UETemplateJsonFile -Path $protocolLeasePath -Description 'protocol lease'
+	$undefinedFieldLease | Add-Member -NotePropertyName 'not_in_the_doc' -NotePropertyValue 'x'
+	$undefinedFieldPath = Join-Path $protocolDirectory 'LEASE.json' # overwritten in place for the negative case only
+	Write-UETemplateJsonFile -Path $undefinedFieldPath -Value $undefinedFieldLease
+	$undefinedFieldTest = Invoke-ProcessScript $script:leaseProtocolScript @(
+		'-Action', 'Test', '-ProjectDirectory', $protocolDirectory, '-RunId', 'runProto', '-ProductionRoot', $fixtureRoot, '-HostName', $fixtureHost
+	)
+	Assert-True ($undefinedFieldTest.exit_code -eq 2) ("a field the doc does not define is still refused, got {0}: {1}" -f $undefinedFieldTest.exit_code, $undefinedFieldTest.stdout)
+	Assert-True ($undefinedFieldTest.stdout.Contains('LEASE STATE: unknown')) 'an undefined lease field stays unknown instead of being silently accepted'
+	Assert-True ($undefinedFieldTest.stdout.Contains('not_in_the_doc')) 'the refusal names the undefined field'
+	Write-Output 'PASS: the lease protocol accepts process_snapshot and still refuses undefined fields'
 
 	# --- group 2: dry run lists the whole tree (a) ---------------------------------------------
 	$planPath = Join-Path $fixtureRoot 'plan.json'

@@ -2,28 +2,72 @@
 
 ## Unreleased — DOT-3225（UE-PROCTREE-001）
 
-**理由**: `AGENTS.md` は「自分のrun所有processを同期回収」を必須にし、`templates/QA.md` がその合否を記録させ、同じ `AGENTS.md` が名前指定killを禁止している。ところが repo は「run所有」の**範囲を定義せず**、回収・検証のscriptを1つも同梱していなかった。lease が保存するのは単一の `writer_pid` だけで、`Stop-Process` / `taskkill` / `Win32_Process` / `ParentProcessId` の参照は repo 全体で 0 件だった。結果、文書に従うagentは「回収しない」か「禁止された方法で回収する」のどちらかに落ち、さらにPID生存だけでleaseをfreeと報告すると、子孫がprojectを掴んだまま次のrunが失敗する。
+**理由**: `AGENTS.md` は「自分のrun所有processを同期回収」を必須にし、`templates/QA.md` がその合否を記録させ、同じ `AGENTS.md` が名前指定killを禁止している。ところが repo は「run所有」の**範囲を定義せず**、回収・検証のscriptを1つも同梱していなかった。lease が保存するのは単一の `pid` だけで、`Stop-Process` / `taskkill` / `Win32_Process` / `ParentProcessId` の参照は repo 全体で 0 件だった。結果、文書に従うagentは「回収しない」か「禁止された方法で回収する」のどちらかに落ち、さらにPID生存だけでleaseをfreeと報告すると、子孫がprojectを掴んだまま次のrunが失敗する。
 
 - **run所有の範囲を定義**（`docs/01-start.md` の「run所有プロセスの範囲」）。writer自身、writerが起動した子孫（build/Editor/cook/render/UBT/ShaderCompileWorker/UnrealPak/CrashReportClient 等、名前を問わない）、run開始後に同じsnapshotへ記録されたprocessが**所有**。writerの親（runtime/adapter/shell）、共有Chrome、他runのleaseがactiveなprocess、runが起動していない常駐toolは**所有でない**（停止対象から明示的に除外）。`AGENTS.md` の「名前指定kill禁止」は維持し、停止は常に `(process_id, creation_utc_ticks)` の同一性で行う。
-- **lease に帰属材料を追加**。既存の `writer_pid` は**残し**、`process_snapshot`（`path` / `sha256` / `captured_at_utc` / `writer_process_id` / `writer_creation_utc_ticks` / `root_process_ids` / `boundary_ancestor_process_ids` / `process_count`）を追加した。snapshot本体は `Out/run_<runid>/evidence/process-snapshot.json` に run 別で1本。leaseの `schema_version` と docs の列挙は同じ変更で更新し、DOT-3042 の「列挙に厳密一致」制約と衝突させていない。
+- **lease に帰属材料を追加**。DOT-3042 のlease契約（8 field、`Acquire`/`Release`/`Test` は `scripts/Lease-UETemplateProject.ps1`）はそのまま維持し、`pid` を**残したまま**任意field `process_snapshot`（`path` / `sha256` / `captured_at_utc` / `writer_process_id` / `writer_creation_utc_ticks` / `root_process_ids` / `boundary_ancestor_process_ids` / `process_count`）を取得直後に追記する。snapshot本体は `Out/run_<runid>/evidence/process-snapshot.json` に run 別で1本。`scripts/Lease-UETemplateProject.ps1` は必須8 fieldの厳密一致を保ち、`process_snapshot` だけを任意fieldとして受理し、存在する場合は `path` と `sha256` の両方を要求する（docs の列挙も同時に更新して「列挙に厳密一致」と衝突させない）。
 - **script 3本 + 共通helper を追加**（すべて UE を起動しない。`Win32_Process` の読取と JSON だけ）。
   - `scripts/Start-UETemplateRunProcessSnapshot.ps1` — run開始時に writer とプロセス表を1回観測し、snapshotを作る。`-LeasePath` 指定時は lease に `process_snapshot` を追記し、**既存fieldが1つでも変われば停止**する。排他createと競合検出は DOT-3042 の領域として実装しない。
   - `scripts/Stop-UETemplateRunProcesses.ps1` — dry-run で**停止対象一覧を先に出力・保存**し、`-Execute` で一覧のidentityだけを停止する。`-Execute` は同じsnapshotに対する dry-run plan が無ければ**拒否**する（実行前に一覧が出ない経路がない）。停止は深い順。帰属不明は停止せず `unknown`。PID再利用（`creation_utc_ticks`不一致）は対象外。共有Chrome・他run・writerの親は `excluded`。
-  - `scripts/Test-UETemplateLease.ps1` — lease を **`free` / `held` / `unknown` の3値**で判定する。`writer_pid` が死んでいるだけでは `free` を返さない。snapshot欠落・hash/run/writer不一致・帰属不明のいずれでも `unknown`。
+  - `scripts/Get-UETemplateLeaseVerdict.ps1` — lease を **`free` / `held` / `unknown` の3値**で判定する。`pid` が死んでいるだけでは `free` を返さない。snapshot欠落・hash/run/writer不一致・帰属不明のいずれでも `unknown`。検査自体が実行できない場合も `unknown`（exit 2）を返し、例外のexit 1を`held`と読み替えさせない。`writer_alive` は identity 一致時だけ `true`（`writer_pid_present` / `writer_identity_verified` を別fieldで持つ）。
   - `scripts/UETemplateProcessOwnership.ps1` — 上記3本が dot-source する共通helper（snapshot union、親子鎖、深さ、identity判定）。
-- **`templates/QA.md` を機械可読にした**。`run所有processの回収` 行と `## run所有processの回収` 節を、**停止対象件数・停止件数・残存件数・残存の帰属不明件数・判定** の5項目 + report path で記録する形にした。`unknown` は合格にしない。
+  - DOT-3042 が同梱した `scripts/Test-UETemplateLease.ps1`（leaseプロトコル `Acquire`/`Release`/`Test` のsuite）は名前も役割も変えない。3値判定の検査器は別名の `Get-UETemplateLeaseVerdict.ps1` として追加した（同名の suite と衝突させない）。
+- **`templates/QA.md` を機械可読にした**。`run所有processの回収` 行と `## run所有processの回収` 節を、**停止対象件数・停止件数・残存件数・残存の帰属不明件数・判定** の5項目 + report path で記録する形にした。`unknown` は合格にしない。DOT-3042 の lease nonce/receipt 行はそのまま残す。
 - **回帰suite を追加**（`scripts/Test-UETemplateProcessOwnership.ps1`、14 group、UE不使用・fixtureはsystem temp）。負例を固定: (a) writer→子→孫を snapshot の親子鎖で列挙・停止、(b) snapshotに無いlive process は停止せずgapとして報告、(c) PID再利用は停止しない、(d) writer PID死亡だけでは `unknown`（`free`でない）、(e) 変更前のlease形状（snapshot無し・単一PID）では孫に到達できず `unknown`。加えて、読めないleaseは `held` ではなく `unknown`（exit 2）を返し、writer PIDが生存していても`creation_utc_ticks`が不一致なら`alive=False` / `pid-present=True`と記録する。
+- `.github/workflows/verify.yml` の `lease` job に `scripts/Test-UETemplateProcessOwnership.ps1` を追加した（`scripts/Test-UETemplateLease.ps1` はそのまま実行する）。
 
-**検証（本host、Windows 10.0.26300、`pwsh 7.6.9` と Windows PowerShell 5.1.26100.9711）**: `scripts/Test-UETemplateProcessOwnership.ps1`（14 group PASS / exit 0、両PS）。`scripts/Test-UETemplateScaffold.ps1` = **8 group PASS / exit 0**（両PS、回帰なし）。`git status --porcelain --untracked-files=all` は test 前後で不変（suite 自身が断言）。UEは一度も起動していない。
+**検証（本host、Windows 10.0.26300、`pwsh 7.6.9` と Windows PowerShell 5.1.26100.9711）**: `scripts/Test-UETemplateProcessOwnership.ps1`（14 group PASS / exit 0、両PS）。`scripts/Test-UETemplateLease.ps1`（DOT-3042 のsuite、11 PASS / exit 0、両PS）。`scripts/Test-UETemplateScaffold.ps1` = **8 group PASS / exit 0**（両PS、回帰なし）。`git status --porcelain --untracked-files=all` は test 前後で不変（suite 自身が断言）。UEは一度も起動していない。main への追随は merge で行い、docs/CHANGELOG は手作業で意味的に統合した（どちらの記述も捨てていない）。
 
-**移行**: 既存の生成projectと `Production/` の生成物は書き換えない。snapshotが無い旧leaseは `Test-UETemplateLease.ps1` で `unknown` になるので、新runは `Start-UETemplateRunProcessSnapshot.ps1` を lease 取得直後に1回実行する（snapshotが無いまま `free` を主張しない）。既存runを遡って snapshot を捏造しない。
+**移行**: 既存の生成projectと `Production/` の生成物は書き換えない。`process_snapshot` が無い旧leaseは `Get-UETemplateLeaseVerdict.ps1` で `unknown` になるので、新runは `Start-UETemplateRunProcessSnapshot.ps1` を lease 取得直後に1回実行する（snapshotが無いまま `free` を主張しない）。既存runを遡って snapshot を捏造しない。`Lease-UETemplateProject.ps1` の `Acquire`/`Release`/`Test` の手順は変わらない（`-Action Test` は従来どおりPID生存だけを見、子孫の帰属は `Get-UETemplateLeaseVerdict.ps1` が答える）。
 
 **Unverified Scope**: 実UE 5.8.4 の起動/compile/Editor/PIE/MRQ/render/Shipping は実行していない。job object の `KILL_ON_JOB_CLOSE` は本hostで成立を確認できていないため採用せず、帰属はsnapshotの親子鎖だけで行う。Microsoftの仕様上 `Win32_Process.Create` 経由の子はjobを継承しない（[Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)、2026-11-05参照）ので、job単独を根拠にしない。実際のUE runがどのprocessをどの親子関係で出すかは未観測で、fixtureでの一致だけを合格根拠にしている。
+
+## Unreleased — DOT-3157
+
+- 生コピー経路（`materialize_project`を持たない`spectator-explore` / `vertical-loop`）がtemplateの`Config/TemplateDefs.ini`を一度も読まず、templateフォルダを丸ごとコピーしていた。出力`Content/`に`TP_FirstPerson`の既定mapが参照する共有content pack（`Characters` / `LevelPrototyping` / `Input` / `Weapons`）が入らず、逆にignore対象の`Media/`と`Config/TemplateDefs.ini`・`Config/config.ini`が残っていた。generatorはexit 0で`Created ...`を表示し、testは6群PASSしていたため、"assetが足りない"を出力から判別できなかった。
+- `scripts/New-UETemplateScaffold.ps1`のコピー実装を1つ（`Copy-TemplateTree`）に統合し、両経路とも`TemplateDefs.ini`を読むようにした。`FoldersToIgnore` / `FilesToIgnore` / `SharedContentPacks`は共通、`FolderRenames` / `ReplacementsInFiles` / `FilenameReplacements`によるrenameは`materialize_project`のrecipeだけで適用する（生コピーの2 recipeはproject名/module名をtemplate名のまま維持する契約を変えていない）。
+- `SharedContentPacks`の展開は`Templates/TemplateResources/<DetailLevel>/<Mount>/Content`から`Content/<Mount>`。`EditDetailLevelPreference`のlevelに実体が無いmountは、`High` → `Standard` の順で実在するlevelを使う（実install UE 5.8.4の`TP_FirstPerson`は`Weapons`を`Standard`のみで提供している）。per-mountの`DetailLevels` tuple解釈は含まない（DOT-3135の担当）。
+- 生成後検査を追加した。生成物の`Config/DefaultEngine.ini`の`GameDefaultMap` / `EditorStartupMap`が`/Game/...`を指す場合、その`.umap`が出力にあることを確認し、無ければ**停止**して欠落pathを列挙する。`/Engine/...`の宣言は出力treeの対象外として検査しない。
+- `template-lock.json`に`shared_content_packs`（展開したmount名）、`shared_content_pack_detail_levels`（mount → 実展開元level）、`template_defs_ignore_rules`（適用した`FoldersToIgnore` / `FilesToIgnore`件数）を追加した。`schema_version`は`2`のまま（追加fieldのみ）。
+- `scripts/Test-UETemplateScaffold.ps1`のfixture`TP_FirstPerson`に`SharedContentPacks` 3種（`Characters` / `LevelPrototyping` / `Input`）・`FoldersToIgnore=Media`・`FilesToIgnore="Config/TemplateDefs.ini"`を持たせ、`Templates/TemplateResources/High/**`に実体を置いた。assertion追加: 生コピー出力にpackが入る／`Media/`と`Config/TemplateDefs.ini`・`Config/config.ini`が入らない／lockにpack一覧とignore件数が載る。負例2件: 既定mapが`SharedContentPacks`側にしか無いfixtureではpack展開後に成功し、pack宣言を外すと**停止**する。
+
+本host実測（Windows / `pwsh 7.6.9` / UE 5.8.4 CL 58902052、repo base `96f8de0b7016b86f1a9861558000bed7d9d2c743`（`main` をmerge済み））: 変更後`scripts/Test-UETemplateScaffold.ps1` = **12 group PASS / exit 0**（`pwsh`と`powershell`の両方で確認）。同じsuiteを`aa113700b0ce4d2bbe32dbb7bd2bdec91d5531d0`のgeneratorに当てると **exit 1**（`ASSERT FAILED: generated project descriptor has a non-empty EngineAssociation` — 既存のidentity契約のassertで先に落ちるため、追加assertまで届かない）。そこで追加assertと同じ観点だけを実install生成物に対して直接照合する比較を別途行い、`aa11370`は14項目すべてFAIL（pack 3種が不在、`Media/`・`Config/TemplateDefs.ini`・`Config/config.ini`が残留、lock field不在、既定mapの共有pack参照17種が1つも解決せず、既定map欠落で停止せず）、変更後は14項目すべてPASSした。実install生成物の`spectator-explore`は`Content/`に`Characters` / `LevelPrototyping` / `Input` / `Weapons`を持ち、`Media/`・`Config/TemplateDefs.ini`・`Config/config.ini`を持たない。既定map参照17種は17/17解決する。`vertical-loop`は`TP_BlankBP`がpackを宣言しないので`shared_content_packs`が空配列になり、`Media/`と`Config/TemplateDefs.ini`は入らない。
+
+移行: **既存の生成済みprojectはコピーし直さない**（欠落packの後入れや手動修復をこの変更は行わない）。packが必要なら同じ`-ProjectName`のまま新RunIdで再生成し、`template-lock.json`の`shared_content_packs`と`identity`を読んでからEditorで開く。`Production/`の既存ディレクトリは上書きされない（排他的作成）。
+
+未検証（Unverified）: UE Editorでの起動、既定mapを開いたときのmissing reference表示、PIE、MRQ、Shipping、パッケージ済みbuild。本変更の検証はPowerShell層のfixture回帰と実installのコピー結果までで、UE実機でmapを開いた確認ではない。
+
+## Unreleased — DOT-3042
+
+- `docs/01-start.md` は lease プロトコルを「実装要件。スクリプト未同梱」と宣言したままで、排他的 mkdir と `LEASE.json` の CreateNew 相当を各エージェントの手作業に委ねていた。`New-Item -Force` や `Set-Content` で代替した生成物は別 run の active lease を黙って上書きして「成功」として通る。
+- `scripts/Lease-UETemplateProject.ps1` を追加した。`Acquire` / `Release` / `Test` の3動作で、出力先 dir の排他的作成は generator と同じ P/Invoke `CreateDirectoryW` + Win32 183 判定、`LEASE.json` の書き込みは `[IO.File]::Open($path, CreateNew, Write, None)` のみ。`Set-Content` / `WriteAllText` / `Out-File` / 一時ファイル rename は使わない（rename は他所の active lease を置換できる）。既存 dir への取得は「生成と取得の区別」として継続し、`Test` は読み取りだけで書き込み・mtime 更新をしない。
+- lease のフィールドは `docs/01-start.md` の列挙（run ID / issue ID / host / project realpath / 取得日時 / nonce / writer phase / PID）に固定し、余分な field を持つ記録は読み取り時に拒否する。`Release` は run/nonce 不一致・記録欠落・receipt 既存のいずれでも停止し、`LEASE.json` を消さない。`Test` は 0=active / 1=free / 2=unknown を返し、`free`（記録は残存・手動照合要）と `unknown`（記録なし/読めない/他 host）を混同しない。
+- `scripts/Test-UETemplateLease.ps1` を追加した。既存 dir への取得成功・再取得拒否と byte 一致保持・他所 run lease の保持・script 本文の静的検査（非排他書き込み経路が無いこと）・8 プロセス同時取得で勝者1/敗者7と記録が勝者一致・nonce/run 不一致 Release の停止・Release 成功後の `LEASE_RELEASED` と `LEASE.json` 削除・`Test` 前後の content/size/mtime 不変・記録欠落/破損/他 host の `unknown`・文書と AGENTS/QA/CHANGELOG の参照一致を assertion 化した。既存 `Test-UETemplateScaffold.ps1` は変更していない。
+- `.github/workflows/verify.yml` に `Test-UETemplateLease.ps1` を実行する `lease` job を追加した（既存 2 job は変更なし）。
+
+**落ちる側（変更前 `8f58615` の repo 本文＋新しい suite）**: `scripts/Test-UETemplateLease.ps1` は変更前 HEAD に存在しないため新 assertion 群は必ず失敗する。実測では新 suite 2 本の script だけを変更前 HEAD の worktree へ置くと 10 PASS の後 `ASSERT FAILED: docs/01-start.md names the shipped lease script` で exit 1になる。
+
+**検証（本 host, Windows, `powershell 5.1.26100.9711` と `pwsh 8` の両方）**: `scripts/Test-UETemplateLease.ps1` → 11 PASS 行 / exit 0。`scripts/Test-UETemplateScaffold.ps1` → 8 group PASS / exit 0（既存 group は不変）。両 suite とも fixture を `Production/` 内の `.lease-test-<id>` に作り、cleanup 後に残骸 0・`git status --porcelain --untracked-files=all` 差分 0 を再確認している。
+
+**Unverified Scope**: UE 実機（compile / PIE / MRQ / Shipping）は実行していない。本変更は UE を起動しない PowerShell 層のみで、実 UE 5.8 系 install を `-ProjectDirectory` にした実 project 生成は未実行。
 
 ## Unreleased — 動画モーキャプ
 
 - `docs/09-video-mocap.md` を追加した。単眼のダンス動画から MediaPipe で体・手・顔の点を取り、VRM の骨の回転 → VRMA → UE（VRM4U）→ MV にする工程、単眼で取れない量の補い方、確認方法、1 本での実測、残る限界、権利の gate をまとめた。
 - 図は工程図・棒人間・腰の高さのグラフだけで、元動画・キャラの画像は入れていない。スクリプトは非公開の制作 repo にあり、本 repo には同梱しない。
+
+## Unreleased — DOT-3187
+
+- `templates/online/MulticaOnlineStarter` の provider 設定は、engine が読まない名前の carrier に置かれていた。旧 `Config/DefaultEngine.ini` は UE 5.8.4 の plugin config loader が `{PLUGIN}/Config/{TYPE}.ini`（既存 branch を変更する layer）にも `{PLUGIN}/Config/Default<PluginName>.ini`（plugin 自身の branch）にも解決できず、`ConfigCacheIni.cpp:7275` で `DefaultEngine` という branch 名を作った後 `:7294-7301` で Verbose ログだけ残して捨てる。`[OnlineSubsystem] DefaultPlatformService=Null` は宣言だけが残り、`GEngineIni` には届いていなかった。
+- 旧 `scripts/Test-UETemplateScaffold.ps1` は生成物の `Plugins/MulticaOnlineStarter/Config/DefaultEngine.ini` の**本文**に `DefaultPlatformService=Null` が含まれることだけを見ており、carrier 名が解決されるかを検査していなかった。そのため carrier 名を `Engine.ini` に変えても `DefaultEngine.ini` のままでも同じく PASS し、6 群 PASS / exit 0 のまま出荷されていた。
+- plugin の carrier を廃止し、provider/session 設定の唯一の置き場所を**生成 project の `Config/DefaultEngine.ini`**（`{PROJECT}/Config/Default{TYPE}.ini`、`Misc/ConfigHierarchy.h:68`）に固定した。plugin は `Config/` を同梱しない。
+- test の plugin 検査を**本文文字列一致から carrier 名の解決規則**へ置き換えた。既知 branch（`Engine`/`Game`/`Input`/…、`Misc/ConfigCacheIni.h:101-111`）と plugin branch（`Default<PluginName>`）に解決する名前だけを受理し、plugin 配下の ini が 1 本でも未解決名なら停止する。project 側 carrier も `Default{TYPE}.ini` / `{PLATFORM}{TYPE}.ini` の形を検査する。負例（plugin 側 `Config/DefaultEngine.ini`、project 側 `Config/Engine.ini`）を fixture として固定し、解決できる名前（`Config/Engine.ini`・`Config/Default<PluginName>.ini`・`Config/Windows/WindowsEngine.ini`）は受理することを同じ group で assert する。
+- `templates/online/MulticaOnlineStarter/README.md` は、編集すべきファイル（生成 project の `Config/DefaultEngine.ini`）と carrier 名の契約、`LoadDefaultSubsystem` が未設定・ロード失敗時に `NULL_SUBSYSTEM` へ fallback すること（`OnlineSubsystemModule.cpp:205-221`）を明示する。`docs/08-online-foundations.md` の実装節と検証履歴も同じ内容へ揃えた。
+- `MulticaOnlineStarter` の C++ 挙動、generator のコピー経路・materialize 経路、`templates/recipes/**` は変更していない。
+
+Measured on this host (Windows 10.0.26300, Windows PowerShell 5.1.26100.9711, pwsh 7.6.9): `scripts/Test-UETemplateScaffold.ps1` 9 groups PASS / exit 0。DOT-3187 の carrier 検査を `aa113700b0ce4d2bbe32dbb7bd2bdec91d5531d0` の実 tree（`Plugins/MulticaOnlineStarter/Config/DefaultEngine.ini` のみ）へ当てると `the engine cannot resolve 'DefaultEngine.ini' to a config branch` で落ち、変更後は 0 件。`-dumpiniloads` / `LogConfig` Verbose による実ログ取得、Editor 上での `DefaultPlatformService` 実効値、PIE・2-client LAN・EOS/Steam は未検証（Unverified Scope）。
+
+移行（重要）: **既存の生成済み project は自動変換しない。** 旧 scaffold が出した `Plugins/MulticaOnlineStarter/Config/DefaultEngine.ini` は engine に読まれない（`Test-UETemplateScaffold.ps1` のcarrier 検査を `aa11370` の実 tree へ当てると 1 件で落ちる）。必要な作品は**新しい RunId で再生成**するか、project 自身の `Config/DefaultEngine.ini` に `[OnlineSubsystem] DefaultPlatformService=Null` を書いて採用理由と日付を作品の QA に残す。旧ファイルを `Config/Engine.ini` へ改名して済ませる運用は、plugin modification layer として `Engine` branch に届くかどうかを未完のまま使うため、本 PR では勧めない（実測は `-dumpiniloads` の別 receipt とする）。
 
 ## Unreleased — DOT-3395
 

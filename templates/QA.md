@@ -4,7 +4,7 @@ Issue/run/日時/担当：
 source commitまたはsnapshot SHA：
 host/OS/UE/SDK/GPU/RAM/disk：
 指定model/effort / 保存値 / 実session / 応答 / quota観測範囲：
-writer/lease nonce・取得/解放receipt：
+writer/lease nonce・取得/解放receipt（`scripts/Lease-UETemplateProject.ps1` の Acquire出力 / Releaseが残す `LEASE_RELEASED.<runid>.json`）：
 
 | 項目 | pass/fail/unverified/non-goal | 対象版/hash・実測・証拠 |
 |---|---|---|
@@ -17,7 +17,7 @@ writer/lease nonce・取得/解放receipt：
 | MRQ完了通知・exit code | unverified | 通知本文/exit。画像列検査とは別欄に記録 |
 | MRQ/ffprobe実測 | unverified | 幅/高さ/fps/frame数/秒数/codec/音声 |
 | 先頭/中間/末尾目視・全編再生 | unverified | |
-| run所有processの回収 | unverified | `-- 対象件数 -- 停止件数 -- 残存件数 -- 残存の帰属不明件数 -- 判定(free/held/unknown)`。`Stop-UETemplateRunProcesses.ps1`のdry-run planと実行後のverification、`Test-UETemplateLease.ps1`のreport pathを書く。`unknown`はpassにしない |
+| run所有processの回収 | unverified | `-- 対象件数 -- 停止件数 -- 残存件数 -- 残存の帰属不明件数 -- 判定(free/held/unknown)`。`Stop-UETemplateRunProcesses.ps1`のdry-run planと実行後のverification、`Get-UETemplateLeaseVerdict.ps1`のreport pathを書く。`unknown`はpassにしない |
 | 映像と音のloop継ぎ目 | unverified | |
 | Shipping成功・ZIP別展開起動/操作 | unverified | |
 | Mac.app/architecture/署名/公証 | unverified | 必要な場合のみ |

@@ -44,16 +44,35 @@ Project BrowserはUE側のtemplate materialize規則でprojectを作るため、
 2. `/Game/<Name>/Maps/L_<Name>`を保存。Project SettingsでEditor Startup MapとGame Default Mapを指定し、package対象mapに含める。GameModeとPawn、camera、collision、入力設定は、Playが用途に含まれるrecipeで照合する。
 3. 撮影smokeなら原作の床・cube・point light・camera・2秒sequenceのみ。ゲームsmokeなら歩ける小mapのみ。Fab/Splice不要で成立させる。
 
-## leaseプロトコル（排他createは未同梱。子孫の帰属・回収は同梱script）
+## leaseプロトコル（`scripts/Lease-UETemplateProject.ps1` 同梱済み）
 
-- 新project dirの排他的mkdirと、`LEASE.json` の排他的createを使う（PowerShell通常のNew-Item -Forceで代替しない）。
-- leaseにはrun ID、issue ID、host、project realpath、取得日時、nonce、writer phase、当該runのPID`writer_pid`を保存する。この`writer_pid`は**残す**（互換のため消さない）。
-- 同じleaseへ、run開始時に観測したプロセスsnapshotへの参照`process_snapshot`を追加する。参照は`path`（snapshot JSONの実path）、`sha256`、`captured_at_utc`、`writer_process_id`、`writer_creation_utc_ticks`、`root_process_ids`、`boundary_ancestor_process_ids`、`process_count`を持つ。snapshot本体は`path`が指す `Out/run_<runid>/evidence/process-snapshot.json` に置き、run別に1本だけ作る。
-- leaseの`schema_version`は本節の列挙と一致させる。上記以外のfieldを勝手に足さない。追加するときは本節の列挙も同じ変更で更新する（DOT-3042の「列挙に厳密一致」制約を壊さない）。
+leaseの取得・解放・所有権照合は `scripts/Lease-UETemplateProject.ps1` の3動作で行う。手作業で `New-Item -Force` / `Set-Content` / `Out-File` / `WriteAllText` を書かない。同scriptはそれらを使わず、`CreateDirectoryW` と `[IO.File]::Open(CreateNew, Write, None)` だけで書く。
+
+```powershell
+# 取得。生成物dirとlease記録dirの作成は別操作であり、既存dirへの取得も続行できる
+.\scripts\Lease-UETemplateProject.ps1 -Action Acquire `
+  -ProjectDirectory 'Production\<Name>_<runid>' `
+  -RunId <runid> -IssueId <Issue> -WriterPhase edit
+
+# 読み取り専用の照合。書き込みもmtime更新もしない
+.\scripts\Lease-UETemplateProject.ps1 -Action Test -ProjectDirectory 'Production\<Name>_<runid>' -RunId <runid>
+
+# 解放。実fileのrun/nonce一致時だけ実行し、run別の LEASE_RELEASED.<runid>.json を残す
+.\scripts\Lease-UETemplateProject.ps1 -Action Release `
+  -ProjectDirectory 'Production\<Name>_<runid>' `
+  -RunId <runid> -Nonce <Acquireが出力したnonce>
+```
+
+- lease記録の置き場所は、AGENTS.md「フォルダ」と run 台帳の規則に従い `-ProjectDirectory` で指定する。生成先project dirをlease工程で作り直さない（生成は `scripts/New-UETemplateScaffold.ps1` だけが排他的mkdirする）。
+- leaseにはrun ID、issue ID、host、project realpath、取得日時、nonce、writer phase、当該runのPID（`pid`）を保存する。scriptはこの8 fieldを必須として書く（増やす場合は本文も同じPRで更新する）。
+- 取得直後に、run所有processの帰属材料として任意field `process_snapshot` を同じleaseへ追記する（下記「run所有プロセスの範囲」）。`process_snapshot` は `path`（snapshot JSONの実path）と `sha256` を必須で持ち、`captured_at_utc` / `writer_process_id` / `writer_creation_utc_ticks` / `root_process_ids` / `boundary_ancestor_process_ids` / `process_count` を併記する。旧leaseの `pid` は**消さない**（互換のため残す）。
+- `pid` は単一PIDであり、子孫（Editorが起動する `ShaderCompileWorker` / `UnrealPak` / `CrashReportClient` / UBT）へ到達できない。**PIDの生存だけを根拠にleaseを`free`と言わない**（判定は下記の3値）。
 - create競合なら停止。他runのactive有無とsource fingerprintが不明なら停止。時刻経過だけで奪わない。
 - 再開は前leaseの解放receipt・保存済み版・active writerなしを照合し新nonceを取得。
 - 解放前に実fileのrun/nonceを照合。自process終了・保存後、run別のLEASE_RELEASED記録へ移す。他人のleaseを消さない。
-- crashの残leaseは手動照合対象。CLI/API上のrun終了だけではUE終了を推定しない。**`writer_pid`が死んでいることは、そのrunの子孫が終了した証明にならない**（PID生存だけを見てfreeと報告すると、子孫がprojectを掴んだまま次のrunが失敗する）。判定は下記の3値で行う。
+- `-Action Test` の exit code は 0=active / 1=free（記録は残っている。書換えず手動照合） / 2=unknown（記録なし・読めない・他host）。`free` と `unknown` を混同しない。`-Action Test` はPIDの生存しか見ないため、**子孫の帰属を含む判定は `scripts/Get-UETemplateLeaseVerdict.ps1` を使う**。
+- leaseプロトコル（Acquire/Release/Test）のassertionは `scripts/Test-UETemplateLease.ps1`（`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Test-UETemplateLease.ps1`）に固定されている。
+- crashの残leaseは手動照合対象。CLI/API上のrun終了だけではUE終了を推定しない。**`pid`が死んでいることは、そのrunの子孫が終了した証明にならない**（PID生存だけを見てfreeと報告すると、子孫がprojectを掴んだまま次のrunが失敗する）。
 
 ### run所有プロセスの範囲
 
@@ -61,7 +80,7 @@ Project BrowserはUE側のtemplate materialize規則でprojectを作るため、
 
 所有に**含む**:
 
-1. このrunのwriter自身（`writer_pid`とその`creation_utc_ticks`が一致するprocess）。
+1. このrunのwriter自身（leaseの`pid`と`process_snapshot.writer_creation_utc_ticks`が一致するprocess）。
 2. そのwriterが直接・間接に起動した子孫。build / Editor / cook / render / UBT（`UnrealBuildTool`） / `ShaderCompileWorker` / `UnrealPak` / `CrashReportClient` など、実行ファイル名を問わずsnapshotの親子鎖でwriterへ到達できるもの。深さは問わない。
 3. run開始後にwriterが追加で起動したprocess。**同じrunのsnapshotに記録されているものだけ**を所有とみなす。記録の無いprocessは所有と断定せず、`unknown`として報告する（停止しない）。
 
@@ -80,7 +99,7 @@ Project BrowserはUE側のtemplate materialize規則でprojectを作るため、
 |---|---|---|
 | `scripts/Start-UETemplateRunProcessSnapshot.ps1` | run開始時にwriterとプロセス表を1回観測し、`process-snapshot.json`を作り、`-LeasePath`指定時は lease に`process_snapshot`を追記する（既存fieldは不変を照合、変われば停止） | しない |
 | `scripts/Stop-UETemplateRunProcesses.ps1` | `-WhatIf`相当のdry-runで**停止対象一覧を先に出力・保存**し、`-Execute`で一覧のidentityだけを停止する。`-Execute`は同じsnapshotのdry-run planが無ければ**拒否**する | しない |
-| `scripts/Test-UETemplateLease.ps1` | leaseを`free` / `held` / `unknown`の3値で判定する。`unknown`は`free`へ丸めない | しない |
+| `scripts/Get-UETemplateLeaseVerdict.ps1` | leaseを`free` / `held` / `unknown`の3値で判定する。`unknown`は`free`へ丸めない | しない |
 
 終了codeは `free=0` / `held=1` / `unknown=2`。**実行できなかったcheckも`unknown`（2）を返す**（例外のexit 1を`held`と読み替えない）。`held`は「停止対象がまだ生きている」という観測結果であり、check自体の失敗と同じcodeにしない。
 

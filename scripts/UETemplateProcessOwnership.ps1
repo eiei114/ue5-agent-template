@@ -15,7 +15,7 @@
 # never a stop target: it becomes an attribution gap, which keeps the verdict at `unknown`.
 #
 # Everything here is read-only. Start-UETemplateRunProcessSnapshot.ps1 captures a snapshot,
-# Stop-UETemplateRunProcesses.ps1 stops by identity, and Test-UETemplateLease.ps1 reports
+# Stop-UETemplateRunProcesses.ps1 stops by identity, and Get-UETemplateLeaseVerdict.ps1 reports
 # free/held/unknown. All three dot-source this file.
 
 function ConvertTo-UETemplateUtcTicks {
