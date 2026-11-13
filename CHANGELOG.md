@@ -152,6 +152,28 @@ git status --porcelain --untracked-files=all  実行前後とも 0 行（生成�
 
 移行: 既存作品の `CREDITS.md` は**書き換えを強制しない**。旧9列表は監査で FAIL になるが、それは Unverified のままであることを意味し、権利判断ではない。再生成する場合は `template-lock.json` の `shared_content_packs` を見て `Content/` の先頭ディレクトリごとに出所行を書く。engine 同梱 content の再配布可否は本変更の対象外（Epic の template 機構文書に記載が無いという不在の観測のみ）。
 
+## Unreleased — DOT-3225（UE-PROCTREE-001）
+
+**理由**: `AGENTS.md` は「自分のrun所有processを同期回収」を必須にし、`templates/QA.md` がその合否を記録させ、同じ `AGENTS.md` が名前指定killを禁止している。ところが repo は「run所有」の**範囲を定義せず**、回収・検証のscriptを1つも同梱していなかった。lease が保存するのは単一の `pid` だけで、`Stop-Process` / `taskkill` / `Win32_Process` / `ParentProcessId` の参照は repo 全体で 0 件だった。結果、文書に従うagentは「回収しない」か「禁止された方法で回収する」のどちらかに落ち、さらにPID生存だけでleaseをfreeと報告すると、子孫がprojectを掴んだまま次のrunが失敗する。
+
+- **run所有の範囲を定義**（`docs/01-start.md` の「run所有プロセスの範囲」）。writer自身、writerが起動した子孫（build/Editor/cook/render/UBT/ShaderCompileWorker/UnrealPak/CrashReportClient 等、名前を問わない）、run開始後に同じsnapshotへ記録されたprocessが**所有**。writerの親（runtime/adapter/shell）、共有Chrome、他runのleaseがactiveなprocess、runが起動していない常駐toolは**所有でない**（停止対象から明示的に除外）。`AGENTS.md` の「名前指定kill禁止」は維持し、停止は常に `(process_id, creation_utc_ticks)` の同一性で行う。
+- **lease に帰属材料を追加**。DOT-3042 のlease契約（8 field、`Acquire`/`Release`/`Test` は `scripts/Lease-UETemplateProject.ps1`）はそのまま維持し、`pid` を**残したまま**任意field `process_snapshot`（`path` / `sha256` / `captured_at_utc` / `writer_process_id` / `writer_creation_utc_ticks` / `root_process_ids` / `boundary_ancestor_process_ids` / `process_count`）を取得直後に追記する。snapshot本体は `Out/run_<runid>/evidence/process-snapshot.json` に run 別で1本。`scripts/Lease-UETemplateProject.ps1` は必須8 fieldの厳密一致を保ち、`process_snapshot` だけを任意fieldとして受理し、存在する場合は `path` と `sha256` の両方を要求する（docs の列挙も同時に更新して「列挙に厳密一致」と衝突させない）。
+- **script 3本 + 共通helper を追加**（すべて UE を起動しない。`Win32_Process` の読取と JSON だけ）。
+  - `scripts/Start-UETemplateRunProcessSnapshot.ps1` — run開始時に writer とプロセス表を1回観測し、snapshotを作る。`-LeasePath` 指定時は lease に `process_snapshot` を追記し、**既存fieldが1つでも変われば停止**する。排他createと競合検出は DOT-3042 の領域として実装しない。
+  - `scripts/Stop-UETemplateRunProcesses.ps1` — dry-run で**停止対象一覧を先に出力・保存**し、`-Execute` で一覧のidentityだけを停止する。`-Execute` は同じsnapshotに対する dry-run plan が無ければ**拒否**する（実行前に一覧が出ない経路がない）。停止は深い順。帰属不明は停止せず `unknown`。PID再利用（`creation_utc_ticks`不一致）は対象外。共有Chrome・他run・writerの親は `excluded`。
+  - `scripts/Get-UETemplateLeaseVerdict.ps1` — lease を **`free` / `held` / `unknown` の3値**で判定する。`pid` が死んでいるだけでは `free` を返さない。snapshot欠落・hash/run/writer不一致・帰属不明のいずれでも `unknown`。検査自体が実行できない場合も `unknown`（exit 2）を返し、例外のexit 1を`held`と読み替えさせない。`writer_alive` は identity 一致時だけ `true`（`writer_pid_present` / `writer_identity_verified` を別fieldで持つ）。
+  - `scripts/UETemplateProcessOwnership.ps1` — 上記3本が dot-source する共通helper（snapshot union、親子鎖、深さ、identity判定）。
+  - DOT-3042 が同梱した `scripts/Test-UETemplateLease.ps1`（leaseプロトコル `Acquire`/`Release`/`Test` のsuite）は名前も役割も変えない。3値判定の検査器は別名の `Get-UETemplateLeaseVerdict.ps1` として追加した（同名の suite と衝突させない）。
+- **`templates/QA.md` を機械可読にした**。`run所有processの回収` 行と `## run所有processの回収` 節を、**停止対象件数・停止件数・残存件数・残存の帰属不明件数・判定** の5項目 + report path で記録する形にした。`unknown` は合格にしない。DOT-3042 の lease nonce/receipt 行はそのまま残す。
+- **回帰suite を追加**（`scripts/Test-UETemplateProcessOwnership.ps1`、14 group、UE不使用・fixtureはsystem temp）。負例を固定: (a) writer→子→孫を snapshot の親子鎖で列挙・停止、(b) snapshotに無いlive process は停止せずgapとして報告、(c) PID再利用は停止しない、(d) writer PID死亡だけでは `unknown`（`free`でない）、(e) 変更前のlease形状（snapshot無し・単一PID）では孫に到達できず `unknown`。加えて、読めないleaseは `held` ではなく `unknown`（exit 2）を返し、writer PIDが生存していても`creation_utc_ticks`が不一致なら`alive=False` / `pid-present=True`と記録する。
+- `.github/workflows/verify.yml` の `lease` job に `scripts/Test-UETemplateProcessOwnership.ps1` を追加した（`scripts/Test-UETemplateLease.ps1` はそのまま実行する）。
+
+**検証（本host、Windows 10.0.26300、`pwsh 7.6.9` と Windows PowerShell 5.1.26100.9711）**: `scripts/Test-UETemplateProcessOwnership.ps1`（14 group PASS / exit 0、両PS）。`scripts/Test-UETemplateLease.ps1`（DOT-3042 のsuite、11 PASS / exit 0、両PS）。`scripts/Test-UETemplateScaffold.ps1` = **8 group PASS / exit 0**（両PS、回帰なし）。`git status --porcelain --untracked-files=all` は test 前後で不変（suite 自身が断言）。UEは一度も起動していない。main への追随は merge で行い、docs/CHANGELOG は手作業で意味的に統合した（どちらの記述も捨てていない）。
+
+**移行**: 既存の生成projectと `Production/` の生成物は書き換えない。`process_snapshot` が無い旧leaseは `Get-UETemplateLeaseVerdict.ps1` で `unknown` になるので、新runは `Start-UETemplateRunProcessSnapshot.ps1` を lease 取得直後に1回実行する（snapshotが無いまま `free` を主張しない）。既存runを遡って snapshot を捏造しない。`Lease-UETemplateProject.ps1` の `Acquire`/`Release`/`Test` の手順は変わらない（`-Action Test` は従来どおりPID生存だけを見、子孫の帰属は `Get-UETemplateLeaseVerdict.ps1` が答える）。
+
+**Unverified Scope**: 実UE 5.8.4 の起動/compile/Editor/PIE/MRQ/render/Shipping は実行していない。job object の `KILL_ON_JOB_CLOSE` は本hostで成立を確認できていないため採用せず、帰属はsnapshotの親子鎖だけで行う。Microsoftの仕様上 `Win32_Process.Create` 経由の子はjobを継承しない（[Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)、2026-11-05参照）ので、job単独を根拠にしない。実際のUE runがどのprocessをどの親子関係で出すかは未観測で、fixtureでの一致だけを合格根拠にしている。
+
 ## Unreleased — DOT-3157
 
 - 生コピー経路（`materialize_project`を持たない`spectator-explore` / `vertical-loop`）がtemplateの`Config/TemplateDefs.ini`を一度も読まず、templateフォルダを丸ごとコピーしていた。出力`Content/`に`TP_FirstPerson`の既定mapが参照する共有content pack（`Characters` / `LevelPrototyping` / `Input` / `Weapons`）が入らず、逆にignore対象の`Media/`と`Config/TemplateDefs.ini`・`Config/config.ini`が残っていた。generatorはexit 0で`Created ...`を表示し、testは6群PASSしていたため、"assetが足りない"を出力から判別できなかった。

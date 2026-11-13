@@ -86,6 +86,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           ./scripts/Test-UETemplateLease.ps1
           if ($LASTEXITCODE -ne 0) { throw "Test-UETemplateLease.ps1 exited $LASTEXITCODE" }
+          ./scripts/Test-UETemplateProcessOwnership.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Test-UETemplateProcessOwnership.ps1 exited $LASTEXITCODE" }
 
       # The player-count gate reads the online plugin's C++ as text and refuses the shape that lost
       # the leave decrement. Its own negative cases are run separately so a gate that silently stops

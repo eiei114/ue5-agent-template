@@ -93,12 +93,55 @@ leaseとpreflightの正本は`Production/.runs/run_<runid>/`であり、生成�
 - 台帳dir `Production/.runs/run_<runid>/` の排他的mkdirと、その中の`LEASE.json` の排他的createを使う（PowerShell通常のNew-Item -Forceで代替しない）。
 - **生成先 `Production/<Name>_<runid>/` はlease工程で作らない。** その排他的mkdirはgenerator（`scripts/New-UETemplateScaffold.ps1`）が行い、既存なら停止する。lease工程が先に生成先dirを作ると生成が必ず失敗する。
 - leaseにはrun ID、issue ID、host、project realpath（生成予定の絶対path。生成後に実pathと照合）、取得日時、nonce、writer phase、当該runのPIDだけを保存。
+
+- leaseにはrun ID、issue ID、host、project realpath、取得日時、nonce、writer phase、当該runのPID（`pid`）を保存する。scriptはこの8 fieldを必須として書く（増やす場合は本文も同じPRで更新する）。
+- 取得直後に、run所有processの帰属材料として任意field `process_snapshot` を同じleaseへ追記する（下記「run所有プロセスの範囲」）。`process_snapshot` は `path`（snapshot JSONの実path）と `sha256` を必須で持ち、`captured_at_utc` / `writer_process_id` / `writer_creation_utc_ticks` / `root_process_ids` / `boundary_ancestor_process_ids` / `process_count` を併記する。旧leaseの `pid` は**消さない**（互換のため残す）。
+- `pid` は単一PIDであり、子孫（Editorが起動する `ShaderCompileWorker` / `UnrealPak` / `CrashReportClient` / UBT）へ到達できない。**PIDの生存だけを根拠にleaseを`free`と言わない**（判定は下記の3値）。
 - create競合なら停止。他runのactive有無とsource fingerprintが不明なら停止。時刻経過だけで奪わない。
 - 再開は前leaseの解放receipt・保存済み版・active writerなしを照合し新nonceを取得。
 - 解放前に実fileのrun/nonceを照合。自process終了・保存後、run別のLEASE_RELEASED記録へ移す。他人のleaseを消さない。
-- `-Action Test` の exit code は 0=active / 1=free（記録は残っている。書換えず手動照合） / 2=unknown（記録なし・読めない・他host）。`free` と `unknown` を混同しない。
-- 同scriptのassertionは `scripts/Test-UETemplateLease.ps1`（`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Test-UETemplateLease.ps1`）に固定されている。
-- crashの残leaseは手動照合対象。CLI/API上のrun終了だけではUE終了を推定しない。
+- `-Action Test` の exit code は 0=active / 1=free（記録は残っている。書換えず手動照合） / 2=unknown（記録なし・読めない・他host）。`free` と `unknown` を混同しない。`-Action Test` はPIDの生存しか見ないため、**子孫の帰属を含む判定は `scripts/Get-UETemplateLeaseVerdict.ps1` を使う**。
+- leaseプロトコル（Acquire/Release/Test）のassertionは `scripts/Test-UETemplateLease.ps1`（`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Test-UETemplateLease.ps1`）に固定されている。
+- crashの残leaseは手動照合対象。CLI/API上のrun終了だけではUE終了を推定しない。**`pid`が死んでいることは、そのrunの子孫が終了した証明にならない**（PID生存だけを見てfreeと報告すると、子孫がprojectを掴んだまま次のrunが失敗する）。
+
+### run所有プロセスの範囲
+
+「自分のrun所有process」は**プロセスの名前ではなく、runが起動した木**で定義する。
+
+所有に**含む**:
+
+1. このrunのwriter自身（leaseの`pid`と`process_snapshot.writer_creation_utc_ticks`が一致するprocess）。
+2. そのwriterが直接・間接に起動した子孫。build / Editor / cook / render / UBT（`UnrealBuildTool`） / `ShaderCompileWorker` / `UnrealPak` / `CrashReportClient` など、実行ファイル名を問わずsnapshotの親子鎖でwriterへ到達できるもの。深さは問わない。
+3. run開始後にwriterが追加で起動したprocess。**同じrunのsnapshotに記録されているものだけ**を所有とみなす。記録の無いprocessは所有と断定せず、`unknown`として報告する（停止しない）。
+
+所有に**含まない**（停止対象から明示的に除外する）:
+
+1. writerの親（Multica runtime / Pi adapter / shell / 端末）。snapshotの`boundary_ancestor_process_ids`として記録し、runはこれを停止しない。run終了時の道連れはruntime側の責任で、このテンプレートは関与しない。
+2. 共有Chrome（`chrome`等、`PreserveProcessNames`で維持する名前）。`AGENTS.md`の「共有Chromeは維持指示と所有権に従う」を優先する。
+3. 他runのleaseがactiveなprocess（そのleaseのsnapshotから導いた木）。
+4. `Production/<Name>_<runid>/` の外で動く、runが起動していない常駐tool（エディタ、ブラウザ、Slack等）。
+
+**所有の範囲を名前で判定しない。** `AGENTS.md`の名前指定kill禁止を維持し、停止は常に `(process_id, creation_utc_ticks)` の同一性で行う。
+
+### snapshot・回収・判定のscript
+
+| script | 役割 | UE起動 |
+|---|---|---|
+| `scripts/Start-UETemplateRunProcessSnapshot.ps1` | run開始時にwriterとプロセス表を1回観測し、`process-snapshot.json`を作り、`-LeasePath`指定時は lease に`process_snapshot`を追記する（既存fieldは不変を照合、変われば停止） | しない |
+| `scripts/Stop-UETemplateRunProcesses.ps1` | `-WhatIf`相当のdry-runで**停止対象一覧を先に出力・保存**し、`-Execute`で一覧のidentityだけを停止する。`-Execute`は同じsnapshotのdry-run planが無ければ**拒否**する | しない |
+| `scripts/Get-UETemplateLeaseVerdict.ps1` | leaseを`free` / `held` / `unknown`の3値で判定する。`unknown`は`free`へ丸めない | しない |
+
+終了codeは `free=0` / `held=1` / `unknown=2`。**実行できなかったcheckも`unknown`（2）を返す**（例外のexit 1を`held`と読み替えない）。`held`は「停止対象がまだ生きている」という観測結果であり、check自体の失敗と同じcodeにしない。
+
+- 回帰は`scripts/Test-UETemplateProcessOwnership.ps1`。自作fixture（writer→子→孫）で負例を固定し、UEを使わない。
+- 帰属不明（snapshotに無いprocess、`creation_utc_ticks`が読めないprocess、writerのidentity不一致、snapshotのhash/run/writer不一致）は**停止しない**。dry-run・実行後の検証とも`unknown`を返し、`free`と言わない。
+- PIDを再利用した別process（`creation_utc_ticks`がsnapshotと不一致）は停止対象から外す。
+- lease判定の`WRITER: pid=... alive=true`は「**このrunの**writerが生きている」の意味で、PIDが存在するだけでは`alive=true`にしない。PIDは存在するが`creation_utc_ticks`がsnapshotと違う場合は`pid-present=True` / `identity-verified=False` / `alive=False`として記録し、PID再利用と「終了した」を区別する。
+- 回収結果は`templates/QA.md`の当該行へ、停止対象件数・停止件数・残存件数・残存の帰属不明件数・判定の5つで記録する。空欄のまま納品しない。
+
+### 制約（job objectに依存しない）
+
+job objectは回収の唯一の根拠にしない。Microsoftの仕様（[Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)、2026-11-05参照）では、jobに属したprocessの子は既定でjobへ継承されるが、**`Win32_Process.Create`経由で作られた子は継承されない**。したがってjob単独では木を閉じられない。本テンプレートの帰属は**snapshotの親子鎖**で行い、job objectの採用は必須条件にしない。
 
 ## 最小smokeの証拠
 

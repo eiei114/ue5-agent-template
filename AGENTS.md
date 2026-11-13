@@ -12,7 +12,7 @@ README → docs/01-start → 対象工程のdocs。現行Issue・owner指示・�
 4. 最初は追加素材なしの立方体・床・光・カメラ。小さいpreview→目視→調整→本番。UEテンプレートは当該hostの正規既存インストールから生成。
 5. 映像はフレーム・全編・継ぎ目・音を検査。実行版はShipping梱包後、別フォルダ展開から起動・操作・5分測定。
 6. CREDITS / QA / manifest / SHAを**同じ最終版**へ固定して納品。見た目未検品や旧版ZIPは完成でない。
-7. 自分のrun所有processを同期回収し、自分のleaseだけ解放。共有Chromeは維持指示と所有権に従い触らない。
+7. 自分のrun所有process（範囲は `docs/01-start.md` の「run所有プロセスの範囲」）を同期回収し、自分のleaseだけ解放。共有Chromeは維持指示と所有権に従い触らない。回収はsnapshotの`(process_id, creation_utc_ticks)`で行い、停止対象一覧を実行前に出す。
 
 ## セッション切断時も復旧・続行する
 
@@ -30,8 +30,8 @@ README → docs/01-start → 対象工程のdocs。現行Issue・owner指示・�
 - 購入、credit消費、追加API billing、新認証・資格情報移送、GitHub作成/push/public/SNS/配布はそれぞれの現行許可を確認。既存案件の2credit許可を再利用しない。
 - GitHubへpush/publicする前に `./scripts/Test-UETemplatePublishSurface.ps1 -RepoRoot <checkout>` を実行し、exit 0 と `SUMMARY: ... fail=0` を確認する。`FAIL:` は1行1件ずつ潰し、exit 2（worktreeでない・indexが空）は通過扱いにしない。`.gitignore` は未追跡物しか止めないので、この監査の代用にしない（詳細と3つのFALSE PASSの実測は `docs/06-delivery.md`）。
 - secrets、cookie、token、署名URL、auth.json、環境変数全体、生transcriptを読取/出力/commitしない。
-- 既存writerへ割込まない。名前指定kill、leaseの時刻だけでの強制解除、他人のdirty差分のstash/restore/削除は禁止。
-- run終了後に残すbuild/renderは不可。完了・安全停止を当該turn内で回収。
+- 既存writerへ割込まない。名前指定kill（`Stop-Process -Name` / `taskkill /IM` / `Get-Process <name> | Stop-Process`）、leaseの時刻だけでの強制解除、他人のdirty差分のstash/restore/削除は禁止。停止は `scripts/Stop-UETemplateRunProcesses.ps1` のidentity指定（`process_id` + `creation_utc_ticks`）だけを使う。
+- run終了後に残すbuild/renderは不可。完了・安全停止を当該turn内で回収。回収結果（停止対象件数・停止件数・残存件数・残存の帰属不明件数・判定）は `templates/QA.md` に記録し、空欄のまま納品しない。PIDの生存だけを根拠にleaseを`free`と言わず、`unknown`を`free`に読み替えない。
 - `completed` は成果完成でない。未検証はUnverified、owner受入前はDoneにしない。
 
 ## フォルダ

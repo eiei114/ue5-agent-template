@@ -68,6 +68,7 @@ writer/lease nonce・取得/解放receipt（`scripts/Lease-UETemplateProject.ps1
 
 
 
+
 ## 画像列・通知・MP4・目視・音の独立判定
 
 1項目のpassを他項目へ読み替えない。特に次を守る。
@@ -88,5 +89,21 @@ writer/lease nonce・取得/解放receipt（`scripts/Lease-UETemplateProject.ps1
 
 `QA-NET-*`の行も互いの代用にしない。host作成のpassはjoin・replication・leave・reconnectのpassではない。`QA-NET-08`（timeoutの発生）と`QA-NET-09`（timeout後の後始末）は別の主張で、片方のpassでもう片方を埋めない。Editor compileの成功、`scripts/Test-UETemplateScaffold.ps1`のPASS、pluginの自動test PASSは2-client接続の実測ではない。`docs/08-online-foundations.md`の「2-client接続probeはUnverified」という記録を、この表の行があるだけで変更しない。
 
+## run所有processの回収（停止対象一覧→実行→検証）
+
+空欄・`unverified`のまま納品しない。4つの数と判定を、実測のreportから書き写す。
+
+```text
+停止対象件数（plan.stop_targets）              ：
+停止件数（verification.stopped_count）          ：
+残存件数（verification.residual_count）          ：
+残存の帰属不明件数（verification.gap_count）    ：
+判定（free / held / unknown）                    ：
+plan path / verification path / snapshot sha256  ：
+```
+
+- `unknown`は合格にしない。帰属不明のprocessは停止せず、理由（`live-process-not-in-snapshot` / `pid-reused-or-identity-mismatch` / `snapshot-hash-mismatch`等）を残す。
+- 他人のprocess・共有Chrome・writerの親は停止対象外。件数は`excluded`として別に数える。
+- `writer_pid`の生存だけを根拠に`free`と書かない（旧leaseは`unknown`になる）。
+
 残作業/次担当/再開条件：
-run所有process終了・他人のprocess非干渉：

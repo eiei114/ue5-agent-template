@@ -67,6 +67,38 @@ MRQ後の`frames/`をencodeする前に、期待範囲と実ファイルを照�
 
 `Measure-UERenderArtifacts.ps1`は欠番・範囲外・曖昧名・0 byte・decode不能・解像度不一致を検出し、reportを新規作成する。終了codeはpass=0/fail=1/unverified=2。**`-frames:v`は出力frame数の上限であり尺の検証ではない**ので、encode後に`Measure-UECaptureEncode.ps1`がpreset定義の期待frame数・秒数・解像度・fpsを実測と照合する（`evidence/encode-check.json`）。不一致はfail、測れない（ffprobe不在・timeout・video stream数が1でない）はunverifiedで、どちらもpassにしない。通知/exit、画像列、MP4、目視、音は別判定として扱う（[検品](docs/05-qa.md)）。回帰は`scripts/Test-UERenderArtifacts.ps1`と`scripts/Test-UECaptureEncode.ps1`。UE実機のMRQ・ffprobe・映像/音/loopの実測は未検証（Unverified）。
 
+## run所有プロセスの回収
+
+workerのrunは自分のプロセス木（writer + 子孫）を同期回収しなければならない（`AGENTS.md`）。名前指定killは禁止で、leaseの`writer_pid`単独では子孫に到達できないため、run開始時のスナップショットを帰属根拠にする。
+
+```powershell
+# 1. run開始時（lease取得直後）: writerとプロセス表を1回観測し、leaseに process_snapshot を記録
+.\scripts\Start-UETemplateRunProcessSnapshot.ps1 `
+  -RunId <runid> `
+  -SnapshotPath '<project>\Out\run_<runid>\evidence\process-snapshot.json' `
+  -LeasePath '<project>\LEASE.json'
+
+# 2. 停止前に必ず対象一覧を出す（dry-run。何も停止しない）
+.\scripts\Stop-UETemplateRunProcesses.ps1 `
+  -SnapshotPath '<project>\Out\run_<runid>\evidence\process-snapshot.json' `
+  -ReportPath '<project>\Out\run_<runid>\evidence\process-stop-plan.json'
+
+# 3. 一覧のidentityだけを停止し、残存と帰属不明を検証する
+.\scripts\Stop-UETemplateRunProcesses.ps1 `
+  -SnapshotPath '<project>\Out\run_<runid>\evidence\process-snapshot.json' `
+  -ReportPath '<project>\Out\run_<runid>\evidence\process-stop-plan.json' `
+  -Execute `
+  -VerificationPath '<project>\Out\run_<runid>\evidence\process-stop-verification.json'
+
+# 4. leaseを free / held / unknown の3値で判定（writer_pidが死んだだけでは free にしない）
+.\scripts\Get-UETemplateLeaseVerdict.ps1 -LeasePath '<project>\LEASE.json' -ReportPath '<project>\Out\run_<runid>\evidence\lease-check.json'
+```
+
+- 帰属不明（snapshotに無いprocess、PID再利用、hash/run/writer不一致）は停止せず `unknown`。`unknown`を`free`に読み替えない。
+- 終了codeは `free=0` / `held=1` / `unknown=2`。check自体が実行できなかった場合も`unknown`（2）を返すので、`held`（1）を「check失敗」の意味に使わない。
+- 共有Chrome・他runのprocess・writerの親は停止対象外として記録する。
+- UEを起動しない層なので、UEのbuild/Editor/renderはこの手順の対象外。回帰は`scripts/Test-UETemplateProcessOwnership.ps1`（UE不使用の自作fixture）。詳細は[着手手順](docs/01-start.md)のlease節。
+
 ## GitHubから開始
 
 ```text
