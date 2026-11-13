@@ -71,6 +71,13 @@ jobs:
           ./scripts/Test-UECreditsInventory.ps1
           if ($LASTEXITCODE -ne 0) { throw "Test-UECreditsInventory.ps1 exited $LASTEXITCODE" }
 
+      - name: Integration review regressions
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./scripts/Test-UEIntegrationReview.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Test-UEIntegrationReview.ps1 exited $LASTEXITCODE" }
+
   lease:
     name: lease protocol
     runs-on: windows-latest

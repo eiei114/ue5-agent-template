@@ -2057,6 +2057,7 @@ try {
 		'FolderRenames=(From="Source/%TEMPLATENAME%", To="Source/%PROJECTNAME%")',
 		'FolderRenames=(From="Content/Template",To="Content/Project")',
 		'FolderRenames=(From="Content/Template2",To="Content/Project2") ; trailing text the previous reader accepted',
+		'FilenameReplacements=(Extensions=("cpp","h","cs"), From="%TEMPLATENAME%", To="%PROJECTNAME%", bCaseSensitive=false)',
 		'ReplacementsInFiles=(Extensions=("cpp","h","ini","cs"), From="%TEMPLATENAME%", To="%PROJECTNAME%", bCaseSensitive=false)',
 		'SharedContentPacks=( MountName = "SpacedPack" , DetailLevels=("Standard") )',
 		'SharedContentPacks=(MountName=Variant_Shooter, DetailLevels=("Standard"))',
