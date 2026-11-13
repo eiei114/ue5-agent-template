@@ -335,7 +335,7 @@ try {
 	# FAIL came from the rule and not from some unrelated line.
 	$mutantPath = Join-Path $fixtureRoot 'mutant-auditor.ps1'
 	$auditorSource = [System.IO.File]::ReadAllText($auditor)
-	$binaryRule = "Pattern = '(?:\.(?:bundle|7z|rar|tar|gz|tgz|bz2|xz|exe|dll|pdb|lib|so|dylib|uasset|umap|pak|utoc|ucas|mp4|mov|wav|mp3|fbx|psd))$'"
+	$binaryRule = "Pattern = '(?:\.(?:zip|bundle|7z|rar|tar|gz|tgz|bz2|xz|exe|dll|pdb|lib|so|dylib|uasset|umap|pak|utoc|ucas|mp4|mov|wav|mp3|fbx|psd))$'"
 	Assert-True ($auditorSource.Contains($binaryRule)) 'the auditor still declares the distribution-binary rule this group mutates'
 	$mutantSource = $auditorSource.Replace($binaryRule, "Pattern = '(?:NEVER-MATCHES-ANYTHING)$'")
 	Assert-True ($mutantSource -cne $auditorSource) 'the mutant auditor actually differs from the auditor'

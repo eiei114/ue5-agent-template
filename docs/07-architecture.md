@@ -40,7 +40,6 @@ generatorはEngineの既存templateをコピーし、recipe文書・online plugi
 | `ReplacementsInFiles` | 適用しない | `Extensions`のテキストfileで`%TEMPLATENAME%`→`<Name>`置換。置換後のfile名・pathも同じ封じ込めを通す |
 | `SharedContentPacks` | `Templates/TemplateResources/<DetailLevel>/<Mount>/Content` → `Content/<Mount>`へコピー。mount先を`$Destination`配下に封じ込め、既存fileは上書きせず停止 | 同左 |
 | `EditDetailLevelPreference` | 展開先のdetail level解決に使う。そのlevelに実体が無いmount（`TP_FirstPerson`の`Weapons`は`Standard`のみ）は、`High` → `Standard` の順で実在するlevelを選ぶ | 同左 |
-| その他のキー（`FilenameReplacements` / per-mount `DetailLevels` 等） | 未実装（無声で無視）。規則解釈の忠実性は`DOT-3135`の担当 | 同左 |
 
 封じ込め判定は`Resolve-ContainedPath`1つに集約し、`GetFullPath`で正規化したpathが出力ディレクトリ+区切り文字で始まるか（`OrdinalIgnoreCase`）で判定する。出力ディレクトリ自体の`Production/`内判定も同じ関数を使う。
 
@@ -101,7 +100,7 @@ generatorはrecipe名を一切見ない。`-Recipe` は `templates/recipes/<Reci
 
 ### lock に載る項目
 
-`template-lock.json`（`schema_version: 2`）は、recipe層では `recipe` / `purpose` / `plugins` / `online_session_identifier` を記録する。`recipe` は**実際に合成したディレクトリ名**（`recipe.json` の `recipe` と一致していることを生成前に検査済み）であり、CLIで選んだ値とlockの値が食い違うことはない。
+`template-lock.json`（`schema_version: 5`）は、recipe層では `recipe` / `purpose` / `plugins` / `online_session_identifier` を記録する。`recipe` は**実際に合成したディレクトリ名**（`recipe.json` の `recipe` と一致していることを生成前に検査済み）であり、CLIで選んだ値とlockの値が食い違うことはない。
 
 ### 追加時の確認
 
@@ -131,9 +130,9 @@ Blueprintなどの`.uasset`はtemplateのままbyte単位でコピーする。�
 | 置換不能時 | コピー前に照合し、既知パターンに一致しない場合は停止して未一致pathを列挙する。生コピーを黙って出力しない | generatorのstderr/例外、`scripts/Test-UETemplateScaffold.ps1`の負例 |
 | 規約外の書き込み先 | `FolderRenames` / `SharedContentPacks` が出力ディレクトリの外を指す場合は書き込み前に停止し、外に残骸を残さない | generatorの例外メッセージ（`Container escape stopped the scaffold`）、`scripts/Test-UETemplateScaffold.ps1`の負例 |
 
-lockは`schema_version: 4`で、上記3項目を`identity`に、template provenanceを`template_*`に持つ。単位は作品（`Production/<Name>_<runid>/template-lock.json`）であり、identityを手で書き換えない。
+lockは`schema_version: 5`で、上記3項目を`identity`に、template provenanceを`template_*`に持つ。単位は作品（`Production/<Name>_<runid>/template-lock.json`）であり、identityを手で書き換えない。
 
-### lockが固定するengine build identity（`schema_version: 4`）
+### lockが固定するengine build identity（`schema_version: 5`）
 
 | field | 由来 | 契約 |
 |---|---|---|
@@ -150,7 +149,7 @@ Epic自身の`Build.version`は`Changelist: 0` + `CompatibleChangelist: <identif
 
 `DefaultGame.ini`側は、エンジンが完全一致でしかセクション名を解決しない（`FConfigFileMap`は別名解決を持たない）ため、templateが持つ短い`[ProjectSettings]` headerをそのまま残さない。generatorはidentity行だけを長い名前に移し、短いheaderがidentity以外を持たなければ落とす。同一keyが複数セクションに散在するなど一意に畳めない形では推測せず停止し、対象ファイル・セクション・keyを列挙する。`TP_BlankBP`のようにidentity block自体が無いtemplateではセクションごと作る（engine既定の`BaseGame.ini`も長い名前で同じkeyを宣言している）。
 
-lockは`schema_version: 3`で、上記のファイル/モジュール`identity`と`DefaultGame.ini`の`default_game_ini_identity`を持つ。単位は作品（`Production/<Name>_<runid>/template-lock.json`）であり、identityを手で書き換えない。
+lockは`schema_version: 5`で、上記のファイル/モジュール`identity`と`DefaultGame.ini`の`default_game_ini_identity`を持つ。単位は作品（`Production/<Name>_<runid>/template-lock.json`）であり、identityを手で書き換えない。
 
 **`null` = 不明。0／空文字は「エンジンがそう書いた」値だけに使う。** plugin版も同じ規則で、`.uplugin`が`VersionName`/`Version`を持たない場合は`plugins.<name> = null`とする。
 
@@ -188,7 +187,7 @@ generatorは`Production/.stage-<runid>-<nonce>/`に全成果物を作り、最�
 - `Production/<Name>_<runid>/`を作るのはgeneratorだけで、lease工程はこのdirを作らない。中身が空でも`LEASE.json`だけでも`Out/`だけでも、generatorは「順序誤り」と判別できるメッセージで停止する（削除・上書きはしない）。
 - 上の1行を機械可読な正本とし、`scripts/Test-UETemplateScaffold.ps1`が`AGENTS.md`・`README.md`・`docs/01-start.md`が同じpathを指していることを照合する。文書を変えるときはこの行を先に変え、他文書を追随させる。
 
-### lockが固定するtemplate provenance（`schema_version: 4`）
+### lockが固定するtemplate provenance（`schema_version: 5`）
 
 | field | 意味 | 値を読むときの約束 |
 |---|---|---|
@@ -223,25 +222,21 @@ lockはtemplate commit SHA、clean/dirty状態、UE version/changelist、Engine/
 
 **変更理由:** 共通環境の二重管理を避けながら、同じsetのプレイ/撮影と映像専用入口を小さく始める。生成時のdependency driftをlockで可視化し、template更新で制作中作品を壊さない。
 
-lockは`schema_version: 3`で、上記3項目を`identity`に持ち、plugin identityを`plugins`に持つ。単位は作品（`Production/<Name>_<runid>/template-lock.json`）であり、identityを手で書き換えない。
+lockは`schema_version: 5`で、上記3項目を`identity`に持ち、plugin identityを`plugins`に持つ。単位は作品（`Production/<Name>_<runid>/template-lock.json`）であり、identityを手で書き換えない。
 
 ### plugin identity契約（1つだけ）
 
 | 項目 | 契約 | 確認先 |
 |---|---|---|
 | 記録範囲 | `plugins`は生成`.uproject`の`Plugins`配列の**全entry**を、`Name`の昇順で1件ずつ持つ。recipeの`required_plugins`だけを記録しない（template出来のpluginも載る） | 生成`.uproject`の`Plugins`、`template-lock.json`の`plugins`のkey集合 |
-| 各entryの形 | `{ version, source, enabled_in_project }`。`version`はそのinstallの`.uplugin`の`VersionName`（空なら`Version`）、読めなければ文字列`unknown`。`source`は`project`／`repository`／`engine`。`enabled_in_project`は生成`.uproject`で`Enabled: true`かどうか | `plugins.<Name>`、実`.uplugin` |
+| 各entryの形 | `{ version, source, enabled_in_project }`。`version`はそのinstallの`.uplugin`の`VersionName`（空なら`Version`）、読めなければJSON `null`。`source`は`project`／`repository`／`engine`。`enabled_in_project`は生成`.uproject`で`Enabled: true`かどうか | `plugins.<Name>`、実`.uplugin` |
 | 実在検証 | 生成`.uproject`で`Enabled: true`のpluginは、コピー前に`.uplugin`の実在を確認する。存在しなければ**出力directoryを作らずに停止**し、未解決plugin名と探索したpathを列挙する | generatorの例外、`scripts/Test-UETemplateScaffold.ps1`の`PhantomPlugin`負例 |
 | 探索順 | 生成projectの`Plugins/<Name>/<Name>.uplugin` → repoの`templates/online/<Name>/<Name>.uplugin` → engineの`Engine/Plugins/<Category>/<Name>/<Name>.uplugin` → `Engine/Plugins/**`の再帰探索。固定mapに無いplugin名でも止まらない | `plugins.<Name>.source` |
-| 版を捏造しない | `.uplugin`から読めない版は`unknown`として残し、推測値・既定値を入れない。`engine_version`/`engine_changelist`は`Engine/Build/Build.version`のみを写し、plugin版を混ぜない | `plugins.<Name>.version` |
+| 版を捏造しない | `.uplugin`から読めない版は`null`として残し、推測値・既定値を入れない。`engine_version`/`engine_changelist`は`Engine/Build/Build.version`のみを写し、plugin版を混ぜない | `plugins.<Name>.version` |
 
 同一の`ProjectName`/`RunId`/`ProjectDiff`を、plugin集合か版が違う2つのEngine installで生成した場合、`plugins`が違うのでlockはbyte一致しない。
 
-## lockと更新手順
-
 lockはtemplate commit SHA、clean/dirty状態、UE version/changelist、Engine/plugin version、recipe/use、作品差分、project identityを固定する。「Engine/plugin version」は2つを指す — **Engine build**（`engine_version`/`engine_changelist`、`Engine/Build/Build.version`の写し）と、**生成projectがenableするpluginの版**（`plugins.<Name>.version`、各`.uplugin`の写し）。lockに載らないpluginは無い。実作はcommit済み・cleanなtemplateから生成する。dirty時の生成は拒否し、テストだけ明示的な`-AllowDirtyTemplate`を使う。
-
-共通更新は新RunIdの空Production directoryへ生成し、既存projectを上書きせず、lock・作品差分・移行手順・対象版の検品結果を比較する。UE/Plugin更新の自動伝播はしない。
 
 **変更理由:** 共通環境の二重管理を避けながら、同じsetのプレイ/撮影と映像専用入口を小さく始める。生成時のdependency driftをlockで可視化し、template更新で制作中作品を壊さない。plugin側のdriftも同じlockで見えるようにした（記録範囲を`.uproject`の実体に合わせ、存在しないpluginを有効化したまま成功しない）。
 
@@ -260,8 +255,6 @@ Multicaの既存ボードと管理機会で「出典調査→候補→小さな�
 
 作品には共通commit SHA・UE/Plugin版・レシピ・ローカル差分を記録する。制作中の作品は固定版を使い、自動更新・上書きをしない。更新時は差分、移行方法、検品結果を残す（repo 側の変更理由と移行手順は `CHANGELOG.md`、作品固有の差分は作品の `QA.md` / `DELIVERY.json`）。
 
-## 継続改善
-
 Multicaの既存ボードと管理機会で「出典調査→候補→小さな検証→採否→変更理由・移行手順」を記録。公式仕様・掲示板の事例・当該host実測を区別する。未検証情報を既定値へ昇格しない。採否に至った repo の変更理由と移行手順は `CHANGELOG.md` に残す（ここに書いて終わりにしない）。
 Epic公式Custom TemplatesとPluginsを参考にするが、文書テンプレートはUE登録済みproject templateとは別物。
 
@@ -269,3 +262,13 @@ Epic公式Custom TemplatesとPluginsを参考にするが、文書テンプレ�
 - https://dev.epicgames.com/documentation/en-us/unreal-engine/plugins-in-unreal-engine
 
 課金、素材権利、認証、他作品の公開gateは変えない。オンラインサービスも無料枠・運用費・接続制約を都度確認し、無料保証をしない。
+
+## 統合契約（schema 5）
+
+全recipeは1つのcopy/projection経路を使い、path予算と実コピーで同じ規則を適用する。recipe構成、実測template provenance、engine build identity、全project plugin identity、DefaultGame.ini identity、適用規則、共有packを同じlockへ記録する。pluginの版を取得できない場合は`plugins.<Name>.version = null`（schema 3の文字列unknownから変更）。engineが明示した空のBranchNameは空文字のまま保持する。schemaは単調増加し、既存projectのlockは書き換えない。更新時は新RunIdで生成して比較する。
+
+全生成物は自runのstage内で完成させ、lockを最後に書いてからrename公開する。identity不一致の失敗では部分出力を残さない。規則の負例は変換関数自体の不変性と公開dir不在を別々に検証する。台帳の配置は上記preflight-lease-placementが正本。
+
+README自身のhashは外部DELIVERY.json/SHA256SUMS.txtへ保存し、READMEに自己hashを書かない。ZIP内の操作READMEには包むZIPの最終hashを含めず、最終receiptを外部に置く。source ZIPも納品種別として扱う（kind=source_zip、実行版ではない）。公開前はindexとpush対象HEAD履歴の両方を監査する。
+
+統合回帰はPowerShell/合成fixtureのみ。UE compile、Editor、PIE、LAN、MRQ、Shipping、Mac実機は未実施（Unverified）。

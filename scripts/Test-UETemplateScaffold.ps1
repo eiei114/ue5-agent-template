@@ -1923,7 +1923,7 @@ try {
 	Copy-Item -LiteralPath $generator -Destination $deepGenerator -Force
 	$deepStopFailure = ''
 	try {
-		& $deepGenerator -Recipe 'spectator-explore' -ProjectName 'PthB_dk1' -RunId 'dk' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -MaxPathLength 32767 -SkipTemplatePublishCheck | Out-Null
+		& $deepGenerator -Recipe 'spectator-explore' -ProjectName 'PthB_dk1' -RunId 'dk' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -SkipTemplatePublishCheck | Out-Null
 	} catch { $deepStopFailure = $_.Exception.Message }
 	Assert-True ($deepStopFailure.Contains('260-character budget')) 'a deeper clone root stops the default-budget run without changing the generated tree'
 	Assert-True ($deepStopFailure.Contains($deepRepoRoot)) 'the deep-root stop names the checkout root that made the tree too long'
@@ -1936,7 +1936,7 @@ try {
 
 	# The measured value must equal the tree that actually lands on disk, including the recipe that
 	# rewrites paths through TemplateDefs.ini (folder renames change the relative lengths).
-	$materializedOutput = (& $generator -Recipe 'third-person-game' -ProjectName $pathBudgetMaterializedName -RunId 'budget' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -SkipTemplatePublishCheck -MaxPathLength $unboundedPathBudget) -join "`n"
+	$materializedOutput = (& $generator -Recipe 'third-person-game' -ProjectName $pathBudgetMaterializedName -RunId $testId -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -SkipTemplatePublishCheck -MaxPathLength $unboundedPathBudget) -join "`n"
 	$materializedMatch = [regex]::Match($materializedOutput, 'longest planned path (\d+) characters')
 	Assert-True ($materializedMatch.Success) 'the materializing recipe reports its measured longest path too'
 	$materializedDir = Join-Path $productionRoot (('{0}_' + $testId) -f $pathBudgetMaterializedName)

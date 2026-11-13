@@ -68,23 +68,19 @@ preflightとleaseの記録先は`Production/.runs/run_<runid>/`のみ。生成�
 
 project identityの契約は1つだけ。`scripts/New-UETemplateScaffold.ps1`はインストール済みUE公式templateから生成し、**projectファイル名・`Modules[].Name`・`Source/<Module>`は常に互いに一致**していなければならない。`EngineAssociation`は`Engine/Build/Build.version`から導いた値（例`5.8`）を必ず書き込む。
 
-- `materialize_project: true`のrecipe（`third-person-game`）は、template自身の`Config/TemplateDefs.ini`をUEウィザードと同じ規則で適用するため、`<Name>.uproject` / `Source/<Name>` / `Modules[].Name = <Name>`になる。改名したreflected classは`Config/DefaultEngine.ini`の`[/Script/Engine.Engine] +ActiveClassRedirects`で旧名から解決し、`[CoreRedirects] +PackageRedirects`と併用する（片方だけにしない）。
 
-- `materialize_project: true`のrecipe（`third-person-game`）は、template自身の`Config/TemplateDefs.ini`のうち実装しているキー（`FoldersToIgnore` / `FilesToIgnore` / `FolderRenames` / `ReplacementsInFiles` / `SharedContentPacks`）だけを適用するため、`<Name>.uproject` / `Source/<Name>` / `Modules[].Name = <Name>`になる。UEウィザードの全規則ではなく（`FilenameReplacements`等は未実装、Epic公式docsにschemaは無い）、`FolderRenames` / `SharedContentPacks`の書き込み先は出力ディレクトリ配下に封じ込め、外れたら書き込み前に停止する（`docs/07-architecture.md`の「TemplateDefs.ini契約」）。
 
 - `materialize_project: true`のrecipe（`third-person-game`）は、template自身の`Config/TemplateDefs.ini`のうち実装している7キー（`FoldersToIgnore` / `FilesToIgnore` / `FolderRenames` / `FilenameReplacements` / `ReplacementsInFiles` / `SharedContentPacks` / `EditDetailLevelPreference`）を適用するので、`<Name>.uproject` / `Source/<Name>` / `Modules[].Name = <Name>`になる。ファイル名のrenameは`FilenameReplacements`、本文の置換は`ReplacementsInFiles`で別の`Extensions`を持つ。`From` / `To` / `bCaseSensitive`はtupleごとに使い、`%TEMPLATENAME_UPPERCASE%`等のtokenも展開する。共有packの探索はmountごとの`DetailLevels`を優先する。実装していないキー（`LocalizedDisplayNames` / `Categories` / `Variants`等のwizard metadata）は**警告して継続**し、適用/未適用キーを`template-lock.json`の`template_defs`に記録する。"UEウィザードと同じ"とは書かない（公式文書にschemaが無く、engine実物との照合も限定的なので、実装範囲を列挙して示す）。
 - それ以外のrecipe（`spectator-explore` / `vertical-loop`）は生コピーするため、template名（`TP_FirstPerson` / `TP_BlankBP`）がそのまま残る。ここで`.uproject`だけrenameすると`Source/**/*.Build.cs`と食い違う。
 - renameを適用しない生コピー経路でも、template自身の`Config/TemplateDefs.ini`は読む。`FoldersToIgnore` / `FilesToIgnore`で`Media/`や`Config/TemplateDefs.ini`を出力に残さず、`SharedContentPacks`を`Content/<Mount>`へ展開する（`spectator-explore`なら`Characters` / `LevelPrototyping` / `Input` / `Weapons`）。既定mapを開くのに必要なpackを落として成功を名乗らない。展開結果は`template-lock.json`の`shared_content_packs`で確認できる。
 
-generatorはコピー前にdescriptorと`Source/`を照合し、既知パターンに一致しなければ**推測で続行せず停止**して未一致pathを列挙する。コピー後にもコピー物同士で同じ照合を行い、食い違えばdescriptorを書き換えずに停止する。生成後に`.uproject`を手でrenameしない。identityは`template-lock.json`の`identity`（`project_file` / `project_modules` / `engine_association`、`schema_version: 4`）に記録され、そこで確認できる。
+generatorはコピー前にdescriptorと`Source/`を照合し、既知パターンに一致しなければ**推測で続行せず停止**して未一致pathを列挙する。コピー後にもコピー物同士で同じ照合を行い、食い違えばdescriptorを書き換えずに停止する。生成後に`.uproject`を手でrenameしない。identityは`template-lock.json`の`identity`（`project_file` / `project_modules` / `engine_association`、`schema_version: 5`）に記録され、そこで確認できる。
 
 engine build identityも同じ規則でlockに載る。`engine_version`は`Build.version`の3つの版fieldが全て数値であることが前提で、欠落・非数値なら生成は停止する。`engine_changelist`はUEの導出規則（`Changelist`と`CompatibleChangelist`が両方非0なら後者、さもなくば前者）で求めた値で、生値`engine_changelist_raw`・`engine_compatible_changelist`・`engine_is_licensee_version`・`engine_is_promoted_build`・`engine_branch_name`を併記する。**エンジンが書いていない値は`null`**で、`0`や空文字を「不明」の代用にしない。plugin版も`.uplugin`が未設定なら`null`。lockを比べるときはbyteやsha256ではなくparseしたJSONのfield比較を使う（`ConvertTo-Json`の整形がshell間で異なるため）。
 
 template provenanceも`template-lock.json`に残る。`template_repository`は生成に使ったcheckoutの実測clone元（定数ではない。remote無しなら`null`）、`template_source_kind`は`remote` / `local-path` / `bundle` / `no-remote` / `no-origin`、`template_commit_published`は「そのSHAをそのrepoから取得できることを実測したか」で`true` / `false` / `null`（**`null`は未検査**）。既定の生成は`true`でなければ停止する。未pushやbundleで通す場合は`-AllowUnpublishedTemplate`（実測の`false`/`null`をlockに残す）または`-SkipTemplatePublishCheck`（probeせず`null`）を明示し、そのlockを**第三者へ渡す前に**記録SHAを配信可能なrepoへpushして新RunIdで再生成する。
 
-generatorはコピー前にdescriptorと`Source/`を照合し、既知パターンに一致しなければ**推測で続行せず停止**して未一致pathを列挙する。コピー後にもコピー物同士で同じ照合を行い、食い違えばdescriptorを書き換えずに停止する。生成後に`.uproject`を手でrenameしない。identityは`template-lock.json`の`identity`（`project_file` / `project_modules` / `engine_association`、`schema_version: 3`）に記録され、そこで確認できる。
-
-plugin identityも同じgeneratorが保証する。`template-lock.json`の`plugins`は生成`.uproject`の`Plugins`全entryを`{ version, source, enabled_in_project }`で持ち、`Enabled: true`のpluginはコピー**前**に`.uplugin`の実在を確認する。当該Engine installに存在しなければ出力directoryを作らずに停止し、plugin名と探索pathを列挙する（存在しないpluginを有効化したままexit 0で「開けないproject」を出さない）。版は`.uplugin`の`VersionName`（空なら`Version`）を写し、読めない場合は文字列`unknown`を残して推測しない。
+plugin identityも同じgeneratorが保証する。`template-lock.json`の`plugins`は生成`.uproject`の`Plugins`全entryを`{ version, source, enabled_in_project }`で持ち、`Enabled: true`のpluginはコピー**前**に`.uplugin`の実在を確認する。当該Engine installに存在しなければ出力directoryを作らずに停止し、plugin名と探索pathを列挙する（存在しないpluginを有効化したままexit 0で「開けないproject」を出さない）。版は`.uplugin`の`VersionName`（空なら`Version`）を写し、読めない場合はJSON `null`を残して推測しない。
 
 ## 生成の公開と残骸の扱い
 
@@ -93,7 +89,7 @@ plugin identityも同じgeneratorが保証する。`template-lock.json`の`plugi
 - 公開済パスに`template-lock.json`が無い残骸は、**そのrunの生成が失敗終端していることを確認できた場合に限り**削除候補になる。他のrunの出力・他人のstagingは消さない。判断できない場合は`AGENTS.md:11`の「既存なら停止」を優先して停止し、確認した内容をQAへ記録する。
 - 削除を自動化しない。残骸の判断はwriter/人間に残す。
 
-generatorはコピー前にdescriptorと`Source/`を照合し、既知パターンに一致しなければ**推測で続行せず停止**して未一致pathを列挙する。コピー後にもコピー物同士で同じ照合を行い、食い違えばdescriptorを書き換えずに停止する。生成後に`.uproject`を手でrenameしない。identityは`template-lock.json`の`identity`（`project_file` / `project_modules` / `engine_association`）と`default_game_ini_identity`（`section` / `project_id` / `project_name` / `normalized_from_section` / `created_section`、`schema_version: 3`）に記録され、そこで確認できる。
+generatorはコピー前にdescriptorと`Source/`を照合し、既知パターンに一致しなければ**推測で続行せず停止**して未一致pathを列挙する。コピー後にもコピー物同士で同じ照合を行い、食い違えばdescriptorを書き換えずに停止する。生成後に`.uproject`を手でrenameしない。identityは`template-lock.json`の`identity`（`project_file` / `project_modules` / `engine_association`）と`default_game_ini_identity`（`section` / `project_id` / `project_name` / `normalized_from_section` / `created_section`、`schema_version: 5`）に記録され、そこで確認できる。
 
 `Config/DefaultGame.ini`の`ProjectID`/`ProjectName`はengineが読む`[/Script/EngineSettings.GeneralProjectSettings]`配下にだけ置く。templateが短い`[ProjectSettings]` headerで持っている場合は長い名前に移し、identity blockが無いtemplateではセクションごと作る。生コピーrecipeもtemplateの`ProjectID`を引き継がず、生成project名から導いた自分の`ProjectID`を持つ。どのrecipeでも同じ短いheaderやtemplate既定の`ProjectName`が残ったままは完了にしない。
 

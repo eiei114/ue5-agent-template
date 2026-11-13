@@ -56,7 +56,7 @@ recipeの正本は各 [`recipe.json`](../templates/recipes/)。選択可能な�
 
 clone先の推奨は`C:\gh\ue5-agent-template`のような短いpath。実測（2026-11-12、`spectator-explore`／`EmberWatch` + 36文字のrun ID）では、clone root 85文字（生成先144文字）で最長260文字、clone root 86文字（145文字）で最長261文字となり、86文字以上では新しい予算検査が停止する。同じ入力で旧generatorはclone root 86文字でも成功扱いで261文字のtreeを書いた。
 
-`-Recipe`には上表のいずれかを指定する。実行前に既存UEのversion/path、当該templateと必要なtoolchainを確認し、`Production/<ProjectName>_<runid>/`が未使用であることを確かめる。生成後は`template-lock.json`の`identity`と`plugins`を生成`.uproject`と照合してからEditorで開く — 照合するのは、`.uproject`の`Plugins`配列の`Name`/`Enabled`が`plugins`の同じ`Name`/`enabled_in_project`と一致すること、`plugins.<Name>.version`が当該installの`.uplugin`の`VersionName`と一致すること（`unknown`は版が読めなかったという意味で、一致ではない）。generatorはidentityの照合に失敗したら停止し、**enableするpluginが当該Engine installに無い場合も出力directoryを作らずに停止**してplugin名と探索pathを列挙する。既存projectを上書きしない。実際のmap/Sequence/作品Contentは生成しない。
+`-Recipe`には上表のいずれかを指定する。実行前に既存UEのversion/path、当該templateと必要なtoolchainを確認し、`Production/<ProjectName>_<runid>/`が未使用であることを確かめる。生成後は`template-lock.json`の`identity`と`plugins`を生成`.uproject`と照合してからEditorで開く — 照合するのは、`.uproject`の`Plugins`配列の`Name`/`Enabled`が`plugins`の同じ`Name`/`enabled_in_project`と一致すること、`plugins.<Name>.version`が当該installの`.uplugin`の`VersionName`と一致すること（`null`は版が読めなかったという意味で、一致ではない）。generatorはidentityの照合に失敗したら停止し、**enableするpluginが当該Engine installに無い場合も出力directoryを作らずに停止**してplugin名と探索pathを列挙する。既存projectを上書きしない。実際のmap/Sequence/作品Contentは生成しない。
 
 ### 公開はatomic、`template-lock.json`は完成マーカー
 

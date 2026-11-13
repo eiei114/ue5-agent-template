@@ -669,3 +669,9 @@ Unverified Scope: 文書と recipe JSON / generator `ValidateSet` の静的照�
 移行: 運用文書の変更のみ。新規認証・権限設定・代替接続・他 writer の終了は引き続き禁止で、既存 gate は変わらない。
 
 Unverified Scope: 画面経路と Computer Use の両方が使える状況での復旧実操作は実行していない。本件以降の `DOT-3399` が同じ節を再度締め直している。
+
+## Unreleased — all-open-pr integration — 2026-11-13
+
+- #17–#49の当初open 28 PRを履歴保持で統合。generatorのrecipe/provenance/engine/plugin/ini identityとatomic publication、path confinement、class redirectsを1経路へ合成した。schemaは5へ統一し、不明plugin版はJSON null。全負例を保持し、atomic cleanupと衝突していた「失敗後の部分treeを読む」assertは実変換関数の不変性と出力不在の二重assertへ置換した。
+- PID reuse fixtureの5ms減算が親より古い子を作るCI raceを修正。review指摘のcredits fence/完全group照合、strict Mac観測、index blob/push履歴監査、receipt hash cycle、run固有budget fixtureを修正。
+- 移行: 既存作品を再生成・上書きしない。新RunIdのlock schema 5を比較する。UE実機compile/PIE/LAN/render/Shippingは未実施（Unverified Scope）。

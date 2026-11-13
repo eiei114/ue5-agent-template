@@ -64,7 +64,7 @@ template repoのclone先は**短い絶対path**にする（例`C:\gh\ue5-agent-t
 
 1. 生成`.uproject`の`Plugins`配列（`Name`と`Enabled`）
 2. `template-lock.json`の`plugins` — 同じ`Name`が同じ件数だけあり、`enabled_in_project`が`.uproject`の`Enabled`と一致する
-3. `plugins.<Name>.version` — そのinstallの`.uplugin`の`VersionName`と一致する（`unknown`は「読めなかった」であり、版が一致したという意味ではない）
+3. `plugins.<Name>.version` — そのinstallの`.uplugin`の`VersionName`と一致する（`null`は「読めなかった」であり、版が一致したという意味ではない）
 
 templateがenableするpluginが当該Engine installに存在しない場合、generatorは`.uproject`もlockも書かずに停止し、未解決plugin名と探索pathを列挙する。templateのdescriptorと`Source/`が一致しない場合も同様に生コピーを出さず停止する。更新で既存作品を再生成/上書きしない。
 コード境界とNull/LAN手順は`templates/online/MulticaOnlineStarter/README.md`および[方式比較](docs/08-online-foundations.md)を参照。
