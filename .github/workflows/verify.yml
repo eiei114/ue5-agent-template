@@ -132,20 +132,57 @@ jobs:
 
       # The clean-sequence case asserts decode=pass, which needs a real decoder.
       # Without one the inspector correctly reports decode=unverified and exits 2,
-      # so the suite is capability-dependent, not runner-independent. Provision
-      # the same decoder the documented QA baseline uses instead of weakening the
-      # assertion to "whatever this host happens to have".
-      - name: Provide ffprobe
+      # so the suite is capability-dependent, not runner-independent. The decoder is
+      # therefore fixed by scripts/ffprobe-pin.json (source URL, archive sha256,
+      # ffprobe sha256, version) instead of being taken from the runner image or an
+      # unversioned package install: a different ffprobe ahead on PATH used to change
+      # the verdict with no change to this repository.
+      - name: Provide pinned ffprobe
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          if (Get-Command ffprobe -ErrorAction SilentlyContinue) { return }
-          choco install ffmpeg --yes --no-progress
-          if ($LASTEXITCODE -ne 0) { throw "choco install ffmpeg exited $LASTEXITCODE" }
+          $archiveCache = Join-Path $env:RUNNER_TEMP 'ffprobe-pin-archive.zip'
+          # The script throws on any pin mismatch, so no exit-code check is needed here ($LASTEXITCODE
+          # is not set by a PowerShell script call).
+          $decoderPath = ./scripts/Install-PinnedFfprobe.ps1 -ArchiveCachePath $archiveCache
+          if (-not (Test-Path -LiteralPath $decoderPath -PathType Leaf)) { throw "the pinned decoder was not installed: $decoderPath" }
+          "FFPROBE_HOME=$(Split-Path -Parent $decoderPath)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "FFPROBE_PIN_ARCHIVE=$archiveCache" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # The pinned directory goes first so the suite's own PATH lookup resolves it. A decoder
+          # left earlier on PATH by the runner image is not removed; Test-FfprobePin.ps1 covers
+          # that case explicitly in the next step.
+          "$(Split-Path -Parent $decoderPath)" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Test-FfprobePin.ps1
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Throws on the first pin violation, so a non-pinned decoder fails the job.
+          ./scripts/Test-FfprobePin.ps1 -ArchivePath $env:FFPROBE_PIN_ARCHIVE
 
       - name: ffprobe version
         shell: pwsh
-        run: ffprobe -version
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $resolved = (Get-Command ffprobe -ErrorAction Stop).Source
+          Write-Host "decoder: $resolved"
+          Write-Host "decoder sha256: $((Get-FileHash -LiteralPath $resolved -Algorithm SHA256).Hash.ToLowerInvariant())"
+          ffprobe -version
+          if ($LASTEXITCODE -ne 0) { throw "ffprobe -version exited $LASTEXITCODE" }
+
+      - name: Confirm the PATH decoder is the pinned ffprobe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # The suite resolves its decoder through PATH. Assert that lookup returns the pinned bytes
+          # and version before the assertions run, so a decoder earlier on PATH fails the job here
+          # instead of silently changing the decode verdict.
+          . ./scripts/FfprobePin.ps1
+          $pin = Read-FfprobePin ./scripts/ffprobe-pin.json
+          $resolved = (Get-Command ffprobe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+          $violations = @(Get-FfprobePinViolations -Path $resolved -ExpectedSha256 $pin.ffprobe.sha256 -VersionLinePrefix $pin.ffprobe.version_line_prefix)
+          if ($violations.Count -gt 0) { throw "the resolved decoder is not the pinned one: $($violations -join '; ')" }
+          Write-Host "pinned decoder confirmed: $resolved"
 
       - name: Test-UERenderArtifacts.ps1
         shell: pwsh
