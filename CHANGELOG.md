@@ -221,6 +221,21 @@ git status --porcelain --untracked-files=all  実行前後とも 0 行（生成�
 
 UE install / launch / UBT compile / Editor / PIE / cook / MRQ / render / Shipping は本変更で実行していない。`Source/<Name>/<Name>.Build.cs` と `Modules[].Name = <Name>` の静的一致だけを合格根拠にし、UBT がこの tree をどう読むかは Unverified。
 
+## Unreleased — DOT-3208
+
+- 非materialize recipe（`spectator-explore` / `vertical-loop`）が生成projectのidentityを一度も書いていなかった。templateの`Config/DefaultGame.ini`をバイト単位でコピーするだけなので、別`ProjectName`・別RunIdの2つの生成物が同じ`ProjectID`を持ち、`ProjectName`は`First Person Template`のまま、`vertical-loop`はidentity block無しだった。materialize経路も`ProjectID=`/`ProjectName=`の**行だけ**を置換しており、templateが短い`[ProjectSettings]` headerで持つ場合はengineの読まないセクションに書いていた。
+- generatorは3 recipe すべてで`Config/DefaultGame.ini`のidentityを`[/Script/EngineSettings.GeneralProjectSettings]`配下に確定させる。短いheaderのidentity行は長い名前のセクションへ移し、identity以外を持たない短いheaderは落とす。`TP_BlankBP`のようにidentity blockが無いtemplateではセクションごと作る。同一keyが複数セクションに散在する等、一意に畳めない形では停止し、対象ファイル・セクション・keyを列挙する。書き込み後は実ファイルを読み戻して、長いheader配下に両keyがあることを確認する。
+- `ProjectID`は`-ProjectName`から導出する。同じ名前の再生成でlockが再現し、別名では異なるIDになる。生コピーrecipeもtemplateの値を引き継がない。
+- `template-lock.json`は`schema_version: 3`で`default_game_ini_identity`（`section` / `project_id` / `project_name` / `normalized_from_section` / `created_section`）を記録する。
+- `scripts/Test-UETemplateScaffold.ps1`のfixtureは`TP_FirstPerson`（短いheader）と`TP_BlankBP`（2 byte）に実在と同じ`Config/DefaultGame.ini`を持たせた。3 recipe すべてで「長いセクション名の下に`ProjectID`/`ProjectName`がある」「短いheader配下にidentityが残っていない」「別名で生成した2 projectの`ProjectID`が異なる」「同名再生成で`ProjectID`が一致する」「lockの`default_game_ini_identity`が実ファイルと一致する」をassertする。identityが2セクションに重複したtemplateは停止し、セクション名を列挙する負例も追加した。
+- `docs/01-start.md`（preflightの完了条件と生成後の照合）、`docs/07-architecture.md`（identity契約とlock）、`AGENTS.md`（フォルダ契約）を同じ契約へ揃えた。
+
+実測（本host、Windows 10.0.26300、pwsh 7.6.9、UE 5.8.4 CL 58902052。変更前のgeneratorは`8f586157`のcheckoutで再現し、engine installは既定の`C:/Program Files/Epic Games/UE_5.8`を使った）: 変更前のgeneratorに新しいsuiteを当てると `ASSERT FAILED: spectator-explore: ProjectID sits under /Script/EngineSettings.GeneralProjectSettings` で落ちる。変更後は9 group PASS / exit 0。実installの`TP_FirstPerson`から生成した`ScoutProbe`/`EmberWatch`は`DefaultGame.ini`のSHA256が`a0a66eda…`で一致し`[ProjectSettings]`のままで`ProjectID`も同一だったが、変更後は前者`d0cec520…` / 後者`d4d8a8fa…`と別のIDを持つ長いheaderになった。`vertical-loop`は変更前CRLFのみ（`7eb70257…`）で、変更後は`6d23a0da…`のidentity block付き。`third-person-game`は`db6237c5…`で`normalized_from_section: null`（templateが既に長いheader）。
+
+`origin/main`（DOT-3157の生コピー経路pack展開、既定map検査を含む）を取り込んだ後、同じ契約を保ったまま再測した: `scripts/Test-UETemplateScaffold.ps1` = **13 group PASS / exit 0**。`git status --porcelain --untracked-files=all` = 0行のworktree（HEAD `ed92887`）で実行し、実installの`TP_FirstPerson`から`PipProbeA`/`PipProbeB`を生成すると`DefaultGame.ini`のSHA256はそれぞれ`36bc6b1d…`/`2bdb523d…`で`ProjectID`も別、同名再生成（`PipProbeA`の別RunId）は`36bc6b1d…`で一致した。`vertical-loop`（`TP_BlankBP`）は`8af7552b…`、`third-person-game`（`TP_ThirdPerson`）は`normalized_from_section: null`で長いheaderのまま自分のIDを持つ。
+
+移行: 既存の生成projectは自動改名・自動移行しない。`default_game_ini_identity`が無い旧lockの作品は、必要なら同じ`ProjectName`で新しいRunIdへ再生成し、lock・`Config/DefaultGame.ini`・作品差分を比較してから差し替える。`ProjectID`重複がZen/DDC/crash reportingに与える実害、UE Editor/PIE/MRQ/Shipping、packaged buildは本変更でも未検証（Unverified）。
+
 ## Unreleased — DOT-3157
 
 - 生コピー経路（`materialize_project`を持たない`spectator-explore` / `vertical-loop`）がtemplateの`Config/TemplateDefs.ini`を一度も読まず、templateフォルダを丸ごとコピーしていた。出力`Content/`に`TP_FirstPerson`の既定mapが参照する共有content pack（`Characters` / `LevelPrototyping` / `Input` / `Weapons`）が入らず、逆にignore対象の`Media/`と`Config/TemplateDefs.ini`・`Config/config.ini`が残っていた。generatorはexit 0で`Created ...`を表示し、testは6群PASSしていたため、"assetが足りない"を出力から判別できなかった。

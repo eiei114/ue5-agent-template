@@ -93,4 +93,8 @@ plugin identityも同じgeneratorが保証する。`template-lock.json`の`plugi
 - 公開済パスに`template-lock.json`が無い残骸は、**そのrunの生成が失敗終端していることを確認できた場合に限り**削除候補になる。他のrunの出力・他人のstagingは消さない。判断できない場合は`AGENTS.md:11`の「既存なら停止」を優先して停止し、確認した内容をQAへ記録する。
 - 削除を自動化しない。残骸の判断はwriter/人間に残す。
 
+generatorはコピー前にdescriptorと`Source/`を照合し、既知パターンに一致しなければ**推測で続行せず停止**して未一致pathを列挙する。コピー後にもコピー物同士で同じ照合を行い、食い違えばdescriptorを書き換えずに停止する。生成後に`.uproject`を手でrenameしない。identityは`template-lock.json`の`identity`（`project_file` / `project_modules` / `engine_association`）と`default_game_ini_identity`（`section` / `project_id` / `project_name` / `normalized_from_section` / `created_section`、`schema_version: 3`）に記録され、そこで確認できる。
+
+`Config/DefaultGame.ini`の`ProjectID`/`ProjectName`はengineが読む`[/Script/EngineSettings.GeneralProjectSettings]`配下にだけ置く。templateが短い`[ProjectSettings]` headerで持っている場合は長い名前に移し、identity blockが無いtemplateではセクションごと作る。生コピーrecipeもtemplateの`ProjectID`を引き継がず、生成project名から導いた自分の`ProjectID`を持つ。どのrecipeでも同じ短いheaderやtemplate既定の`ProjectName`が残ったままは完了にしない。
+
 旧版は上書きしない。Out/_v1のような旧運用よりrun別の分離を推奨。Outに置いただけで納品とは呼ばない。

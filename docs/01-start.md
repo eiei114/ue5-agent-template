@@ -10,6 +10,8 @@
 
 `templates/QA.md`に日時、Issue/run、hostname/OS、UE実version、GPU/VRAM、disk/RAM、既存toolchain、モデル指定/実効値、利用枠の観測範囲を記録。不明を0や無料と扱わない。
 **checkoutと生成先の絶対パス長もPreflightの完了条件**。template repoのclone先と`Production/<ProjectName>_<runid>/`の絶対パス長を実測してQAへ書く（例: `C:\gh\ue5-agent-template` = 24文字）。generatorは生成前に予算検査を行い、既定260文字を超える計画なら停止する（下記[パス長の予算](#パス長の予算)）。UE buildの`Intermediate/`・`*.obj`はgeneratorの出力ではないため検査対象外で、build前に同じ予算を別途確認する。
+
+生成projectの`Config/DefaultGame.ini`には`ProjectID`/`ProjectName`が`[/Script/EngineSettings.GeneralProjectSettings]`配下にあることを`template-lock.json`の`default_game_ini_identity`と実ファイルで照合する。短い`[ProjectSettings]` headerのままの生成物を「完了」にしない（engineはそのheaderを読まない）。
 Multicaのissue runs / runtime activity（先に各--help）と現地UE/renderプロセス・project leaseを確認。onlineはbuild可能の証拠ではない。
 Windows offlineなら新規buildをqueueして成功扱いしない。MacBookは許可済みApple工程の候補、miniは軽い計画・文書確認のみ。
 
@@ -64,6 +66,8 @@ generatorは`Production/.stage-<runid>-<nonce>/`に全成果物を書き、最�
 - `template-lock.json`が無い = 未完成。生成直後にこれが無いディレクトリは完成projectとして扱わない。
 - 残骸の扱い: 公開済パスに`template-lock.json`が無く、かつその`Name`/`runid`の生成が失敗終端していることを確認できた場合、それは残骸であり削除対象になり得る。確認できない場合は`AGENTS.md`の「既存なら停止」を優先して停止し、観測内容を`QA.md`へ記録する。他runの出力や他人のstagingを消さない。残骸の自動削除・自動回復は行わない。
 - 同じ`Name`/`RunId`で失敗後に再実行してよい: 失敗は排他的mkdirを残さないため、成功した先行runが無ければ再実行は正当な生成になる。
+
+`-Recipe`には上表のいずれかを指定する。実行前に既存UEのversion/path、当該templateと必要なtoolchainを確認し、`Production/<ProjectName>_<runid>/`が未使用であることを確かめる。生成後は`template-lock.json`の`identity`と`default_game_ini_identity`、`.uproject`のplugin設定を照合してからEditorで開く。generatorはidentityの照合に失敗したら停止し、既存projectを上書きしない。実際のmap/Sequence/作品Contentは生成しない。
 
 ### 手動fallback：Project Browserを使う場合
 

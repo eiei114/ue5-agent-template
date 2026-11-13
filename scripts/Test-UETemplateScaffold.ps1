@@ -746,6 +746,52 @@ function Get-PluginModuleEntryPointViolations([string]$PluginRoot) {
 		}
 	}
 	return $violations.ToArray()
+
+$canonicalProjectSettingsSection = '/Script/EngineSettings.GeneralProjectSettings'
+
+function Get-DefaultGameSectionEntries([string]$ProjectOutput) {
+	# Returns every ProjectID / ProjectName line of the generated Config/DefaultGame.ini with the section
+	# header it sits under. Body-only matching cannot tell an effective identity from a stray one, which
+	# is exactly how the old suite passed while '[ProjectSettings]' was still in place.
+	$gameIniPath = Join-Path $ProjectOutput 'Config\DefaultGame.ini'
+	if (-not (Test-Path -LiteralPath $gameIniPath -PathType Leaf)) { return @() }
+	$entries = New-Object 'System.Collections.Generic.List[object]'
+	$section = ''
+	foreach ($line in [System.IO.File]::ReadAllLines($gameIniPath)) {
+		$trimmed = $line.Trim()
+		if ($trimmed -match '^\[(.+)\]$') { $section = $Matches[1].Trim(); continue }
+		if ($trimmed -match '^(ProjectID|ProjectName)[ \t]*=[ \t]*(.*)$') {
+			$entries.Add([pscustomobject]@{ Section = $section; Key = $Matches[1]; Value = $Matches[2].Trim() })
+		}
+	}
+	return $entries.ToArray()
+}
+
+function Get-ShortHeaderIdentitySection([string]$ProjectOutput) {
+	# Names every section other than the canonical one that still declares a project identity key.
+	return @(Get-DefaultGameSectionEntries $ProjectOutput | Where-Object { $_.Section -ine $canonicalProjectSettingsSection } | ForEach-Object { $_.Section })
+}
+
+function Assert-ProjectIdentity([string]$ProjectOutput, [string]$Name, [string]$Label) {
+	# One assertion block for all three recipes: the identity exists, it is under the only section name
+	# the engine resolves, no short-header copy survives, and the lock records the same values.
+	$gameIniPath = Join-Path $ProjectOutput 'Config\DefaultGame.ini'
+	Assert-True (Test-Path -LiteralPath $gameIniPath -PathType Leaf) "${Label}: the generated project ships Config/DefaultGame.ini"
+	$entries = @(Get-DefaultGameSectionEntries $ProjectOutput)
+	Assert-True ($entries.Count -eq 2) "${Label}: DefaultGame.ini declares exactly one ProjectID and one ProjectName"
+	Assert-True ($entries[0].Key -eq 'ProjectID' -and $entries[0].Section -ceq $canonicalProjectSettingsSection) "${Label}: ProjectID sits under $canonicalProjectSettingsSection"
+	Assert-True ($entries[1].Key -eq 'ProjectName' -and $entries[1].Section -ceq $canonicalProjectSettingsSection) "${Label}: ProjectName sits under $canonicalProjectSettingsSection"
+	Assert-True ($entries[1].Value -ceq $Name) "${Label}: ProjectName is the generated project name, not the template's"
+	Assert-True ($entries[0].Value -match '^\(A=-?[0-9]+,B=-?[0-9]+,C=-?[0-9]+,D=-?[0-9]+\)$') "${Label}: ProjectID is a full FGuid string"
+	$shortSections = @(Get-ShortHeaderIdentitySection $ProjectOutput)
+	Assert-True ($shortSections.Count -eq 0) ("${Label}: no project identity is left under a short section header (found: " + ($shortSections -join ', ') + ')')
+	$lockData = [System.IO.File]::ReadAllText((Join-Path $ProjectOutput 'template-lock.json')) | ConvertFrom-Json
+	$lockIdentity = $lockData.default_game_ini_identity
+	Assert-True ($null -ne $lockIdentity) "${Label}: template-lock.json records the DefaultGame.ini identity"
+	Assert-True ($lockIdentity.section -ceq $canonicalProjectSettingsSection) "${Label}: lock records the canonical section name"
+	Assert-True ($lockIdentity.project_id -ceq $entries[0].Value) "${Label}: lock ProjectID matches the generated DefaultGame.ini"
+	Assert-True ($lockIdentity.project_name -ceq $Name) "${Label}: lock ProjectName is the generated project name"
+	return $entries[0].Value
 }
 
 $suiteError = $null
@@ -798,6 +844,11 @@ try {
 	Write-FixtureJson (Join-Path $fixtureEngine 'Templates\TemplateResources\High\LevelPrototyping\Content\Materials\MI_DefaultColorway.uasset') 'pack LevelPrototyping'
 	Write-FixtureJson (Join-Path $fixtureEngine 'Templates\TemplateResources\High\Input\Content\Actions\IA_Jump.uasset') 'pack Input'
 	Write-FixtureJson (Join-Path $fixtureEngine 'Templates\TemplateResources\High\Input\Content\IMC_Default.uasset') 'pack Input'
+	# The installed TP_FirstPerson ships its identity under the short '[ProjectSettings]' header, which
+	# UGeneralProjectSettings never reads (its UCLASS has config=Game and no OverrideConfigSection). The
+	# fixture carries that file so the suite cannot pass through the old 'no Config/ directory' gap: a
+	# generated project that keeps this header declares an identity the engine ignores.
+	Write-FixtureJson (Join-Path $firstPersonTemplate 'Config\DefaultGame.ini') ("[ProjectSettings]`r`nProjectID=(A=1823396784,B=1298598689,C=1743498150,D=-2048051708)`r`nProjectName=First Person Template`r`n")
 
 	# TP_BlankBP declares no SharedContentPacks and its default map is engine content, so the raw-copy
 	# path is checked here for the ignore rules alone.
@@ -812,6 +863,8 @@ try {
 	)
 	Write-FixtureJson (Join-Path $blankTemplate 'Media\TP_BlankBP.png') 'thumbnail fixture'
 	Write-FixtureJson (Join-Path $blankTemplate 'Media\TP_BlankBP_Preview.png') 'thumbnail fixture'
+	# TP_BlankBP ships a 2 byte DefaultGame.ini (CRLF only): no identity block at all.
+	Write-FixtureJson (Join-Path $blankTemplate 'Config\DefaultGame.ini') "`r`n"
 
 	$thirdPersonTemplate = Join-Path $fixtureEngine 'Templates\TP_ThirdPerson'
 	# The installed TP_ThirdPerson descriptor enables three plugins of its own. The fixture keeps that
@@ -1201,6 +1254,17 @@ try {
 	$otherLockData = [System.IO.File]::ReadAllText((Join-Path $otherOutput 'template-lock.json')) | ConvertFrom-Json
 	Assert-True ($otherPluginConfig.Contains("SessionProjectIdentifier=$otherSessionIdentifier")) 'a different project name writes its own effective session identifier'
 	Assert-True ($otherLockData.online_session_identifier -ceq $otherSessionIdentifier -and $otherSessionIdentifier -cne $expectedSessionIdentifier) 'different project names produce different lock identifiers'
+	$firstProjectId = Assert-ProjectIdentity $firstOutput $projectName 'spectator-explore'
+	$otherProjectId = Assert-ProjectIdentity $otherOutput $otherProjectName 'spectator-explore (other project name)'
+	Assert-True ($firstProjectId -cne $otherProjectId) 'two projects generated from different names do not share one ProjectID'
+	$secondProjectId = Assert-ProjectIdentity $secondOutput $projectName 'spectator-explore (same name, second run ID)'
+	Assert-True ($firstProjectId -ceq $secondProjectId) 'regenerating the same project name reproduces the same ProjectID'
+	$firstGameIni = [System.IO.File]::ReadAllText((Join-Path $firstOutput 'Config\DefaultGame.ini'))
+	Assert-True (-not $firstGameIni.Contains('ProjectName=First Person Template')) 'the copied template ProjectName does not survive into the generated project'
+	Assert-True (-not ([regex]::IsMatch($firstGameIni, '(?m)^\[ProjectSettings\][ \t]*\r?$'))) 'the short [ProjectSettings] header is not carried over from the template'
+	$firstLockData = $firstLock | ConvertFrom-Json
+	Assert-True ($firstLockData.default_game_ini_identity.normalized_from_section -ceq 'ProjectSettings') 'lock records which short header it normalized away'
+	Assert-True ($firstLockData.default_game_ini_identity.created_section -eq $true) 'lock records that the canonical section had to be created because the template only had the short header'
 	# The raw-copy path must honour the template's own Config/TemplateDefs.ini. Without it the project
 	# opens on a default map whose shared packs (Characters / LevelPrototyping / Input) are absent while
 	# the generator still prints success, and the template-only Media/ thumbnails plus TemplateDefs.ini
@@ -1239,6 +1303,10 @@ try {
 	$loopLockPluginNames = @($loopLock.plugins.PSObject.Properties.Name)
 	Assert-True (($loopLockPluginNames -join ',') -ceq 'MovieRenderPipeline') 'video-only lock records the same plugin set the generated descriptor enables'
 	Assert-True ($loopLock.plugins.MovieRenderPipeline.enabled_in_project -eq $true -and $loopLock.plugins.MovieRenderPipeline.version -eq '1.0') 'video-only lock records the plugin version the install reports'
+
+	Assert-ProjectIdentity $loopOutput $loopProjectName 'vertical-loop' | Out-Null
+	Assert-True ($loopLock.default_game_ini_identity.created_section -eq $true) 'the identity-less TP_BlankBP template gets the canonical section created'
+	Assert-True ($null -eq $loopLock.default_game_ini_identity.normalized_from_section) 'nothing had to be normalized for a template with no identity block'
 	Assert-True (Test-Path -LiteralPath (Join-Path $loopOutput 'Recipe\Capture.md')) 'video-only recipe has capture instructions'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $loopOutput 'Recipe\Play.md'))) 'video-only recipe does not add a play delta'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $loopOutput 'Plugins\MulticaOnlineStarter'))) 'video-only recipe does not add online gameplay code'
@@ -1291,6 +1359,8 @@ try {
 	Assert-True (Test-Path -LiteralPath (Join-Path $sizeOutput 'Config\DefaultEngine.ini')) 'the reporting generator wrote its output'
 	$tpGameIni = [System.IO.File]::ReadAllText((Join-Path $tpOutput 'Config\DefaultGame.ini'))
 	Assert-True ($tpGameIni.Contains("ProjectName=$tpName") -and -not $tpGameIni.Contains('ProjectID=(A=1,B=2,C=3,D=4)')) 'materialized recipe gives the project its own name and ID'
+	Assert-ProjectIdentity $tpOutput $tpName 'third-person-game' | Out-Null
+	Assert-True ((([System.IO.File]::ReadAllText((Join-Path $tpOutput 'template-lock.json'))) | ConvertFrom-Json).default_game_ini_identity.normalized_from_section -eq $null) 'the materialized template already had the canonical header, so nothing was normalized'
 	Assert-True (Test-Path -LiteralPath (Join-Path $tpOutput 'Recipe\Play.md')) 'third-person recipe has a play delta'
 	$tpLock = [System.IO.File]::ReadAllText((Join-Path $tpOutput 'template-lock.json')) | ConvertFrom-Json
 	Assert-True ($tpLock.engine_template -eq 'TP_ThirdPerson') 'lock records the third-person engine template'
@@ -2029,6 +2099,48 @@ try {
 	Assert-True ($silentFailure.Contains('Source/TP_SilentRenames')) 'the stop names the source path that kept the template module name'
 	Write-Output 'PASS: a FolderRenames line the reader drops stops the run through the identity check'
 
+
+	# Negative case: the template declares ProjectID / ProjectName twice, under two different section
+	# headers. Folding that into one canonical block has no deterministic answer, so the generator must
+	# stop and name the file, sections and keys instead of silently keeping one of them.
+	$ambiguousTemplateName = 'TP_IdentityAmbiguous'
+	$ambiguousTemplateRoot = Join-Path $fixtureEngine ('Templates\' + $ambiguousTemplateName)
+	Write-FixtureTemplate $ambiguousTemplateRoot $ambiguousTemplateName $ambiguousTemplateName
+	Write-FixtureTemplateDefs $ambiguousTemplateRoot @(
+		'[/Script/GameProjectGeneration.TemplateProjectDefs]',
+		'FoldersToIgnore=Media',
+		'FilesToIgnore="%TEMPLATENAME%.uproject"',
+		'FilesToIgnore="Config/TemplateDefs.ini"'
+	)
+	Write-FixtureJson (Join-Path $ambiguousTemplateRoot 'Config\DefaultGame.ini') ("[/Script/EngineSettings.GeneralProjectSettings]`r`nProjectID=(A=1,B=2,C=3,D=4)`r`nProjectName=Ambiguous Template`r`n`r`n[ProjectSettings]`r`nProjectID=(A=5,B=6,C=7,D=8)`r`nProjectName=Ambiguous Legacy`r`n")
+	$ambiguousRepoRoot = Join-Path $fixtureRoot 'AmbigIdentityTmpl'
+	& git -C $repoRoot clone --quiet --local --no-hardlinks --no-tags --no-checkout $repoRoot $ambiguousRepoRoot
+	if ($LASTEXITCODE -ne 0) { throw 'Could not create the isolated ambiguous-identity repository fixture.' }
+	& git -C $ambiguousRepoRoot checkout --quiet --detach $templateRevision
+	if ($LASTEXITCODE -ne 0) { throw "Could not check out revision $templateRevision in the isolated ambiguous-identity repository fixture." }
+	[System.IO.Directory]::CreateDirectory((Join-Path $ambiguousRepoRoot 'Production')) | Out-Null
+	$ambiguousGenerator = Join-Path $ambiguousRepoRoot 'scripts\New-UETemplateScaffold.ps1'
+	Copy-Item -LiteralPath $generator -Destination $ambiguousGenerator -Force
+	Set-FixtureRecipeTemplate $ambiguousRepoRoot 'vertical-loop' $ambiguousTemplateName
+	$ambiguousProjectName = "Ambig_$testId"
+	$ambiguousOutput = Join-Path (Join-Path $ambiguousRepoRoot 'Production') "${ambiguousProjectName}_amb"
+	$ambiguousFailure = ''
+	try {
+		& $ambiguousGenerator -Recipe 'vertical-loop' -ProjectName $ambiguousProjectName -RunId 'amb' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate | Out-Null
+	} catch {
+		$ambiguousFailure = $_.Exception.Message
+	}
+	Assert-True ($ambiguousFailure.Contains('Project identity check stopped')) 'an identity declared in two sections stops the generator'
+	Assert-True ($ambiguousFailure.Contains('ProjectID in [/Script/EngineSettings.GeneralProjectSettings] and [ProjectSettings]')) 'the stop names the sections that both declare ProjectID'
+	Assert-True ($ambiguousFailure.Contains('ProjectName in [/Script/EngineSettings.GeneralProjectSettings] and [ProjectSettings]')) 'the stop names the sections that both declare ProjectName'
+	# The generator keeps the exclusive output directory when it stops (it does not delete work), so the
+	# assertion is that the ambiguous template file was copied verbatim and no identity was written into it:
+	# a half-normalized file with a fresh ProjectID would be worse than an untouched copy.
+	$ambiguousGameIni = Join-Path $ambiguousOutput 'Config\DefaultGame.ini'
+	if (Test-Path -LiteralPath $ambiguousGameIni -PathType Leaf) {
+		Assert-True (@(Get-DefaultGameSectionEntries $ambiguousOutput).Count -eq 4) 'the stopped run left the template identity untouched instead of writing a fresh one'
+	}
+	Write-Output 'PASS: an identity declared under two section headers stops generation and names the sections'
 
 	# The generated project's own Config declares the map it opens. If that map is only available
 

@@ -350,6 +350,160 @@ function Add-IniSectionEntries([string]$IniPath, [string]$SectionName, [string[]
 	[System.IO.File]::WriteAllText($IniPath, $text, [System.Text.UTF8Encoding]::new($false))
 }
 
+$projectSettingsSection = '/Script/EngineSettings.GeneralProjectSettings'
+
+function Get-ProjectIdBytes([string]$ProjectName) {
+	# The identity is derived from the project name instead of a fresh random GUID so that regenerating
+	# the same project in another run directory reproduces the same template-lock.json (the lock is the
+	# reproducibility record, and a random ID inside it would defeat that). A different project name
+	# still yields a different ID, which is the property that was missing while raw copies inherited
+	# the template's own ProjectID. The online session identifier is name-derived for the same reason.
+	$sha = [System.Security.Cryptography.SHA256]::Create()
+	try { $hash = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes('ue5-agent-template:GeneralProjectSettings:ProjectID:' + $ProjectName)) } finally { $sha.Dispose() }
+	return [byte[]]$hash[0..15]
+}
+
+function Split-IniSections {
+	# Splits ini lines into blocks: the preamble (Name '') plus one block per section header. Moving
+	# keys between sections therefore rewrites only the identity lines instead of regenerating the file.
+	param([AllowEmptyCollection()][string[]]$Lines)
+	$blocks = New-Object 'System.Collections.Generic.List[object]'
+	$current = [pscustomobject]@{ Name = ''; Lines = (New-Object 'System.Collections.Generic.List[string]') }
+	$blocks.Add($current)
+	for ($index = 0; $index -lt $Lines.Count; $index++) {
+		$trimmed = $Lines[$index].Trim()
+		if ($trimmed -match '^\[(.+)\]$') {
+			$current = [pscustomobject]@{ Name = $Matches[1].Trim(); Lines = (New-Object 'System.Collections.Generic.List[string]') }
+			$blocks.Add($current)
+			continue
+		}
+		$current.Lines.Add($Lines[$index])
+	}
+	# Unary comma keeps the List intact: enumerating it would hand the caller an Object[] without Add().
+	return ,$blocks
+}
+
+function Get-ProjectIdentityEntries([string[]]$Lines) {
+	# Reports every ProjectID / ProjectName line together with the section header it sits under, so a
+	# caller can tell an effective identity from one the engine never reads. The engine matches section
+	# names exactly (`FConfigFileMap` is a TMap with no short-name aliasing), so '[ProjectSettings]' is
+	# not an alias of the canonical name.
+	$entries = New-Object 'System.Collections.Generic.List[object]'
+	$section = ''
+	for ($index = 0; $index -lt $Lines.Count; $index++) {
+		$trimmed = $Lines[$index].Trim()
+		if ($trimmed -match '^\[(.+)\]$') { $section = $Matches[1].Trim(); continue }
+		if ($trimmed -match '^(ProjectID|ProjectName)[ \t]*=[ \t]*(.*)$') {
+			$entries.Add([pscustomobject]@{ Section = $section; Key = $Matches[1]; Value = $Matches[2].Trim() })
+		}
+	}
+	return $entries
+}
+
+function Set-ProjectIdentity {
+	# Writes the generated project's own ProjectID / ProjectName into Config/DefaultGame.ini under the
+	# one section name the engine resolves. The installed templates are not uniform: TP_FirstPerson
+	# declares the identity under the short '[ProjectSettings]' header, which UGeneralProjectSettings
+	# (UCLASS(config=Game, defaultconfig), no OverrideConfigSection) never reads, and TP_BlankBP ships
+	# a 2 byte file with no identity at all. Copying either one and appending a second block would keep
+	# an identity the engine ignores, or give every generated project the template's own ID.
+	# So normalize instead of guessing: identity keys move into the canonical section, a section that
+	# held nothing else is dropped, and anything this function cannot fold deterministically stops
+	# generation with the file, sections and keys named.
+	param(
+		[Parameter(Mandatory = $true)][string]$GameIniPath,
+		[Parameter(Mandatory = $true)][string]$Name
+	)
+
+	$newLine = "`r`n"
+	$text = ''
+	if (Test-Path -LiteralPath $GameIniPath -PathType Leaf) { $text = [System.IO.File]::ReadAllText($GameIniPath) }
+	$lines = @($text -split "`r`n|`n|`r")
+	while ($lines.Count -gt 0 -and [string]::IsNullOrWhiteSpace($lines[$lines.Count - 1])) { $lines = @($lines | Select-Object -First ($lines.Count - 1)) }
+
+	$blocks = Split-IniSections -Lines $lines
+	$entries = @(Get-ProjectIdentityEntries -Lines $lines)
+
+	$duplicates = @($entries | Group-Object -Property Key | Where-Object { $_.Count -gt 1 })
+	if ($duplicates.Count -gt 0) {
+		$details = @($duplicates | ForEach-Object {
+			$sections = @($_.Group | ForEach-Object { if ([string]::IsNullOrEmpty($_.Section)) { '<no section>' } else { '[' + $_.Section + ']' } })
+			'{0} in {1}' -f $_.Name, ($sections -join ' and ')
+		})
+		throw ("Project identity check stopped: {0} declares the same identity key more than once ({1}), so it cannot be folded into {2} without guessing. Leave one {3} block in that file and regenerate." -f $GameIniPath, ($details -join '; '), $projectSettingsSection, $projectSettingsSection)
+	}
+
+	$removedFromSections = @($entries | Where-Object { -not [string]::IsNullOrEmpty($_.Section) -and $_.Section -ine $projectSettingsSection } | ForEach-Object { $_.Section })
+	foreach ($block in $blocks) {
+		$identityLines = @($block.Lines | Where-Object { $_.Trim() -match '^(ProjectID|ProjectName)[ \t]*=' })
+		foreach ($identityLine in $identityLines) { [void]$block.Lines.Remove($identityLine) }
+	}
+
+	# A short header that held nothing but the identity is dead weight in the generated project: the
+	# engine never reads it, and leaving it invites someone to put the identity back there.
+	$blocksToDrop = New-Object 'System.Collections.Generic.List[object]'
+	foreach ($block in $blocks) {
+		if ([string]::IsNullOrEmpty($block.Name) -or $block.Name -ieq $projectSettingsSection) { continue }
+		$hasContent = @($block.Lines | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Trim()) }).Count -gt 0
+		if (-not $hasContent -and ($removedFromSections -contains $block.Name)) { $blocksToDrop.Add($block) }
+	}
+
+	$guidBytes = Get-ProjectIdBytes -ProjectName $Name
+	$parts = 0..3 | ForEach-Object { [BitConverter]::ToInt32($guidBytes, $_ * 4) }
+	$projectIdText = '(A={0},B={1},C={2},D={3})' -f $parts[0], $parts[1], $parts[2], $parts[3]
+	$identityBlockLines = @(('ProjectID={0}' -f $projectIdText), ('ProjectName={0}' -f $Name))
+
+	$canonicalBlock = @($blocks | Where-Object { $_.Name -ieq $projectSettingsSection }) | Select-Object -First 1
+	$createdSection = $null -eq $canonicalBlock
+	if ($createdSection) {
+		$canonicalBlock = [pscustomobject]@{ Name = $projectSettingsSection; Lines = (New-Object 'System.Collections.Generic.List[string]') }
+		$blocks.Add($canonicalBlock)
+	}
+	# InsertRange keeps the template's other keys in that section (TP_FirstPerson and TP_ThirdPerson
+	# carry nothing else today, installed templates may) while the identity always lands first.
+	$canonicalBlock.Lines.InsertRange(0, [string[]]$identityBlockLines)
+
+	$outputLines = New-Object 'System.Collections.Generic.List[string]'
+	foreach ($block in $blocks) {
+		if ($blocksToDrop -contains $block) { continue }
+		if (-not [string]::IsNullOrEmpty($block.Name)) {
+			# Separate an appended block from the previous content so the header starts on its own line.
+			if ($block -eq $canonicalBlock -and $createdSection -and $outputLines.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($outputLines[$outputLines.Count - 1])) { $outputLines.Add('') }
+			$outputLines.Add('[' + $block.Name + ']')
+			foreach ($line in $block.Lines) { $outputLines.Add($line) }
+			continue
+		}
+		# Before the first header the template file may hold blank lines only (TP_BlankBP is just 2 bytes);
+		# writing them back as the head of the file carries no setting and only misleads the reader.
+		foreach ($line in $block.Lines) { if (-not [string]::IsNullOrWhiteSpace($line)) { $outputLines.Add($line) } }
+	}
+
+	$directory = [System.IO.Path]::GetDirectoryName($GameIniPath)
+	[System.IO.Directory]::CreateDirectory($directory) | Out-Null
+	[System.IO.File]::WriteAllText($GameIniPath, (($outputLines -join $newLine) + $newLine), [System.Text.UTF8Encoding]::new($false))
+
+	# Read the file back: a write that landed under a header the engine ignores must not be reported as
+	# success, so the effective identity is verified on the artifact rather than assumed from the input.
+	$writtenEntries = @(Get-ProjectIdentityEntries -Lines ([System.IO.File]::ReadAllLines($GameIniPath)))
+	if ($writtenEntries.Count -ne 2 -or
+		$writtenEntries[0].Key -ne 'ProjectID' -or $writtenEntries[0].Section -ine $projectSettingsSection -or
+		$writtenEntries[1].Key -ne 'ProjectName' -or $writtenEntries[1].Section -ine $projectSettingsSection) {
+		$observed = @($writtenEntries | ForEach-Object { '{0} under [{1}]' -f $_.Key, $_.Section }) -join ', '
+		throw ("Project identity check stopped: the ProjectID / ProjectName written to {0} are not both under {1} (observed: {2}). No identity was left in a section the engine ignores." -f $GameIniPath, $projectSettingsSection, $observed)
+	}
+	if ($writtenEntries[0].Value -cne $projectIdText -or $writtenEntries[1].Value -cne $Name) {
+		throw ("Project identity check stopped: {0} does not carry the expected ProjectID / ProjectName after writing." -f $GameIniPath)
+	}
+
+	return [pscustomobject]@{
+		Section = $projectSettingsSection
+		ProjectId = $projectIdText
+		ProjectName = $Name
+		NormalizedFromSection = if ($removedFromSections.Count -gt 0) { $removedFromSections[0] } else { $null }
+		CreatedSection = $createdSection
+	}
+}
+
 function Set-OnlineSessionProjectIdentifier([string]$ProjectConfigPath, [string]$Identifier) {
 	# The switch has to live in the project's Config/DefaultEngine.ini: a plugin's own
 	# Config/DefaultEngine.ini is never merged, because engine and project branches take
@@ -711,19 +865,10 @@ function Copy-MaterializedTemplate([string]$SourceTemplate, [string]$Destination
 		Get-ChildItem -LiteralPath $resolved.Path -Force | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $packTarget $_.Name) -Recurse }
 		$copiedPacks.Add($resolved)
 	}
+	# Blueprints in the template Content were saved against /Script/<TemplateName>.
 	if ($Materialize) {
-		# Blueprints in the template Content were saved against /Script/<TemplateName>.
 		$engineIni = Join-Path $Destination 'Config\DefaultEngine.ini'
 		[System.IO.File]::AppendAllText($engineIni, [Environment]::NewLine + '[CoreRedirects]' + [Environment]::NewLine + ('+PackageRedirects=(OldName="/Script/{0}",NewName="/Script/{1}")' -f $TemplateName, $Name) + [Environment]::NewLine)
-		$gameIni = Join-Path $Destination 'Config\DefaultGame.ini'
-		if (Test-Path -LiteralPath $gameIni -PathType Leaf) {
-			$guid = [Guid]::NewGuid().ToByteArray()
-			$parts = 0..3 | ForEach-Object { [BitConverter]::ToInt32($guid, $_ * 4) }
-			$gameText = [System.IO.File]::ReadAllText($gameIni)
-			$gameText = [regex]::Replace($gameText, '(?m)^ProjectID=.*$', ('ProjectID=(A={0},B={1},C={2},D={3})' -f $parts[0], $parts[1], $parts[2], $parts[3]))
-			$gameText = [regex]::Replace($gameText, '(?m)^ProjectName=.*$', ('ProjectName={0}' -f $Name))
-			[System.IO.File]::WriteAllText($gameIni, $gameText, [System.Text.UTF8Encoding]::new($false))
-		}
 	}
 	# Blueprints in the template Content were saved against /Script/<TemplateName>. A package redirect
 	# only rewrites the /Script package, and source headers that were renamed (Character, GameMode,
@@ -1167,7 +1312,12 @@ try {
 	# the content the default map references opens with missing assets while still reporting success.
 	$copyReport = Copy-TemplateTree -SourceTemplate $sourceTemplate -Destination $stagingPath -TemplateName $templateName -ProjectFileName $projectFileName -Name $ProjectName -EngineTemplateRoot $engineTemplateRoot -Materialize:$materialize
 
-	$projectFile = Join-Path $stagingPath $projectFileName
+	# Every recipe owns its project identity. A raw copy carries the template's own ProjectID and
+	# 'TP_* Template' ProjectName, so two projects generated from different names would share one ID.
+	$gameIniPath = Join-Path $destinationPath 'Config\DefaultGame.ini'
+	$gameIniIdentity = Set-ProjectIdentity -GameIniPath $gameIniPath -Name $ProjectName
+
+	$projectFile = Join-Path $destinationPath $projectFileName
 	if (-not (Test-Path -LiteralPath $projectFile -PathType Leaf)) {
 		throw "The installed template project file was not copied to $projectFileName."
 	}
@@ -1273,6 +1423,16 @@ try {
 		}
 		recipe = $recipeData.Recipe
 		purpose = $recipeData.Purpose
+
+		default_game_ini_identity = [ordered]@{
+			section = $gameIniIdentity.Section
+			project_id = $gameIniIdentity.ProjectId
+			project_name = $gameIniIdentity.ProjectName
+			normalized_from_section = $gameIniIdentity.NormalizedFromSection
+			created_section = $gameIniIdentity.CreatedSection
+		}
+		recipe = [string]$recipeData.recipe
+		purpose = [string]$recipeData.purpose
 		# What the template's own Config/TemplateDefs.ini contributed to this output. Both copy paths
 		# record it so a later reader can tell which installed content packs were mounted (and at which
 		# detail level) and how many ignore rules were applied, without re-reading the engine install.

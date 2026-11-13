@@ -127,6 +127,7 @@ Blueprintなどの`.uasset`はtemplateのままbyte単位でコピーする。�
 | projectファイル名 | `materialize_project`のrecipeは`<Name>.uproject`、生コピーのrecipeは`<EngineTemplate>.uproject`（`TP_FirstPerson` / `TP_BlankBP`）。どちらも`Source/<Module>/<Module>.Build.cs`と一致していること | 実ファイル、`template-lock.json`の`identity.project_file` |
 | module名 | `.uproject`の`Modules[].Name`は`Source/<Module>/<Module>.Build.cs`と一致する。`materialize_project`なら`<Name>`、生コピーならtemplate名のまま | `identity.project_modules`、`Source/` |
 | `EngineAssociation` | 空にしない。templateが値を持たない場合は`Engine/Build/Build.version`の`MajorVersion.MinorVersion`から導く | `identity.engine_association` |
+| project identity（`DefaultGame.ini`） | `ProjectID`/`ProjectName`は`[/Script/EngineSettings.GeneralProjectSettings]`配下に置く。生コピーrecipeも生成project自身の`ProjectID`を持つ（templateの値や`TP_* Template`という名前を引き継がない） | 実ファイルの`Config/DefaultGame.ini`、`default_game_ini_identity`（`section` / `project_id` / `project_name` / `normalized_from_section` / `created_section`） |
 | 置換不能時 | コピー前に照合し、既知パターンに一致しない場合は停止して未一致pathを列挙する。生コピーを黙って出力しない | generatorのstderr/例外、`scripts/Test-UETemplateScaffold.ps1`の負例 |
 | 規約外の書き込み先 | `FolderRenames` / `SharedContentPacks` が出力ディレクトリの外を指す場合は書き込み前に停止し、外に残骸を残さない | generatorの例外メッセージ（`Container escape stopped the scaffold`）、`scripts/Test-UETemplateScaffold.ps1`の負例 |
 
@@ -146,6 +147,10 @@ lockは`schema_version: 4`で、上記3項目を`identity`に、template provena
 | `engine_branch_name` | `Build.version`の`BranchName` | キーが無ければ`null`（空文字と「未設定」を区別する） |
 
 Epic自身の`Build.version`は`Changelist: 0` + `CompatibleChangelist: <identifier>`の形を採る（`Engine/Source/Runtime/Core/Private/Modules/BuildVersion.cpp:21-24`、2026-11-03に実体を確認）。素の`Changelist`だけを読むと別のEngine installが同じlockになるため、導出と生値の両方を記録する。
+
+`DefaultGame.ini`側は、エンジンが完全一致でしかセクション名を解決しない（`FConfigFileMap`は別名解決を持たない）ため、templateが持つ短い`[ProjectSettings]` headerをそのまま残さない。generatorはidentity行だけを長い名前に移し、短いheaderがidentity以外を持たなければ落とす。同一keyが複数セクションに散在するなど一意に畳めない形では推測せず停止し、対象ファイル・セクション・keyを列挙する。`TP_BlankBP`のようにidentity block自体が無いtemplateではセクションごと作る（engine既定の`BaseGame.ini`も長い名前で同じkeyを宣言している）。
+
+lockは`schema_version: 3`で、上記のファイル/モジュール`identity`と`DefaultGame.ini`の`default_game_ini_identity`を持つ。単位は作品（`Production/<Name>_<runid>/template-lock.json`）であり、identityを手で書き換えない。
 
 **`null` = 不明。0／空文字は「エンジンがそう書いた」値だけに使う。** plugin版も同じ規則で、`.uplugin`が`VersionName`/`Version`を持たない場合は`plugins.<name> = null`とする。
 
