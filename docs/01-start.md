@@ -18,7 +18,7 @@ Windows offlineなら新規buildをqueueして成功扱いしない。MacBookは
 | `vertical-loop` | `TP_BlankBP` | 撮影専用（capture-only）。gameplayを必須にしない | `materialize_project`指定なし（false）。templateをコピーし、`.uproject`名とmodule名は`TP_BlankBP`のまま | `MovieRenderPipeline` |
 | `third-person-game` | `TP_ThirdPerson` | ゲーム＋撮影（三人称） | `materialize_project: true`。template規則を適用し、`.uproject`名・`Source`・moduleを`ProjectName`へ置換 | `MovieRenderPipeline` |
 
-recipeの正本は各 [`recipe.json`](../templates/recipes/)。選択可能な値は `templates/recipes/` 配下のディレクトリ名で、generatorに直書きされた一覧ではなくデータで決まる。新しいrecipeの追加手順（必要なファイル・`recipe.json`の必須field・`required_plugins`と`Plugins/`の関係）は[構造と更新](07-architecture.md)を参照。`third-person-game`は`ProjectName`をC++識別子（英字始まり、英数字と`_`のみ）にする。scaffoldの引数例：
+recipeの正本は各 [`recipe.json`](../templates/recipes/)。選択可能な値は `templates/recipes/` 配下で **`recipe.json` を持つ** ディレクトリ名で、generatorに直書きされた一覧ではなくデータで決まる（`SET.md` だけを持つ `templates/recipes/common/` はrecipeではない）。新しいrecipeの追加手順（必要なファイル・`recipe.json`の必須field・`required_plugins`と`Plugins/`の関係・`purpose`の契約）は[構造と更新](07-architecture.md)を参照。`third-person-game`は`ProjectName`をC++識別子（英字始まり、英数字と`_`のみ）にする。scaffoldの引数例：
 
 ```powershell
 .\scripts\New-UETemplateScaffold.ps1 `
@@ -30,7 +30,7 @@ recipeの正本は各 [`recipe.json`](../templates/recipes/)。選択可能な�
 
 例の`RunId`は形式を示す値なので、実行時には新しい一意のrun IDへ置き換える。
 
-`-Recipe`には `templates/recipes/` にあるレシピ名（上表の3つと、追加したレシピ）を指定する。存在しない名前はgeneratorのデータ検証で停止し、出力ディレクトリを作らない。実行前に既存UEのversion/path、当該templateと必要なtoolchainを確認し、`Production/<ProjectName>_<runid>/`が未使用であることを確かめる。生成後は`template-lock.json`の`identity`と`.uproject`のplugin設定を照合してからEditorで開く。generatorはidentityの照合に失敗したら停止し、既存projectを上書きしない。実際のmap/Sequence/作品Contentは生成しない。
+`-Recipe`には `templates/recipes/` にある`recipe.json`付きのレシピ名（上表の3つと、追加したレシピ）を指定する。存在しない名前と`recipe.json`を持たないディレクトリはgeneratorのデータ検証で停止し、出力ディレクトリを作らない。実行前に既存UEのversion/path、当該templateと必要なtoolchainを確認し、`Production/<ProjectName>_<runid>/`が未使用であることを確かめる。生成後は`template-lock.json`の`identity`と`.uproject`のplugin設定を照合してからEditorで開く。generatorはidentityの照合に失敗したら停止し、既存projectを上書きしない。実際のmap/Sequence/作品Contentは生成しない。
 
 ### 手動fallback：Project Browserを使う場合
 
@@ -44,13 +44,32 @@ Project BrowserはUE側のtemplate materialize規則でprojectを作るため、
 2. `/Game/<Name>/Maps/L_<Name>`を保存。Project SettingsでEditor Startup MapとGame Default Mapを指定し、package対象mapに含める。GameModeとPawn、camera、collision、入力設定は、Playが用途に含まれるrecipeで照合する。
 3. 撮影smokeなら原作の床・cube・point light・camera・2秒sequenceのみ。ゲームsmokeなら歩ける小mapのみ。Fab/Splice不要で成立させる。
 
-## leaseプロトコル（実装要件。スクリプト未同梱）
+## leaseプロトコル（`scripts/Lease-UETemplateProject.ps1` 同梱済み）
 
-- 新project dirの排他的mkdirと、`LEASE.json` の排他的createを使う（PowerShell通常のNew-Item -Forceで代替しない）。
-- leaseにはrun ID、issue ID、host、project realpath、取得日時、nonce、writer phase、当該runのPIDだけを保存。
+leaseの取得・解放・所有権照合は `scripts/Lease-UETemplateProject.ps1` の3動作で行う。手作業で `New-Item -Force` / `Set-Content` / `Out-File` / `WriteAllText` を書かない。同scriptはそれらを使わず、`CreateDirectoryW` と `[IO.File]::Open(CreateNew, Write, None)` だけで書く。
+
+```powershell
+# 取得。生成物dirとlease記録dirの作成は別操作であり、既存dirへの取得も続行できる
+.\scripts\Lease-UETemplateProject.ps1 -Action Acquire `
+  -ProjectDirectory 'Production\<Name>_<runid>' `
+  -RunId <runid> -IssueId <Issue> -WriterPhase edit
+
+# 読み取り専用の照合。書き込みもmtime更新もしない
+.\scripts\Lease-UETemplateProject.ps1 -Action Test -ProjectDirectory 'Production\<Name>_<runid>' -RunId <runid>
+
+# 解放。実fileのrun/nonce一致時だけ実行し、run別の LEASE_RELEASED.<runid>.json を残す
+.\scripts\Lease-UETemplateProject.ps1 -Action Release `
+  -ProjectDirectory 'Production\<Name>_<runid>' `
+  -RunId <runid> -Nonce <Acquireが出力したnonce>
+```
+
+- lease記録の置き場所は、AGENTS.md「フォルダ」と run 台帳の規則に従い `-ProjectDirectory` で指定する。生成先project dirをlease工程で作り直さない（生成は `scripts/New-UETemplateScaffold.ps1` だけが排他的mkdirする）。
+- leaseにはrun ID、issue ID、host、project realpath、取得日時、nonce、writer phase、当該runのPIDだけを保存。scriptはこの8 field以外を書かない（増やす場合は本文も同じPRで更新する）。
 - create競合なら停止。他runのactive有無とsource fingerprintが不明なら停止。時刻経過だけで奪わない。
 - 再開は前leaseの解放receipt・保存済み版・active writerなしを照合し新nonceを取得。
 - 解放前に実fileのrun/nonceを照合。自process終了・保存後、run別のLEASE_RELEASED記録へ移す。他人のleaseを消さない。
+- `-Action Test` の exit code は 0=active / 1=free（記録は残っている。書換えず手動照合） / 2=unknown（記録なし・読めない・他host）。`free` と `unknown` を混同しない。
+- 同scriptのassertionは `scripts/Test-UETemplateLease.ps1`（`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Test-UETemplateLease.ps1`）に固定されている。
 - crashの残leaseは手動照合対象。CLI/API上のrun終了だけではUE終了を推定しない。
 
 ## 最小smokeの証拠

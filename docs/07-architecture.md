@@ -10,12 +10,24 @@
 | 三人称ゲーム | 公式TP_ThirdPersonをウィザード同等に実体化（名前置換・共有pack・redirect） | `third-person-game` recipe（`materialize_project`） |
 | 映像専用 | 縦動画・ループ等、操作不要の入口 | `vertical-loop` capture-only recipe（`Play.md` を持たない） |
 | オンライン | 小人数listen server、session、replication | Null/LAN starter pluginと方式比較を追加。実測範囲はQA参照 |
-| project generator | installed Engineの公式templateから新規project生成 | `scripts/New-UETemplateScaffold.ps1`。排他的作成/上書き禁止、project identity照合あり |
+| project generator | installed Engineの公式templateから新規project生成 | `scripts/New-UETemplateScaffold.ps1`。排他的作成/上書き禁止、`TemplateDefs.ini`適用、project identity照合、既定map照合あり |
 | 検品helper | エンコード前の画像列を読み取り専用で照合 | `scripts/Measure-UERenderArtifacts.ps1`。fixture回帰は`scripts/Test-UERenderArtifacts.ps1` |
 
 作品のセットは正本1つをプレイと撮影から参照し、撮影のためにマップ全体を複製しない。用途別の画質・カメラ・照明・UIの差分は明示する。
 
-`spectator-explore`は公式`TP_FirstPerson`を起点にし、プレイと撮影を同じsetへ向ける。`vertical-loop`は公式`TP_BlankBP`を起点にしてゲーム操作を要求しない。この2つはtemplateを生コピーし、`<EngineTemplate>.uproject`と`Source/<EngineTemplate>`が互いに一致したまま残る。`third-person-game`だけが`materialize_project: true`で、`Config/TemplateDefs.ini`をウィザードと同じ規則で適用し`<Name>.uproject`へ実体化する。generatorはEngineの既存templateをコピーし、recipe文書・online plugin・`template-lock.json`を加える。generator自身がmap/Sequence/`.uasset`を捏造しない。
+`spectator-explore`は公式`TP_FirstPerson`を起点にし、プレイと撮影を同じsetへ向ける。`vertical-loop`は公式`TP_BlankBP`を起点にしてゲーム操作を要求しない。この2つはtemplateのprojectファイル名と`Source/<EngineTemplate>`をそのまま残す（生コピー経路）。`third-person-game`だけが`materialize_project: true`で、`Config/TemplateDefs.ini`をウィザードと同じ規則で適用し`<Name>.uproject`へ実体化する。
+
+generatorはEngineの既存templateをコピーし、recipe文書・online plugin・`template-lock.json`を加える。**3 recipeともtemplate自身の`Config/TemplateDefs.ini`を1つの実装（`scripts/New-UETemplateScaffold.ps1`の`Copy-TemplateTree`）で読む**。違いはrenameを適用するかどうかだけで、copy範囲の規則は共通である。
+
+| TemplateDefs.iniのキー | 生コピー経路 | materialize経路 |
+|---|---|---|
+| `FoldersToIgnore` / `FilesToIgnore` | 適用（`Config/TemplateDefs.ini`自身と`Config/config.ini`、`Media/`が出力に残らない） | 適用 |
+| `SharedContentPacks` | 適用（`Templates/TemplateResources/<DetailLevel>/<Mount>/Content` → `Content/<Mount>`） | 適用 |
+| `EditDetailLevelPreference` | 展開先のdetail level解決に使う。そのlevelに実体が無いmount（`TP_FirstPerson`の`Weapons`は`Standard`のみ）は、`High` → `Standard` の順で実在するlevelを選ぶ | 同左 |
+| `FolderRenames` / `ReplacementsInFiles` / `FilenameReplacements` | 適用しない（project名/module名がtemplate名のまま残るため） | 適用 |
+| `SharedContentPacks`の`DetailLevels` tuple | 個別には解釈しない（per-mount detail resolutionはDOT-3135の担当） | 同左 |
+
+generator自身がmap/Sequence/`.uasset`を捏造しない。
 
 generatorはrecipe名を一切見ない。`-Recipe` は `templates/recipes/<Recipe>/recipe.json` を指す名前であり、合成内容は recipe.json のデータと recipe ディレクトリに実際に置かれたファイルだけで決まる。
 
@@ -30,7 +42,7 @@ generatorはrecipe名を一切見ない。`-Recipe` は `templates/recipes/<Reci
 |---|---|---|
 | `schema_version` | 整数 | generatorが実装している値は `1` のみ。他の値を書くと生成前に停止する |
 | `recipe` | 文字列 | **ディレクトリ名と完全一致**すること（大文字小文字も含む）。一致しない場合は停止する |
-| `purpose` | 文字列 | 用途の記録。`game-and-capture` / `capture-only` を使う。**合成判断には使わない**（下記） |
+| `purpose` | 文字列 | 用途の記録。`game-and-capture` / `capture-only` を使う。**合成判断には使わない**（lockとコピーされた`recipe.json`だけが変わる。下記） |
 | `engine_template` | 文字列 | `EngineRoot/Templates/<名前>/<名前>.uproject` が存在する公式template名（例 `TP_FirstPerson` / `TP_BlankBP` / `TP_ThirdPerson`） |
 | `required_plugins` | 文字列の配列 | 有効化するplugin名。`MovieRenderPipeline` / `MulticaOnlineStarter` / `OnlineSubsystem` / `OnlineSubsystemNull` / `OnlineSubsystemUtils` のいずれか。重複・空要素・未知の名前は停止 |
 
@@ -38,11 +50,21 @@ generatorはrecipe名を一切見ない。`-Recipe` は `templates/recipes/<Reci
 3. `Capture.md` を置く。全recipe必須。無い場合は停止する。
 4. `Play.md` は**任意**。置いたrecipeは `Recipe/Play.md` を出力し、置かないrecipeは出力しない。これがプレイ差分の有無を決める唯一の入力であり、recipe名ではない。
 
-`recipe.json` / `Capture.md` / `Play.md` は生成物の `Recipe/` へ逐語コピーされる。`SET.md` は `templates/recipes/common/SET.md` の1つだけが全recipeに共通で入る。
+`recipe.json` / `Capture.md` / `Play.md` は生成物の `Recipe/` へ逐語コピーされる。`SET.md` は `templates/recipes/common/SET.md` の1つだけが全recipeに共通で入る。このため `templates/recipes/common/` のような `recipe.json` を持たないディレクトリは recipe ではなく、`-Recipe` に指定しても選択肢として案内されない（未知recipeとして停止する）。
 
-### `purpose` の扱い（lock記録専用）
+### `purpose` の契約（合成を変えない、lockとコピーだけが変わる）
 
-`purpose` は `template-lock.json` に記録するだけで、**合成結果を1バイトも変えない**。同じ `required_plugins` と同じファイル構成を持つ2つのrecipeは、`purpose` が違っても同一のtreeを出す（lockの `purpose` だけが違う）。用途の意味づけはrecipe本文（`Capture.md` / `Play.md`）と作品側QAで表す。field追加で挙動を変えたい場合は `schema_version` を上げ、generatorの対応と回帰を同時に足す。
+`purpose` は**合成判断に使わない**。合成（どのtemplateをコピーするか、plugin一式を入れるか、`docs/08`を同梱するか、`Recipe/Play.md`を出すか）は `engine_template` / `required_plugins` / recipeディレクトリに実在するファイルだけで決まる。同じデータと同じファイル構成を持つ2つのrecipeは、`purpose` が違っても**同じファイル集合・同じplugin構成・同じPlay差分**を出す。
+
+ただし `recipe.json` は生成物の `Recipe/recipe.json` へ**逐語コピー**されるので、`purpose` だけを書き換えると生成物の次の2ファイルは実際に変わる。
+
+| ファイル | `purpose` 変更時の挙動 |
+|---|---|
+| `Recipe/recipe.json` | 変わる（recipeデータの逐語コピーなので、その`purpose`行がそのまま出る） |
+| `template-lock.json` | 変わる（`purpose` を記録する） |
+| 上記以外（template由来のtree、`Plugins/`、`Recipe/`の他ファイル、`.uproject`） | 変わらない（byte一致） |
+
+回帰testはこの契約をそのままassertする。ファイル集合（composition）と上記2ファイル以外のbyte一致を比較し、`Recipe/recipe.json` と `template-lock.json` は**変わることが期待値**として別にassertする。したがって「同一tree」という主張はこの2ファイルを含まない意味であり、lockの`purpose`とコピーされた`recipe.json`は用途の記録として読む。用途の意味づけはrecipe本文（`Capture.md` / `Play.md`）と作品側QAで表す。field追加で合成を変えたい場合は `schema_version` を上げ、generatorの対応と回帰を同時に足す。
 
 ### `required_plugins` と `Plugins/` の関係（単一の真実）
 
@@ -74,6 +96,16 @@ generatorはrecipe名を一切見ない。`-Recipe` は `templates/recipes/<Reci
 | 置換不能時 | コピー前に照合し、既知パターンに一致しない場合は停止して未一致pathを列挙する。生コピーを黙って出力しない | generatorのstderr/例外、`scripts/Test-UETemplateScaffold.ps1`の負例 |
 
 lockは`schema_version: 2`で、上記3項目を`identity`に持つ。単位は作品（`Production/<Name>_<runid>/template-lock.json`）であり、identityを手で書き換えない。
+
+同じlockが、templateの`Config/TemplateDefs.ini`から実際に何を適用したかを追加fieldで記録する（schema_versionは据え置き）。
+
+| field | 内容 |
+|---|---|
+| `shared_content_packs` | 出力`Content/`へ展開したmount名の配列。宣言が無いtemplate（`TP_BlankBP`）は空配列 |
+| `shared_content_pack_detail_levels` | mount名 → 実際に展開元としたdetail level（例: `Weapons: Standard`） |
+| `template_defs_ignore_rules` | 適用した`FoldersToIgnore` / `FilesToIgnore`の件数（`folders_to_ignore` / `files_to_ignore`） |
+
+生成後の検査として、生成された`Config/DefaultEngine.ini`の`GameDefaultMap` / `EditorStartupMap`が`/Game/...`を指す場合、その`.umap`が出力に存在することを確認する。無ければgeneratorは停止して欠落pathを列挙し、`template-lock.json`を書かず`Created ...`も出さない。`/Engine/...`（engine content）を指す宣言は出力treeの対象外として検査しない。
 
 ## lockと更新手順
 
