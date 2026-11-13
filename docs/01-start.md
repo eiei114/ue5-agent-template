@@ -7,6 +7,9 @@
 `templates/QA.md`を**複製**して、`Production/.runs/run_<runid>/preflight.md`へ日時、Issue/run、hostname/OS、UE実version、GPU/VRAM、disk/RAM、既存toolchain、モデル指定/実効値、利用枠の観測範囲を記録。不明を0や無料と扱わない。`templates/`は雛形であり編集しない（tracked fileを汚すとgeneratorのclean-tree gateで停止する）。`Production/.runs/run_<runid>/`は生成先`Production/<Name>_<runid>/`の外にある台帳dirで、生成前にここへ書いても生成を妨げない。project生成後は同じ内容を`Production/<Name>_<runid>/Out/run_<runid>/QA.md`へ移し、以降はそこで追記する。
 
 `templates/QA.md`に日時、Issue/run、hostname/OS、UE実version、GPU/VRAM、disk/RAM、既存toolchain、モデル指定/実効値、利用枠の観測範囲を記録。不明を0や無料と扱わない。この規則は`template-lock.json`の`template_commit_published`にも適用され、未検査は`null`であって合格ではない。これはQA記録だけの規則ではなく、`scripts/New-UETemplateScaffold.ps1`が書く`template-lock.json`にも等しく適用される：エンジンが書いていない値は`null`、0は「エンジンが0と書いた」値だけに使う（[構造と更新](07-architecture.md)のengine build identity）。
+
+`templates/QA.md`に日時、Issue/run、hostname/OS、UE実version、GPU/VRAM、disk/RAM、既存toolchain、モデル指定/実効値、利用枠の観測範囲を記録。不明を0や無料と扱わない。
+**checkoutと生成先の絶対パス長もPreflightの完了条件**。template repoのclone先と`Production/<ProjectName>_<runid>/`の絶対パス長を実測してQAへ書く（例: `C:\gh\ue5-agent-template` = 24文字）。generatorは生成前に予算検査を行い、既定260文字を超える計画なら停止する（下記[パス長の予算](#パス長の予算)）。UE buildの`Intermediate/`・`*.obj`はgeneratorの出力ではないため検査対象外で、build前に同じ予算を別途確認する。
 Multicaのissue runs / runtime activity（先に各--help）と現地UE/renderプロセス・project leaseを確認。onlineはbuild可能の証拠ではない。
 Windows offlineなら新規buildをqueueして成功扱いしない。MacBookは許可済みApple工程の候補、miniは軽い計画・文書確認のみ。
 
@@ -37,6 +40,19 @@ recipeの正本は各 [`recipe.json`](../templates/recipes/)。選択可能な�
 `-Recipe`には `templates/recipes/` にある`recipe.json`付きのレシピ名（上表の3つと、追加したレシピ）を指定する。存在しない名前と`recipe.json`を持たないディレクトリはgeneratorのデータ検証で停止し、出力ディレクトリを作らない。実行前に既存UEのversion/path、当該templateと必要なtoolchainを確認し、`Production/<ProjectName>_<runid>/`が未使用であることを確かめる。生成後は`template-lock.json`の`identity`と`.uproject`のplugin設定を照合してからEditorで開く。generatorはidentityの照合に失敗したら停止し、既存projectを上書きしない。実際のmap/Sequence/作品Contentは生成しない。
 
 生成前にtemplate側のprovenanceも検査される。既定では、記録する`template_commit`を`template_repository`（実測したclone元）から`git fetch`で取得できることを確認し、取得不能・未push・origin無し・bundleなどなら停止する。停止した場合は先にcommitをrepoへpushするか、その状態で作業する必要がある場合だけ`-AllowUnpublishedTemplate`（lockに実測の`false`/`null`を残す）または`-SkipTemplatePublishCheck`（probeせず`null`）を明示する。`template_commit_published`が`true`でないlockは、`template_commit`を取得できる保証がないため、第三者へ渡さない（新RunIdで再生成する）。契約は[構造と更新](07-architecture.md)。
+
+### パス長の予算
+
+`New-UETemplateScaffold.ps1`は、排他的mkdirの**前**に、これから書くtreeの最長絶対パスを計算して予算と比較する。既定は`-MaxPathLength 260`。
+
+- 検査対象は (a) コピーするengine template配下（materializeするrecipeは変換後のpath）、(b) 共有content pack、(c) 同梱の`MulticaOnlineStarter` plugin一式、(d) generator自身が書く`Recipe/`・`docs/08-online-foundations.md`・`template-lock.json`。
+- 超過時は**何も作らずに停止**する。エラーには最長pathの実値・相対path・超過分・現在のclone root長・収まるclone root長の目安・短くする具体案を含む。`Production/<ProjectName>_<runid>/`は作られない。
+- 成功時は標準出力に`Path budget: longest planned path <N> characters, <M> characters of headroom under the <B>-character budget (<relative path>).`の1行を出し、QAへそのまま記録できる。
+- 260の根拠は、このrepoが2026-11-01のEditor buildで**実際に260文字path制限へ当たり、checkoutを一時Q: driveへ割り当てた**記録（[docs/08-online-foundations.md](08-online-foundations.md)の実績表）と、Microsoft公式の`MAX_PATH`=260。Epic公式のBuild Configurationに`WindowsPlatform`の`MaxRootPathLength`/`MaxNestedPathLength`（"ensure paths are portable between machines"）があることも根拠の一部だが、**既定値と失敗時の挙動は公式資料から取得していない**。したがってこの予算は「Epicが260を要求している」という主張ではなく、repo自身が踏んだ閾値を既定にした宣言的な予算である。
+- 予算を超える深さで作業する必要がある場合は`-MaxPathLength`を明示的に上げ、**なぜ上げたかと実測した最長pathをQAに残す**。既定を黙って緩めない。
+- この検査は**generatorが書く範囲だけ**を見る。UE build以降に生える`Intermediate/Build/**`、`*.generated.h`、`Plugins/*/Intermediate/**/*.obj`はより深いため、build前にclone先と予算を別途確認する。実測は本repoの範囲外（Unverified）。
+
+clone先の推奨は`C:\gh\ue5-agent-template`のような短いpath。実測（2026-11-12、`spectator-explore`／`EmberWatch` + 36文字のrun ID）では、clone root 85文字（生成先144文字）で最長260文字、clone root 86文字（145文字）で最長261文字となり、86文字以上では新しい予算検査が停止する。同じ入力で旧generatorはclone root 86文字でも成功扱いで261文字のtreeを書いた。
 
 ### 手動fallback：Project Browserを使う場合
 

@@ -31,7 +31,16 @@ param(
 	# Skips the retrieval probe entirely and records template_commit_published = null (未検査).
 	# Use it when the recorded repository cannot be reached from this host (offline work), never to
 	# turn an unpublished commit into a published one.
-	[switch]$SkipTemplatePublishCheck
+	[switch]$SkipTemplatePublishCheck,
+
+	# Budget for the longest path the generator is about to write, in characters. The default
+	# follows this repository's own recorded failure (docs/08-online-foundations.md:47, 2026-11-01:
+	# a UE Editor build had to move the checkout to a temporary drive because of the 260-character
+	# path limit) and the Windows MAX_PATH default documented by Microsoft. It is a declared budget,
+	# not a claim that every toolchain fails at this length. Raise it explicitly and record why in QA
+	# instead of letting the generator write a tree nobody measured.
+	[ValidateRange(1, 32767)]
+	[int]$MaxPathLength = 260
 )
 
 $ErrorActionPreference = 'Stop'
@@ -335,7 +344,88 @@ function Copy-TemplateTree {
 		[Parameter(Mandatory = $true)][string]$EngineTemplateRoot,
 		[switch]$Materialize
 	)
+    Copy-TemplateTreeImpl -SourceTemplate $SourceTemplate -Destination $Destination -TemplateName $TemplateName -ProjectFileName $ProjectFileName -Name $Name -EngineTemplateRoot $EngineTemplateRoot -Materialize:$Materialize
+}
 
+
+# Single source of truth for "where does this template file land", used both by the copy and by
+# the pre-copy path budget, so the measured paths are the paths that actually get written.
+function Get-MaterializedTarget([string]$RelativePath, $Defs, [string]$TemplateName, [string]$Name) {
+	if ($RelativePath -ieq "$TemplateName.uproject") {
+		return [pscustomobject]@{ Target = "$Name.uproject"; IsCopy = $true }
+	}
+	if (@($Defs.FilesToIgnore | Where-Object { $RelativePath -ieq $_ }).Count -gt 0) { return $null }
+	if (@($Defs.FoldersToIgnore | Where-Object { $RelativePath.StartsWith($_.TrimEnd('/') + '/', [System.StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) { return $null }
+	$target = $RelativePath
+	foreach ($rename in $Defs.FolderRenames) {
+		$from = $rename[0].TrimEnd('/') + '/'
+		if ($target.StartsWith($from, [System.StringComparison]::OrdinalIgnoreCase)) {
+			$target = $rename[1].Replace('%PROJECTNAME%', $Name).TrimEnd('/') + '/' + $target.Substring($from.Length)
+		}
+	}
+	$extension = [System.IO.Path]::GetExtension([System.IO.Path]::GetFileName($RelativePath)).TrimStart('.').ToLowerInvariant()
+	$isText = $Defs.Extensions -contains $extension
+	if ($isText) {
+		$leaf = Convert-TemplateName -Text ([System.IO.Path]::GetFileName($target)) -TemplateName $TemplateName -Name $Name
+		$target = ([System.IO.Path]::GetDirectoryName($target.Replace('/', '\')) + '\' + $leaf).TrimStart('\')
+	}
+	return [pscustomobject]@{ Target = $target; IsCopy = -not $isText }
+}
+
+function Get-SharedContentPackRoot([string]$EngineTemplateRoot, $Defs, [string]$MountName) {
+	return Join-Path $EngineTemplateRoot ("TemplateResources\{0}\{1}\Content" -f $Defs.DetailLevel, $MountName)
+}
+
+function Measure-GeneratedPathBudget([string]$Destination, $RelativePaths) {
+	# Length of the longest path the generator is about to write, measured as the real absolute
+	# path string (Windows counts every character of it, separators included).
+	$longestPath = $Destination
+	$longestRelative = '(the output directory itself)'
+	foreach ($relative in $RelativePaths) {
+		$normalized = $relative.Replace('/', '\')
+		$candidate = $Destination + '\' + $normalized
+		if ($candidate.Length -gt $longestPath.Length) {
+			$longestPath = $candidate
+			$longestRelative = $normalized
+		}
+	}
+	return [pscustomobject]@{ Path = $longestPath; Relative = $longestRelative; Length = $longestPath.Length }
+}
+
+function Get-PlannedOutputRelativePaths([string]$SourceTemplate, [string]$EngineTemplateRoot, [string]$TemplateName, [string]$Name, [string[]]$GeneratorOwnedPaths) {
+	# Every relative path the generator plans to write: the copied template tree (projected through
+	# the materialize rules when the recipe materializes), the shared content packs, and the files the
+	# generator writes itself (recipe payload and lock). Engine build output (Intermediate/, *.obj)
+	# is not generated here and is therefore out of scope here; docs/01-start.md warns about it.
+	$planned = [System.Collections.Generic.List[string]]::new()
+	$sourceRoot = [System.IO.Path]::GetFullPath($SourceTemplate).TrimEnd('\', '/')
+	if ($null -ne $Name -and $Name -ne '') {
+		$defsPath = Join-Path $SourceTemplate 'Config\TemplateDefs.ini'
+		if (-not (Test-Path -LiteralPath $defsPath -PathType Leaf)) { throw "The template has no Config/TemplateDefs.ini to materialize from: $defsPath" }
+		$defs = Read-TemplateDefs -Path $defsPath -TemplateName $TemplateName
+		foreach ($file in Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Force) {
+			$relative = $file.FullName.Substring($sourceRoot.Length + 1).Replace('\', '/')
+			$target = Get-MaterializedTarget -RelativePath $relative -Defs $defs -TemplateName $TemplateName -Name $Name
+			if ($null -ne $target) { $planned.Add($target.Target) }
+		}
+		foreach ($mount in $defs.SharedContentPacks) {
+			$packContent = Get-SharedContentPackRoot -EngineTemplateRoot $EngineTemplateRoot -Defs $defs -MountName $mount
+			if (-not (Test-Path -LiteralPath $packContent -PathType Container)) { throw "Shared content pack is missing from the installed engine: $packContent" }
+			$packRoot = [System.IO.Path]::GetFullPath($packContent).TrimEnd('\', '/')
+			foreach ($packFile in Get-ChildItem -LiteralPath $packRoot -Recurse -File -Force) {
+				$planned.Add((Join-Path ("Content\" + $mount) $packFile.FullName.Substring($packRoot.Length + 1)))
+			}
+		}
+	} else {
+		foreach ($file in Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Force) {
+			$planned.Add($file.FullName.Substring($sourceRoot.Length + 1).Replace('\', '/'))
+		}
+	}
+	foreach ($owned in $GeneratorOwnedPaths) { $planned.Add($owned) }
+	return , $planned
+}
+
+function Copy-TemplateTreeImpl([string]$SourceTemplate, [string]$Destination, [string]$TemplateName, [string]$Name, [string]$EngineTemplateRoot, [string]$ProjectFileName, [switch]$Materialize) {
 	$defsPath = Join-Path $SourceTemplate 'Config\TemplateDefs.ini'
 	if (-not (Test-Path -LiteralPath $defsPath -PathType Leaf)) { throw "The template has no Config/TemplateDefs.ini to copy from: $defsPath" }
 	$defs = Read-TemplateDefs -Path $defsPath -TemplateName $TemplateName
@@ -706,6 +796,39 @@ $productionPrefix = $productionRoot.TrimEnd([System.IO.Path]::DirectorySeparator
 if (-not $destinationPath.StartsWith($productionPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
 	throw 'The computed output directory escapes Production.'
 }
+
+# ---------------------------------------------------------------------------------------------
+# Path-length budget. The repository records 260 characters as a real failure it already hit
+# (docs/08-online-foundations.md:47), so the generator must not emit a tree nobody measured and
+# still call it a success. The check runs before the exclusive mkdir: a rejected run leaves no
+# Production/<Name>_<RunId>/ behind.
+# ---------------------------------------------------------------------------------------------
+[string[]]$generatorOwnedPaths = @('template-lock.json')
+foreach ($payloadName in @('SET.md', 'recipe.json', 'Capture.md')) {
+	$generatorOwnedPaths += ('Recipe\' + $payloadName)
+}
+if ($Recipe -eq 'spectator-explore' -or $Recipe -eq 'third-person-game') {
+	$generatorOwnedPaths += 'Recipe\Play.md'
+}
+if ($Recipe -eq 'spectator-explore') { $generatorOwnedPaths += 'docs\08-online-foundations.md' }
+$templateSourceName = if ($materialize) { $ProjectName } else { $null }
+$plannedPaths = Get-PlannedOutputRelativePaths -SourceTemplate $sourceTemplate -EngineTemplateRoot $engineTemplateRoot -TemplateName $templateName -Name $templateSourceName -GeneratorOwnedPaths $generatorOwnedPaths
+if (@($recipeData.required_plugins) -contains 'MulticaOnlineStarter') {
+	# The online payload is copied from this repository, not from the engine template, so it is
+	# measured separately instead of being folded into the template walk above.
+	$pluginSourceRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot 'templates\online\MulticaOnlineStarter')).TrimEnd('\', '/')
+	foreach ($pluginFile in Get-ChildItem -LiteralPath $pluginSourceRoot -Recurse -File -Force) {
+		$plannedPaths.Add('Plugins\MulticaOnlineStarter\' + $pluginFile.FullName.Substring($pluginSourceRoot.Length + 1).Replace('\', '/'))
+	}
+}
+$pathBudget = Measure-GeneratedPathBudget -Destination $destinationPath -RelativePaths $plannedPaths
+$pathMargin = $MaxPathLength - $pathBudget.Length
+if ($pathMargin -lt 0) {
+	$overBy = [Math]::Abs($pathMargin)
+	$suggestedRoot = [Math]::Max(1, $repoRoot.Length - $overBy)
+	throw ('Path length budget stopped generation before anything was written: the longest planned path would be {0} characters ({1}), which is {2} over the {3}-character budget. Nothing was created at {4}. Shorten it by one of: clone the template repository into a shallower directory (this checkout root is {5} characters, and roughly {6} characters or fewer would fit this run: {7}), or use a shorter ProjectName/RunId. Engine build output (Intermediate/, *.obj) is not generated here and is not measured; see docs/01-start.md.' -f $pathBudget.Length, $pathBudget.Relative, $overBy, $MaxPathLength, $destinationPath, $repoRoot.Length, $suggestedRoot, $repoRoot)
+}
+Write-Output (('Path budget: longest planned path {0} characters, {1} characters of headroom under the {2}-character budget ({3}).' -f $pathBudget.Length, $pathMargin, $MaxPathLength, $pathBudget.Relative))
 
 if (-not ('MulticaTemplateDirectory' -as [type])) {
 	Add-Type -TypeDefinition @'

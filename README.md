@@ -32,6 +32,7 @@ AIが短い映像または小さな鑑賞シーンを安全に作るための**�
 ## 新規scaffold
 
 cleanなtemplate checkoutと既存UE installを指定し、同じName/RunIdの出力がないことを確認してから実行する。
+template repoのclone先は**短い絶対path**にする（例`C:\gh\ue5-agent-template`、24文字）。generatorは`Production/<Name>_<RunId>/`を含む生成予定treeの最長pathを実行前に計算し、既定`-MaxPathLength 260`を超えると**何も作らずに停止**する。成功時は`Path budget: longest planned path ...`の1行を出力し、超過時は「実測値・超過分・clone先を浅くする具体案」を返す（[着手手順](docs/01-start.md#パス長の予算)）。
 
 ```powershell
 .\scripts\New-UETemplateScaffold.ps1 `
@@ -49,6 +50,9 @@ cleanなtemplate checkoutと既存UE installを指定し、同じName/RunIdの�
 映像専用は`-Recipe vertical-loop`を選ぶ。三人称ゲーム（アクション・探索・街）は`-Recipe third-person-game`で、`<ProjectName>.uproject`／`Source/<ProjectName>`へ名前を置換した状態で生成する（ProjectNameはC++識別子）。`spectator-explore`と`vertical-loop`はtemplateを生コピーするのでprojectファイル名はtemplate名のまま（`TP_FirstPerson.uproject` / `TP_BlankBP.uproject`）で、`<ProjectName>.uproject`にはならない。どちらの場合も生成後の`template-lock.json`で`identity.project_file` / `identity.project_modules` / `identity.engine_association`、作品差分、`.uproject`のplugin設定を確認してからEditorで開く。templateのdescriptorと`Source/`が一致しない場合、generatorは生コピーを出さず停止する。更新で既存作品を再生成/上書きしない。
 
 `template-lock.json`の`template_repository` / `template_source_kind` / `template_commit` / `template_commit_published`は、生成に使ったcheckoutの実測provenanceである。`template_commit_published`が`true`でない限り、そのlockは「lockが名指しするrepoから同じtemplateを取得できる」ことを保証しない。既定の生成はその状態で停止し、通すには`-AllowUnpublishedTemplate`（lockに実測の`false`/`null`を残す）または`-SkipTemplatePublishCheck`（probeせず`null`）を明示する。契約の詳細は[構造と更新](docs/07-architecture.md)。
+
+パス長に注意: 上の例の出力folder名は`EmberWatch_<36文字のrun ID>`なので生成先は`<clone root>` + `\Production\` + 47文字になり、その下の最長fileはproject rootからさらに115文字下にある（pluginの`Private/Tests`配下、`Plugins\MulticaOnlineStarter\Source\MulticaOnlineStarter\Private\Tests\MulticaOnlineDeferredDestroyCleanupTests.cpp`）。clone rootが85文字を超えると260文字を越える。`C:\gh\ue5-agent-template`（24文字）程度にすると余裕が取れる。予算を超える場合は`-MaxPathLength`を明示し、その理由と実測最長pathをQAに残す。
+
 コード境界とNull/LAN手順は`templates/online/MulticaOnlineStarter/README.md`および[方式比較](docs/08-online-foundations.md)を参照。
 
 ## エンコード前の画像列検査
