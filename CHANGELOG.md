@@ -174,6 +174,16 @@ git status --porcelain --untracked-files=all  実行前後とも 0 行（生成�
 
 **Unverified Scope**: 実UE 5.8.4 の起動/compile/Editor/PIE/MRQ/render/Shipping は実行していない。job object の `KILL_ON_JOB_CLOSE` は本hostで成立を確認できていないため採用せず、帰属はsnapshotの親子鎖だけで行う。Microsoftの仕様上 `Win32_Process.Create` 経由の子はjobを継承しない（[Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)、2026-11-05参照）ので、job単独を根拠にしない。実際のUE runがどのprocessをどの親子関係で出すかは未観測で、fixtureでの一致だけを合格根拠にしている。
 
+
+## Unreleased — DOT-3076
+
+- `scripts/New-UETemplateScaffold.ps1` は `Production/.stage-<runid>-<nonce>/` に全成果物を書き、最後に単一renameで`Production/<Name>_<runid>/`へ公開するようになった。`Directory.Move`は既存パスを拒否するので、これが生成のatomicな公開と最終的な排他判定を兼ねる。
+- 失敗時はcatchが**そのrun自身のstagingだけ**を削除する。公開済の既存projectや他runのstagingには触れない。従来の「失敗時は出力ディレクトリをそのまま残す」は廃止した。
+- 途中で失敗したrunの`Production/<Name>_<runid>/`は存在しないため、同じ`Name`/`RunId`での再生成を残骸が恒久的にブロックしなかった（従来は`Output already exists; it was not modified`で拒否され、`AGENTS.md`の削除禁止規則と衝突して解消不能だった）。
+- `template-lock.json`を完成マーカーとして明文規定した（最後に書き、公開前に存在を確認する）。`docs/01-start.md`、`AGENTS.md`、`docs/07-architecture.md`に「lockの無い生成ディレクトリは未完成」「残骸の削除は自runの失敗終端を確認できた場合だけ、他runには触れない、判断できない場合は停止」を書いた。
+- `scripts/Test-UETemplateScaffold.ps1`に途中失敗のassert群を追加した（既存8群は維持）: plugin metadata欠落（`.uproject`コピー後）とrecipeコピー段階の失敗で出力ディレクトリとstagingが残らないこと、失敗後に同じ`Name`/`RunId`で正しく再生成できること、既存出力は従来どおり拒否され内容が保持されること。`Production/`の残骸gateは`.stage-*`も検出する。
+- 実測（本host Windows、`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Test-UETemplateScaffold.ps1`）: 変更前のgeneratorでは`ASSERT FAILED: a mid-copy failure publishes no Production/<Name>_<runid> directory`でexit 1。変更後は11 group PASS・`EXIT=0`。
+- Unverified: UE実機（Editor/build/PIE/MRQ/Shipping）は実行していない。本変更はPowerShell層のみで、`Production/`の既存生成物には触れていない。
 ## Unreleased — DOT-3157
 
 - 生コピー経路（`materialize_project`を持たない`spectator-explore` / `vertical-loop`）がtemplateの`Config/TemplateDefs.ini`を一度も読まず、templateフォルダを丸ごとコピーしていた。出力`Content/`に`TP_FirstPerson`の既定mapが参照する共有content pack（`Characters` / `LevelPrototyping` / `Input` / `Weapons`）が入らず、逆にignore対象の`Media/`と`Config/TemplateDefs.ini`・`Config/config.ini`が残っていた。generatorはexit 0で`Created ...`を表示し、testは6群PASSしていたため、"assetが足りない"を出力から判別できなかった。

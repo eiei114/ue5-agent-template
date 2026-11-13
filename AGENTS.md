@@ -82,4 +82,11 @@ generatorはコピー前にdescriptorと`Source/`を照合し、既知パター�
 
 plugin identityも同じgeneratorが保証する。`template-lock.json`の`plugins`は生成`.uproject`の`Plugins`全entryを`{ version, source, enabled_in_project }`で持ち、`Enabled: true`のpluginはコピー**前**に`.uplugin`の実在を確認する。当該Engine installに存在しなければ出力directoryを作らずに停止し、plugin名と探索pathを列挙する（存在しないpluginを有効化したままexit 0で「開けないproject」を出さない）。版は`.uplugin`の`VersionName`（空なら`Version`）を写し、読めない場合は文字列`unknown`を残して推測しない。
 
+## 生成の公開と残骸の扱い
+
+- 生成物は`Production/.stage-<runid>-<nonce>/`に作り、**全部できた後に単一renameで`Production/<Name>_<runid>/`へ公開する**。`template-lock.json`は最後に書く完成マーカーであり、これが無い`Production/<Name>_<runid>/`は未完成として扱う。
+- 失敗したrunは**自分のstagingだけ**を削除して停止する。既存の公開済projectには触れない。失敗は`Production/<Name>_<runid>/`を作らないので、同じ`Name`/`RunId`での再実行を恒久的にブロックしない。
+- 公開済パスに`template-lock.json`が無い残骸は、**そのrunの生成が失敗終端していることを確認できた場合に限り**削除候補になる。他のrunの出力・他人のstagingは消さない。判断できない場合は`AGENTS.md:11`の「既存なら停止」を優先して停止し、確認した内容をQAへ記録する。
+- 削除を自動化しない。残骸の判断はwriter/人間に残す。
+
 旧版は上書きしない。Out/_v1のような旧運用よりrun別の分離を推奨。Outに置いただけで納品とは呼ばない。

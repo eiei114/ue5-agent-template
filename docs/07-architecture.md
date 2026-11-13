@@ -133,6 +133,11 @@ lockを比べるときはJSONをparseしてfield単位で比較する。byte比�
 - したがってhostを跨いだlockの同一性判定にsha256や`diff`を使うと偽の不一致が出る。canonical serializerは未実装で、この差は意図的に残している。
 - 実装済みの範囲: `scripts/Test-UETemplateScaffold.ps1`は同一shell・同一入力のlock byte一致（`-ceq`）をassertionで固定する。cross-shellのbyte一致は主張しない（本hostの実測で差があるため）。
 
+### 公開と完成マーカー
+
+generatorは`Production/.stage-<runid>-<nonce>/`に全成果物を作り、最後に単一renameで`Production/<Name>_<runid>/`へ公開する。renameは既存パスを拒否するので、これが最終的な排他判定でもある。途中で失敗したrunは自分のstagingだけを削除して停止するため、`Production/<Name>_<runid>/`は部分出力を残さない。
+
+`template-lock.json`は**完成マーカー**であり、最後に書かれる。生成直後に`template-lock.json`が無いディレクトリは未完成として扱い、完成projectと区別する。残骸（lockの無い公開済パス）の削除は、そのrunの失敗終端を確認できた場合に限る。他runの出力・他人のstagingを消さない。判断できない場合は停止し、観測したpathをQAへ記録する。
 同じlockが、templateの`Config/TemplateDefs.ini`から実際に何を適用したかを追加fieldで記録する（schema_versionは据え置き）。
 
 | field | 内容 |

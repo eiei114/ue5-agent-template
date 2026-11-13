@@ -56,6 +56,15 @@ clone先の推奨は`C:\gh\ue5-agent-template`のような短いpath。実測（
 
 `-Recipe`には上表のいずれかを指定する。実行前に既存UEのversion/path、当該templateと必要なtoolchainを確認し、`Production/<ProjectName>_<runid>/`が未使用であることを確かめる。生成後は`template-lock.json`の`identity`と`plugins`を生成`.uproject`と照合してからEditorで開く — 照合するのは、`.uproject`の`Plugins`配列の`Name`/`Enabled`が`plugins`の同じ`Name`/`enabled_in_project`と一致すること、`plugins.<Name>.version`が当該installの`.uplugin`の`VersionName`と一致すること（`unknown`は版が読めなかったという意味で、一致ではない）。generatorはidentityの照合に失敗したら停止し、**enableするpluginが当該Engine installに無い場合も出力directoryを作らずに停止**してplugin名と探索pathを列挙する。既存projectを上書きしない。実際のmap/Sequence/作品Contentは生成しない。
 
+### 公開はatomic、`template-lock.json`は完成マーカー
+
+generatorは`Production/.stage-<runid>-<nonce>/`に全成果物を書き、最後に単一renameで`Production/<Name>_<runid>/`へ公開する。renameは既存パスを上書きしないため、これが最終的な排他判定になる。したがって**途中で失敗したrunの`Production/<Name>_<runid>/`は存在しない**。失敗時はそのrun自身のstagingだけが削除され、公開済の既存project・他runのstagingには触れない。
+
+- `Production/<Name>_<runid>/template-lock.json`がある = 生成が最後まで完了した完成project。
+- `template-lock.json`が無い = 未完成。生成直後にこれが無いディレクトリは完成projectとして扱わない。
+- 残骸の扱い: 公開済パスに`template-lock.json`が無く、かつその`Name`/`runid`の生成が失敗終端していることを確認できた場合、それは残骸であり削除対象になり得る。確認できない場合は`AGENTS.md`の「既存なら停止」を優先して停止し、観測内容を`QA.md`へ記録する。他runの出力や他人のstagingを消さない。残骸の自動削除・自動回復は行わない。
+- 同じ`Name`/`RunId`で失敗後に再実行してよい: 失敗は排他的mkdirを残さないため、成功した先行runが無ければ再実行は正当な生成になる。
+
 ### 手動fallback：Project Browserを使う場合
 
 scaffold scriptが使えない場合に限り、recipe表のEngine templateを選ぶ（`spectator-explore`=`TP_FirstPerson`、`vertical-loop`=`TP_BlankBP`、`third-person-game`=`TP_ThirdPerson`）。Recipeの用途に合わせた選択であり、First Person C++やgameplayは一律必須ではない。Starter Contentは不要なら無効にする。
