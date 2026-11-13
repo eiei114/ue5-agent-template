@@ -16,5 +16,14 @@
   "github_url": null,
   "github_visibility": null,
   "publication_authorized": false,
-  "owner_accepted": false
+  "owner_accepted": false,
+  "template_repository": null,
+  "template_commit": null,
+  "template_lock_sha256": null,
+  "recipe": null,
+  "engine_template": null,
+  "engine_version": null,
+  "engine_changelist": null,
+  "shared_content_packs": [],
+  "content_inventory": null
 }

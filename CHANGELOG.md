@@ -1,5 +1,40 @@
 # 変更履歴
 
+## Unreleased — DOT-3235
+
+- `templates/CREDITS.md` のデータ行は1行だけで全列が `未使用` を主張していたが、generator は生成物の `Content/` に engine 同梱の `.uasset`/`.umap` を最大 753 件置く。**「素材を一切使っていない」と書いたまま engine 同梱 content を納品する経路**を閉じるため、記入契約を「`Content/` の先頭ディレクトリごとに1行、`出所区分 (origin)`（`engine-template` / `shared-content-pack` / `third-party` / `original`）と `同梱形態 (bundle)`（`repo-bundled` / `generated-only`）を明記」に変えた。未記入は Unverified であり「未使用」の主張ではない。記入例は code fence 内に置く（監査器は fence の中を記録として読まない）。
+- 監査器 `scripts/Measure-UECreditsInventory.ps1` を追加。納品dir（`Out/run_<runid>/`）と project root のどちらを渡しても同じ組（`Content/` と `CREDITS.md`）を解決し、同じ結論を返す。`Content/` に asset が1件以上あり出所を述べた行が無ければ FAIL、`Content/` の各先頭ディレクトリ名が出所行に現れなければ FAIL（group 名を報告）、`Content/` が無ければ placeholder 1行で PASS、`CREDITS.md` 不在や `Content/`・`CREDITS.md` が2つ以上解決できる場合は exit 2。exit 0 = 通過 / 1 = 検出 / 2 = 入力不備。
+- 回帰 `scripts/Test-UECreditsInventory.ps1` を追加。実測した形（753 asset + placeholder CREDITS）の fixture を自作 placeholder bytes で作り、project root 監査 FAIL・納品dir 監査 FAIL（0件 PASS しない）・`CREDITS.md` 不在 exit 2・0 asset PASS・全 group 列挙 PASS・`templates/CREDITS.md` の記入例をそのまま使うと 753 asset/9 group で PASS・部分記入 FAIL・旧9列表 FAIL・曖昧入力 exit 2・checkout 不変を固定した。engine 同梱 `.uasset`/`.umap` は repo へ置いていない。
+- `templates/DELIVERY.json` に `template_repository` / `template_commit` / `template_lock_sha256` / `recipe` / `engine_template` / `engine_version` / `engine_changelist` / `shared_content_packs` / `content_inventory` を追加した。`docs/07-architecture.md` が要求する「共通 commit SHA・UE/Plugin版・レシピ・ローカル差分」を納品記録が保持できるようにするため。**既存 field は削除・改名していない**（未記入は `null`）。
+- `template-lock.json` は、`TemplateDefs.ini` の `SharedContentPacks` を適用した recipe では実際にコピーした mount 名（`shared_content_packs`）と mount → 実展開元 detail level（`shared_content_pack_detail_levels`、例 `Weapons: Standard`）を記録し、宣言の無い recipe では空配列になる。この記録は DOT-3157 の `Copy-TemplateTree` 実装で既に書かれており、本変更はそれを**CREDITS 記入の正本**として文書と監査に接続しただけで、**pack のコピー挙動と lock の field 構成は変えていない**。
+- `docs/03-assets.md` / `docs/04-package.md` / `docs/06-delivery.md` / `docs/07-architecture.md` / `AGENTS.md` の tree 図 / `templates/QA.md` の1行を、上記の実行コマンドと pass/fail 条件へ接続した。lock は既存の field 名（`shared_content_packs` = mount 名の配列、`shared_content_pack_detail_levels` = mount → 実展開元 level）で参照する。
+
+本hostでの実測（Windows、UE 5.8.4 CL 58902052、`powershell` 5.1 と `pwsh`、**UE は起動していない**、生成はファイルコピーのみ。base = `3ed94b6`（DOT-3157 適用後の `main`））:
+
+```text
+recipe              生成物の .uasset+.umap  lock.shared_content_packs
+spectator-explore   542                     Characters(High) / LevelPrototyping(High) / Input(High) / Weapons(Standard)
+third-person-game   753                     Characters(High) / Input(High) / LevelPrototyping(High)
+vertical-loop       0（Content/ 無し）        []
+
+placeholder CREDITS のまま（3 生成物、project root / 納品dir の両方）
+  spectator-explore  exit 1 / exit 1  （542 asset、9 group 未記載）
+  third-person-game  exit 1 / exit 1  （753 asset、9 group 未記載）
+  vertical-loop      exit 0 / exit 0  （0 asset）
+全 group を列挙した CREDITS（third-person-game）
+  project root exit 0 / 納品dir exit 0（assets total=753 groups=9 credits_rows=4）
+`templates/CREDITS.md` の fenced 記入例をそのまま複製（third-person-game）
+  project root exit 0 / 納品dir exit 0（出力一致）
+旧9列表（origin 列なし、third-person-game）
+  project root exit 1 / 納品dir exit 1
+
+scripts/Test-UECreditsInventory.ps1     9 PASS 行 / exit 0（powershell 5.1 と pwsh）
+scripts/Test-UETemplateScaffold.ps1     12 group PASS / exit 0（無改変）
+git status --porcelain --untracked-files=all  実行前後とも 0 行（生成物は削除済み）
+```
+
+移行: 既存作品の `CREDITS.md` は**書き換えを強制しない**。旧9列表は監査で FAIL になるが、それは Unverified のままであることを意味し、権利判断ではない。再生成する場合は `template-lock.json` の `shared_content_packs` を見て `Content/` の先頭ディレクトリごとに出所行を書く。engine 同梱 content の再配布可否は本変更の対象外（Epic の template 機構文書に記載が無いという不在の観測のみ）。
+
 ## Unreleased — DOT-3157
 
 - 生コピー経路（`materialize_project`を持たない`spectator-explore` / `vertical-loop`）がtemplateの`Config/TemplateDefs.ini`を一度も読まず、templateフォルダを丸ごとコピーしていた。出力`Content/`に`TP_FirstPerson`の既定mapが参照する共有content pack（`Characters` / `LevelPrototyping` / `Input` / `Weapons`）が入らず、逆にignore対象の`Media/`と`Config/TemplateDefs.ini`・`Config/config.ini`が残っていた。generatorはexit 0で`Created ...`を表示し、testは6群PASSしていたため、"assetが足りない"を出力から判別できなかった。

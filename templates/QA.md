@@ -21,6 +21,7 @@ writer/lease nonce・取得/解放receipt（`scripts/Lease-UETemplateProject.ps1
 | Shipping成功・ZIP別展開起動/操作 | unverified | |
 | Mac.app/architecture/署名/公証 | unverified | 必要な場合のみ |
 | CREDITS/権利・同一版manifest・SHA | unverified | |
+| CREDITS の出所監査（`Content/` の各 group が出所行に現れる） | unverified | `scripts/Measure-UECreditsInventory.ps1` を納品dir と project root の両方から実行した exit と出力。片方だけの記録は不可 |
 
 ## 画像列・通知・MP4・目視・音の独立判定
 

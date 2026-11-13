@@ -46,6 +46,8 @@ Production/<Name>_<runid>/
   LEASE.json           # active所有者のみ。`scripts/Lease-UETemplateProject.ps1` が管理。Git外
 ```
 
+`Out/run_<runid>/CREDITS.md`は1階層上の`Content/`（作品のasset本体）の出所を説明する。監査は`scripts/Measure-UECreditsInventory.ps1`に**納品dirとproject rootのどちらを渡しても同じ結論**になること（片方だけの実行は証拠にならない）。engine同梱contentは`Content/`の先頭ディレクトリ単位で`出所区分 (origin)`と`同梱形態 (bundle)`を別行に書く（契約は`templates/CREDITS.md`、記入の正本は`template-lock.json`の`shared_content_packs`）。
+
 project identityの契約は1つだけ。`scripts/New-UETemplateScaffold.ps1`はインストール済みUE公式templateから生成し、**projectファイル名・`Modules[].Name`・`Source/<Module>`は常に互いに一致**していなければならない。`EngineAssociation`は`Engine/Build/Build.version`から導いた値（例`5.8`）を必ず書き込む。
 
 - `materialize_project: true`のrecipe（`third-person-game`）は、template自身の`Config/TemplateDefs.ini`をUEウィザードと同じ規則で適用するため、`<Name>.uproject` / `Source/<Name>` / `Modules[].Name = <Name>`になる。

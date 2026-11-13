@@ -34,6 +34,16 @@ jobs:
           ./scripts/Test-UETemplateScaffold.ps1
           if ($LASTEXITCODE -ne 0) { throw "Test-UETemplateScaffold.ps1 exited $LASTEXITCODE" }
 
+      # The credits audit decides whether a delivery record explains the Content/ that is
+      # actually shipped. Its regression suite needs no engine and no GPU; running it here
+      # keeps the false-PASS path (0 assets seen from the delivery directory) from coming back.
+      - name: Test-UECreditsInventory.ps1
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./scripts/Test-UECreditsInventory.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Test-UECreditsInventory.ps1 exited $LASTEXITCODE" }
+
   lease:
     name: lease protocol
     runs-on: windows-latest
