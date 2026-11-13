@@ -238,51 +238,133 @@ function Set-OnlineSessionProjectIdentifier([string]$ProjectConfigPath, [string]
 	[System.IO.File]::WriteAllText($ProjectConfigPath, $configText, [System.Text.UTF8Encoding]::new($false))
 }
 
-function Copy-MaterializedTemplate([string]$SourceTemplate, [string]$Destination, [string]$TemplateName, [string]$Name, [string]$EngineTemplateRoot) {
+function Resolve-SharedContentPack([string]$EngineTemplateRoot, [string]$Mount, [string]$PreferredDetailLevel) {
+	# The installed engine only ships some mounts at some detail levels (TP_FirstPerson declares Weapons
+	# at "Standard" while its EditDetailLevelPreference is "High"). The preference of the template is
+	# tried first, then the remaining installed levels in a fixed order, so a declared pack is either
+	# copied and recorded with the level it actually came from, or reported as missing. The per-mount
+	# DetailLevels tuple written next to each MountName is not interpreted here.
+	$candidates = @(@($PreferredDetailLevel, 'High', 'Standard') | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+	foreach ($level in $candidates) {
+		$packContent = Join-Path $EngineTemplateRoot ("TemplateResources\{0}\{1}\Content" -f $level, $Mount)
+		if (Test-Path -LiteralPath $packContent -PathType Container) {
+			return [pscustomobject]@{ Mount = $Mount; DetailLevel = $level; Path = $packContent }
+		}
+	}
+	throw ("Shared content pack is missing from the installed engine: {0} (tried detail levels {1} below {2})" -f $Mount, ($candidates -join ', '), $EngineTemplateRoot)
+}
+
+function Copy-TemplateTree {
+	# Single copy implementation for both the raw-copy and the materialize path. Every recipe reads the
+	# template's own Config/TemplateDefs.ini: FoldersToIgnore / FilesToIgnore decide what is copied and
+	# SharedContentPacks decide which installed content packs are mounted into Content/. Renaming
+	# (FolderRenames, filename and in-file replacement, CoreRedirects, ProjectID) happens only when
+	# -Materialize is set, because the raw-copy recipes keep the template's project and module names.
+	param(
+		[Parameter(Mandatory = $true)][string]$SourceTemplate,
+		[Parameter(Mandatory = $true)][string]$Destination,
+		[Parameter(Mandatory = $true)][string]$TemplateName,
+		[Parameter(Mandatory = $true)][string]$ProjectFileName,
+		[Parameter(Mandatory = $true)][string]$Name,
+		[Parameter(Mandatory = $true)][string]$EngineTemplateRoot,
+		[switch]$Materialize
+	)
+
 	$defsPath = Join-Path $SourceTemplate 'Config\TemplateDefs.ini'
-	if (-not (Test-Path -LiteralPath $defsPath -PathType Leaf)) { throw "The template has no Config/TemplateDefs.ini to materialize from: $defsPath" }
+	if (-not (Test-Path -LiteralPath $defsPath -PathType Leaf)) { throw "The template has no Config/TemplateDefs.ini to copy from: $defsPath" }
 	$defs = Read-TemplateDefs -Path $defsPath -TemplateName $TemplateName
 	$sourceRoot = [System.IO.Path]::GetFullPath($SourceTemplate).TrimEnd('\', '/')
 	foreach ($file in Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Force) {
 		$relative = $file.FullName.Substring($sourceRoot.Length + 1).Replace('\', '/')
+		# TemplateDefs.ini names the template project file in FilesToIgnore, because the wizard writes a
+		# renamed descriptor instead. Both paths still need that descriptor, so it is copied to the project
+		# file name this run publishes and is exempt from the ignore rules.
 		if ($relative -ieq "$TemplateName.uproject") {
-			Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $Destination "$Name.uproject")
+			Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $Destination $ProjectFileName)
 			continue
 		}
 		if (@($defs.FilesToIgnore | Where-Object { $relative -ieq $_ }).Count -gt 0) { continue }
 		if (@($defs.FoldersToIgnore | Where-Object { $relative.StartsWith($_.TrimEnd('/') + '/', [System.StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) { continue }
 		$target = $relative
-		foreach ($rename in $defs.FolderRenames) {
-			$from = $rename[0].TrimEnd('/') + '/'
-			if ($target.StartsWith($from, [System.StringComparison]::OrdinalIgnoreCase)) {
-				$target = $rename[1].Replace('%PROJECTNAME%', $Name).TrimEnd('/') + '/' + $target.Substring($from.Length)
+		$isText = $false
+		if ($Materialize) {
+			foreach ($rename in $defs.FolderRenames) {
+				$from = $rename[0].TrimEnd('/') + '/'
+				if ($target.StartsWith($from, [System.StringComparison]::OrdinalIgnoreCase)) {
+					$target = $rename[1].Replace('%PROJECTNAME%', $Name).TrimEnd('/') + '/' + $target.Substring($from.Length)
+				}
 			}
-		}
-		$extension = [System.IO.Path]::GetExtension($file.Name).TrimStart('.').ToLowerInvariant()
-		$isText = $defs.Extensions -contains $extension
-		if ($isText) {
-			$leaf = Convert-TemplateName -Text ([System.IO.Path]::GetFileName($target)) -TemplateName $TemplateName -Name $Name
-			$target = ([System.IO.Path]::GetDirectoryName($target.Replace('/', '\')) + '\' + $leaf).TrimStart('\')
+			$extension = [System.IO.Path]::GetExtension($file.Name).TrimStart('.').ToLowerInvariant()
+			$isText = $defs.Extensions -contains $extension
+			if ($isText) {
+				$leaf = Convert-TemplateName -Text ([System.IO.Path]::GetFileName($target)) -TemplateName $TemplateName -Name $Name
+				$target = ([System.IO.Path]::GetDirectoryName($target.Replace('/', '\')) + '\' + $leaf).TrimStart('\')
+			}
 		}
 		$targetPath = Join-Path $Destination $target.Replace('/', '\')
 		[System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($targetPath)) | Out-Null
-		if (Test-Path -LiteralPath $targetPath) { throw "Materialized template paths collide: $target" }
+		if (Test-Path -LiteralPath $targetPath) { throw "Template copy paths collide: $target" }
 		if ($isText) { Copy-TextWithReplacement -From $file.FullName -To $targetPath -TemplateName $TemplateName -Name $Name }
 		else { Copy-Item -LiteralPath $file.FullName -Destination $targetPath }
 	}
+	$copiedPacks = [System.Collections.Generic.List[object]]::new()
 	foreach ($mount in $defs.SharedContentPacks) {
-		$packContent = Join-Path $EngineTemplateRoot ("TemplateResources\{0}\{1}\Content" -f $defs.DetailLevel, $mount)
-		if (-not (Test-Path -LiteralPath $packContent -PathType Container)) { throw "Shared content pack is missing from the installed engine: $packContent" }
+		$pack = Resolve-SharedContentPack -EngineTemplateRoot $EngineTemplateRoot -Mount $mount -PreferredDetailLevel $defs.DetailLevel
 		$packTarget = Join-Path $Destination ("Content\" + $mount)
 		[System.IO.Directory]::CreateDirectory($packTarget) | Out-Null
-		Get-ChildItem -LiteralPath $packContent -Force | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $packTarget $_.Name) -Recurse }
+		Get-ChildItem -LiteralPath $pack.Path -Force | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $packTarget $_.Name) -Recurse }
+		$copiedPacks.Add($pack)
 	}
 	# Blueprints in the template Content were saved against /Script/<TemplateName>.
-	$engineIni = Join-Path $Destination 'Config\DefaultEngine.ini'
-	[System.IO.File]::AppendAllText($engineIni, [Environment]::NewLine + '[CoreRedirects]' + [Environment]::NewLine + ('+PackageRedirects=(OldName="/Script/{0}",NewName="/Script/{1}")' -f $TemplateName, $Name) + [Environment]::NewLine)
+	if ($Materialize) {
+		$engineIni = Join-Path $Destination 'Config\DefaultEngine.ini'
+		[System.IO.File]::AppendAllText($engineIni, [Environment]::NewLine + '[CoreRedirects]' + [Environment]::NewLine + ('+PackageRedirects=(OldName="/Script/{0}",NewName="/Script/{1}")' -f $TemplateName, $Name) + [Environment]::NewLine)
+	}
 	# Project identity is written once, in Set-ProjectIdentity, for materialized and copied recipes alike:
 	# rewriting only the ProjectID / ProjectName lines (as this loop used to) keeps whichever section
 	# header the template shipped, and the short one is invisible to the engine.
+	return [pscustomobject]@{
+		SharedContentPacks = @($copiedPacks)
+		FoldersToIgnore = @($defs.FoldersToIgnore).Count
+		FilesToIgnore = @($defs.FilesToIgnore).Count
+		DetailLevel = $defs.DetailLevel
+	}
+}
+
+function Get-DeclaredGameMapPaths([string]$ProjectConfigPath) {
+	# Returns the /Game/ map package paths a generated project declares as its default and editor
+	# startup map. Non-/Game/ paths (engine content such as /Engine/Maps/Templates/OpenWorld) are not
+	# part of the project tree and are not checked.
+	$declared = [System.Collections.Generic.List[string]]::new()
+	if (-not (Test-Path -LiteralPath $ProjectConfigPath -PathType Leaf)) { return @() }
+	$inMapsSection = $false
+	foreach ($line in [System.IO.File]::ReadAllLines($ProjectConfigPath)) {
+		$trimmed = $line.Trim()
+		if ($trimmed -match '^\[(.+)\]$') { $inMapsSection = $Matches[1] -eq '/Script/EngineSettings.GameMapsSettings'; continue }
+		if (-not $inMapsSection) { continue }
+		if ($trimmed -match '^(GameDefaultMap|EditorStartupMap)=(.*)$') {
+			$value = $Matches[2].Split(';')[0].Trim()
+			if ($value -match '^/Game/' -and -not $declared.Contains($value)) { $declared.Add($value) }
+		}
+	}
+	return @($declared)
+}
+
+function Convert-GamePackagePathToAssetPath([string]$GamePackagePath) {
+	# '/Game/FirstPerson/Lvl_FirstPerson.Lvl_FirstPerson' is Content/FirstPerson/Lvl_FirstPerson.umap.
+	$body = $GamePackagePath.Substring('/Game/'.Length)
+	$lastSlash = $body.LastIndexOf('/')
+	if ($lastSlash -ge 0) {
+		$directory = $body.Substring(0, $lastSlash)
+		$leaf = $body.Substring($lastSlash + 1)
+	} else {
+		$directory = ''
+		$leaf = $body
+	}
+	$dot = $leaf.IndexOf('.')
+	if ($dot -ge 0) { $leaf = $leaf.Substring(0, $dot) }
+	if ($directory) { return "Content/$directory/$leaf.umap" }
+	return "Content/$leaf.umap"
 }
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -441,13 +523,11 @@ if (-not [MulticaTemplateDirectory]::CreateDirectory($destinationPath, [IntPtr]:
 
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 try {
-	if ($materialize) {
-		Copy-MaterializedTemplate -SourceTemplate $sourceTemplate -Destination $destinationPath -TemplateName $templateName -Name $ProjectName -EngineTemplateRoot $engineTemplateRoot
-	} else {
-		Get-ChildItem -LiteralPath $sourceTemplate -Force | ForEach-Object {
-			Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $destinationPath $_.Name) -Recurse
-		}
-	}
+	# Both paths go through the same copy implementation. The raw-copy recipes keep the template's
+	# project file name and module names, but they still honour the template's own Config/TemplateDefs.ini
+	# FoldersToIgnore / FilesToIgnore rules and its SharedContentPacks, because a project that is missing
+	# the content the default map references opens with missing assets while still reporting success.
+	$copyReport = Copy-TemplateTree -SourceTemplate $sourceTemplate -Destination $destinationPath -TemplateName $templateName -ProjectFileName $projectFileName -Name $ProjectName -EngineTemplateRoot $engineTemplateRoot -Materialize:$materialize
 
 	# Every recipe owns its project identity. A raw copy carries the template's own ProjectID and
 	# 'TP_* Template' ProjectName, so two projects generated from different names would share one ID.
@@ -457,6 +537,21 @@ try {
 	$projectFile = Join-Path $destinationPath $projectFileName
 	if (-not (Test-Path -LiteralPath $projectFile -PathType Leaf)) {
 		throw "The installed template project file was not copied to $projectFileName."
+	}
+	# The generated project's Config declares the map it will open. If that package is not in the
+	# output, the first README step (open the project, press Play) lands on an unresolved map, so the
+	# generator must stop instead of printing success. This is a bounded path check over the copied
+	# tree, not an asset-registry load.
+	[string[]]$declaredMaps = @(Get-DeclaredGameMapPaths -ProjectConfigPath (Join-Path $destinationPath 'Config\DefaultEngine.ini'))
+	$missingMaps = [System.Collections.Generic.List[string]]::new()
+	foreach ($declaredMap in $declaredMaps) {
+		$assetRelative = Convert-GamePackagePathToAssetPath $declaredMap
+		if (-not (Test-Path -LiteralPath (Join-Path $destinationPath $assetRelative.Replace('/', '\')) -PathType Leaf)) {
+			$missingMaps.Add(('{0} -> {1}' -f $declaredMap, $assetRelative))
+		}
+	}
+	if ($missingMaps.Count -gt 0) {
+		throw ('Default map check stopped: the generated project declares maps that are not in the output, so opening it would show an unresolved map. Missing: ' + ($missingMaps -join '; '))
 	}
 	# The identity contract describes the generated project, so verify the descriptor that was
 	# actually copied against the Source/ tree that was actually copied. The pre-copy check above
@@ -544,6 +639,8 @@ try {
 	}
 	[string[]]$projectDifferences = @($differenceSet)
 	[Array]::Sort($projectDifferences, [System.StringComparer]::Ordinal)
+	$packDetailLevels = [ordered]@{}
+	foreach ($pack in @($copyReport.SharedContentPacks)) { $packDetailLevels[$pack.Mount] = $pack.DetailLevel }
 	$lock = [ordered]@{
 		schema_version = 3
 		template_repository = 'https://github.com/eiei114/ue5-agent-template'
@@ -566,6 +663,15 @@ try {
 		}
 		recipe = [string]$recipeData.recipe
 		purpose = [string]$recipeData.purpose
+		# What the template's own Config/TemplateDefs.ini contributed to this output. Both copy paths
+		# record it so a later reader can tell which installed content packs were mounted (and at which
+		# detail level) and how many ignore rules were applied, without re-reading the engine install.
+		shared_content_packs = @($copyReport.SharedContentPacks | ForEach-Object { $_.Mount })
+		shared_content_pack_detail_levels = $packDetailLevels
+		template_defs_ignore_rules = [ordered]@{
+			folders_to_ignore = [int]$copyReport.FoldersToIgnore
+			files_to_ignore = [int]$copyReport.FilesToIgnore
+		}
 		plugins = $pluginVersions
 		online_session_identifier = if (@($recipeData.required_plugins) -contains 'MulticaOnlineStarter') { 'eiei114.ue5-agent-template:{0}' -f $ProjectName } else { $null }
 		project_differences = $projectDifferences
