@@ -8,7 +8,7 @@ README → docs/01-start → 対象工程のdocs。現行Issue・owner指示・�
 
 1. Issueの納品種別（映像/実行版/ソース）と非目標、既存writerを確認。
 2. online Windows Pi優先。OS/GPU/空き容量/既存UE/SDK/モデル・effort/利用枠/active runsを現地照合。Mac miniでbuild/render/downloadしない。
-3. 新規 `Production/<Name>_<runid>/` を排他的作成。既存なら停止。既存project再開は所有権照合後、LEASE.jsonをCreateNew相当で取得。
+3. 新規 `Production/<Name>_<runid>/` を排他的作成。既存なら停止。既存project再開は所有権照合後、`scripts/Lease-UETemplateProject.ps1 -Action Acquire` でLEASE.jsonをCreateNew相当で取得し、`-Action Release` で解放する（手作業の`Set-Content`/`New-Item -Force`を使わない）。照合は書込みをしない `-Action Test`。
 4. 最初は追加素材なしの立方体・床・光・カメラ。小さいpreview→目視→調整→本番。UEテンプレートは当該hostの正規既存インストールから生成。
 5. 映像はフレーム・全編・継ぎ目・音を検査。実行版はShipping梱包後、別フォルダ展開から起動・操作・5分測定。
 6. CREDITS / QA / manifest / SHAを**同じ最終版**へ固定して納品。見た目未検品や旧版ZIPは完成でない。
@@ -43,13 +43,14 @@ Production/<Name>_<runid>/
   Out/run_<runid>/
     preview/ frames/ final/ staging/ extracted-check/ evidence/
     QA.md CREDITS.md DELIVERY.json SHA256SUMS.txt
-  LEASE.json           # active所有者のみ。Git外
+  LEASE.json           # active所有者のみ。`scripts/Lease-UETemplateProject.ps1` が管理。Git外
 ```
 
 project identityの契約は1つだけ。`scripts/New-UETemplateScaffold.ps1`はインストール済みUE公式templateから生成し、**projectファイル名・`Modules[].Name`・`Source/<Module>`は常に互いに一致**していなければならない。`EngineAssociation`は`Engine/Build/Build.version`から導いた値（例`5.8`）を必ず書き込む。
 
 - `materialize_project: true`のrecipe（`third-person-game`）は、template自身の`Config/TemplateDefs.ini`をUEウィザードと同じ規則で適用するため、`<Name>.uproject` / `Source/<Name>` / `Modules[].Name = <Name>`になる。
 - それ以外のrecipe（`spectator-explore` / `vertical-loop`）は生コピーするため、template名（`TP_FirstPerson` / `TP_BlankBP`）がそのまま残る。ここで`.uproject`だけrenameすると`Source/**/*.Build.cs`と食い違う。
+- renameを適用しない生コピー経路でも、template自身の`Config/TemplateDefs.ini`は読む。`FoldersToIgnore` / `FilesToIgnore`で`Media/`や`Config/TemplateDefs.ini`を出力に残さず、`SharedContentPacks`を`Content/<Mount>`へ展開する（`spectator-explore`なら`Characters` / `LevelPrototyping` / `Input` / `Weapons`）。既定mapを開くのに必要なpackを落として成功を名乗らない。展開結果は`template-lock.json`の`shared_content_packs`で確認できる。
 
 generatorはコピー前にdescriptorと`Source/`を照合し、既知パターンに一致しなければ**推測で続行せず停止**して未一致pathを列挙する。コピー後にもコピー物同士で同じ照合を行い、食い違えばdescriptorを書き換えずに停止する。生成後に`.uproject`を手でrenameしない。identityは`template-lock.json`の`identity`（`project_file` / `project_modules` / `engine_association`、`schema_version: 2`）に記録され、そこで確認できる。
 
