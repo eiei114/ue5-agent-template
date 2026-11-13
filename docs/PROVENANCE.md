@@ -1,6 +1,6 @@
 # 根拠・検証範囲
 
-本ファイルは repo 自身の「**実績と未確認点**」の正本である（[README](../README.md) の入口表）。scope 日付は 2026-11-13（JST）。以後 tree が変わったら同じ PR で更新する。
+本ファイルは repo 自身の「**実績と未確認点**」の正本である（[README](../README.md) の入口表）。scope 日付（最後に tree と照合した日）は 2026-11-13（JST）で、[PROVENANCE.inventory.json](PROVENANCE.inventory.json) の `last_reviewed` と同じ値にする。以後 tree が変わったら同じ PR で更新する。検証履歴の各行は、その行自身の測定日を持つ（scope 日付とは別）。
 
 同梱物の有無は散文ではなく [PROVENANCE.inventory.json](PROVENANCE.inventory.json) を機械可読な正本とし、[scripts/Test-UETemplateProvenance.ps1](../scripts/Test-UETemplateProvenance.ps1) が tracked file と照合する。散文側の「同梱しない／する」は inventory の写しであり、判定は guard の結果で行う。
 
@@ -28,9 +28,10 @@
 - **記録テンプレート**：`templates/CREDITS.md`、`templates/DELIVERY.json`、`templates/QA.md`
 - **project generator と検品helper**：`scripts/New-UETemplateScaffold.ps1`（インストール済み Engine の公式 project template から `.uproject` を排他的に生成し、recipe 文書・`template-lock.json` を加える）、`scripts/Measure-UERenderArtifacts.ps1`（MRQ 後の画像列を encode 前に読み取り専用で照合）。いずれも同梱する UE 生成／検品 script であり、「script は同梱しない」は撤回した
 - **回帰suite**：`scripts/Test-UETemplateScaffold.ps1`、`scripts/Test-UERenderArtifacts.ps1`、`scripts/Test-UETemplateProvenance.ps1`
+- **lease 記録**：`scripts/Lease-UETemplateProject.ps1`（`Production/<Name>_<runid>/` の取得・所有権照合・解放の3動作）とその assertion `scripts/Test-UETemplateLease.ps1`
 - **ジャンルrecipe と用途部品**：`templates/recipes/common/SET.md`、`spectator-explore`（`Play.md`＋`Capture.md`＋`recipe.json`）、`vertical-loop`（`Capture.md`＋`recipe.json`）、`third-person-game`（`Play.md`＋`Capture.md`＋`recipe.json`）
 - **online 基盤（Null/LAN starter plugin）**：`templates/online/MulticaOnlineStarter/`（`.uplugin`、C++ module/Build.cs、GameMode/GameState/PlayerController/SessionSubsystem、UE automation test）
-- **CI**：`.github/workflows/verify.yml`（provenance guard とその回帰 suite、scaffold suite、render-artifact suite を windows-latest で実行）
+- **CI**：`.github/workflows/verify.yml`（provenance guard とその回帰 suite、scaffold suite、lease protocol、render-artifact suite を windows-latest で実行）
 - **生成先の空プレースホルダ**：`Production/PLACEHOLDER.md`、`.gitignore`
 
 ### 同梱しない
@@ -44,13 +45,13 @@
 
 ローカル bundle clone・相対リンク・禁止ファイル形状の点検結果は、この repo の tracked file には置いていない。現在の検証履歴は [docs/08-online-foundations.md](08-online-foundations.md) の「検証履歴」と `CHANGELOG.md` の該当項目、および各 Issue の comment 添付を参照する（存在しない検証記録ファイルを指さない）。Windows/MacBook Pi は初回参照時 offline。
 
-## 6層の対応表
+## 層の対応表
 
-層の定義と責務は [docs/07-architecture.md](07-architecture.md) を正本とする。ここでは「実装状態」と「未検証範囲」だけを対応づける。
+層の定義と責務は [docs/07-architecture.md](07-architecture.md) を正本とする。ここでは「実装状態」と「未検証範囲」だけを対応づける。07-architecture は 8 行を宣言しており、この表は 6 行に集約している（三人称ゲームはジャンルrecipe の行、検品helper は共通基盤の行に含む）。
 
 | 層（07-architecture の宣言） | tracked での実体 | 実装状態 | 未検証範囲 |
 |---|---|---|---|
-| 共通基盤 | `docs/01`〜`docs/06`・`docs/09`（動画モーキャプ）、`AGENTS.md`、記録テンプレート、検品helper | 文書・書式・画像列helper は実装済み。`Test-UERenderArtifacts.ps1` は合成PNG fixture で PASS | 実 MRQ 出力・ffprobe・映像/音/ループ継ぎ目の実測（Unverified Scope） |
+| 共通基盤 | `docs/01`〜`docs/06`・`docs/09`（動画モーキャプ）、`AGENTS.md`、記録テンプレート、lease 記録・検品helper | 文書・書式・画像列helper は実装済み。`Test-UERenderArtifacts.ps1` は合成PNG fixture で PASS | 実 MRQ 出力・ffprobe・映像/音/ループ継ぎ目の実測（Unverified Scope） |
 | ジャンルrecipe | `templates/recipes/spectator-explore/`、`third-person-game/` | `spectator-explore` は生コピー、`third-person-game` は `TemplateDefs.ini` による materialize で実装済み | 実 Engine install での materialize 結果、生成物の Editor build／Play（生成器 fixture までしか検証していない） |
 | 用途部品 | 各 recipe の `Play.md`／`Capture.md`、`templates/recipes/common/SET.md` | プレイ／撮影の差分を文書として分離済み | 実際に同一 set から両入口を開いた実測なし |
 | 映像専用 | `templates/recipes/vertical-loop/`（capture-only） | 生成器・docref とも実装済み | MRQ 実行、尺・縦解像度・fps・出力先の実測、ループ継ぎ目の目視 |
@@ -67,7 +68,7 @@
 | 2026-11-02 | CodeRabbit 指摘の追加修復後の Editor build | 実施者報告では exit 0 / 37 actions / 94.22 秒、scaffold suite は通常・detached 両方で 5 assertion groups PASS | 実施者報告。`PROVENANCE.md` はこの実績を長く持っていなかったため本行で記録した。本 round で UE は起動していない |
 | 2026-11-02 | project identity 契約と負例 | PASS（7 assertion groups、合成 Engine fixture） | 実施者報告（[docs/08](08-online-foundations.md)） |
 | 2026-11-11〜12 | 動画モーキャプ（MediaPipe → VRMA → UE 5.9/VRM4U）、[docs/09](09-video-mocap.md) の実測 | 実施者報告。踊ってみた動画 1 本・571 フレーム・キャラ 1 体を UE 5.9 で通した。UE 5.8 系・別動画・別キャラは未検証 | 実施者報告（非公開の制作 repo `charakuru-dance-ue` の記録を抽出）。本 round で UE は起動していない |
-| 2026-11-03 | `docs/PROVENANCE.md` と tree の一致 | 本 round の実測。guard 追加前の `main`（`a9e31bc`）では R1 が `scripts/New-UETemplateScaffold.ps1` を検出して FAIL、修正後 tree では exit 0 | 本 round 実測（PowerShell と git のみ） |
+| 2026-11-13 | `docs/PROVENANCE.md` と tree の一致 | 本 round の実測。修正後 tree は `PASS: R1`〜`R4` で exit 0。guard 追加前の tree（`a9e31bc`）は素のままでは `FAIL: inventory: the inventory file does not exist` で exit 2（guard は inventory を要求するので R1 まで到達しない）。当時の主張（`not_bundled` に `scripts/*`）を inventory として seed した同 tree では、R1 が `scripts/New-UETemplateScaffold.ps1` 等を検出して exit 1（seed は測定用の改変であり、a9e31bc そのものの出力ではない） | 本 round 実測（PowerShell と git のみ） |
 
 UE の install / compile / Editor / PIE / MRQ / render / Shipping / packaged build は本 round で一切実行していない。上の UE 行はすべて実施者報告の引用であり、本 round の受入ではない。
 
