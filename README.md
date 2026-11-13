@@ -45,6 +45,10 @@ cleanなtemplate checkoutと既存UE installを指定し、同じName/RunIdの�
 映像専用は`-Recipe vertical-loop`を選ぶ。三人称ゲーム（アクション・探索・街）は`-Recipe third-person-game`で、`<ProjectName>.uproject`／`Source/<ProjectName>`へ名前を置換した状態で生成する（ProjectNameはC++識別子）。`spectator-explore`と`vertical-loop`はtemplateを生コピーするのでprojectファイル名はtemplate名のまま（`TP_FirstPerson.uproject` / `TP_BlankBP.uproject`）で、`<ProjectName>.uproject`にはならない。`-Recipe`に指定できる値は`templates/recipes/`配下で`recipe.json`を持つディレクトリ名で、generatorに一覧を直書きしていないので、ジャンルrecipeの追加はデータ（`recipe.json`・`Capture.md`・任意の`Play.md`）を置くだけでよい（手順は[構造と更新](docs/07-architecture.md)の「recipeを追加する手順」）。
 
 どのrecipeでも、出力`Content/`にはtemplate自身が宣言した共有content packが入る（`spectator-explore`なら`TP_FirstPerson`の`Characters` / `LevelPrototyping` / `Input` / `Weapons`）。既定mapが参照するassetを出力に持たない構成は成立しないので、`.uproject`ではなく`Config/DefaultEngine.ini`の`GameDefaultMap` / `EditorStartupMap`が`/Game/...`を指す場合は、その`.umap`が出力に存在することを生成時に確認する。無ければgeneratorは**停止**し、欠落pathを列挙する。生成後の`template-lock.json`で`identity.project_file` / `identity.project_modules` / `identity.engine_association`、`shared_content_packs`、`template_defs_ignore_rules`、作品差分、`.uproject`のplugin設定を確認してからEditorで開く。templateのdescriptorと`Source/`が一致しない場合、generatorは生コピーを出さず停止する。更新で既存作品を再生成/上書きしない。
+
+映像専用は`-Recipe vertical-loop`を選ぶ。三人称ゲーム（アクション・探索・街）は`-Recipe third-person-game`で、`<ProjectName>.uproject`／`Source/<ProjectName>`へ名前を置換した状態で生成する（ProjectNameはC++識別子）。`spectator-explore`と`vertical-loop`はtemplateを生コピーするのでprojectファイル名はtemplate名のまま（`TP_FirstPerson.uproject` / `TP_BlankBP.uproject`）で、`<ProjectName>.uproject`にはならない。どちらの場合も生成後の`template-lock.json`で`identity.project_file` / `identity.project_modules` / `identity.engine_association`、作品差分、`.uproject`のplugin設定を確認してからEditorで開く。templateのdescriptorと`Source/`が一致しない場合、generatorは生コピーを出さず停止する。更新で既存作品を再生成/上書きしない。
+
+`template-lock.json`の`template_repository` / `template_source_kind` / `template_commit` / `template_commit_published`は、生成に使ったcheckoutの実測provenanceである。`template_commit_published`が`true`でない限り、そのlockは「lockが名指しするrepoから同じtemplateを取得できる」ことを保証しない。既定の生成はその状態で停止し、通すには`-AllowUnpublishedTemplate`（lockに実測の`false`/`null`を残す）または`-SkipTemplatePublishCheck`（probeせず`null`）を明示する。契約の詳細は[構造と更新](docs/07-architecture.md)。
 コード境界とNull/LAN手順は`templates/online/MulticaOnlineStarter/README.md`および[方式比較](docs/08-online-foundations.md)を参照。
 
 ## エンコード前の画像列検査
@@ -80,5 +84,13 @@ git clone ue5-agent-template.bundle ue5-agent-template
 cd ue5-agent-template
 git status --short
 ```
+
+bundle cloneの`origin`はbundleのpathであり、公開repoではない。そのため次のことが起きる。
+
+- 生成時に`template_repository`へbundleのpath、`template_source_kind = 'bundle'`が入る（公開repoの定数は入らない）
+- `template_commit_published`は`true`にならない。bundleは第三者からfetchできるrepoではないため、probeは`null`（未検査）を返し、**既定の生成は停止する**
+- 通すには`-AllowUnpublishedTemplate`を明示する。lockには`template_commit_published = null`が残り、「公開済み」を意味しない
+
+そのlockを第三者へ配布する前に、記録された`template_commit`をpush済みのrepo（または配布先のrepo）へ移し、そのrepoをcloneしたcheckoutで**新しいRunId**により再生成して、`template_commit_published = true`のlockを得る。bundleのlockのまま配布すると、受け取った側はlockが名指しするbundle pathを持たない限り同じtemplateを復元できない。
 
 本リポジトリのpublic作成・pushはowner承認済み。他作品の公開・SNS・課金・認証には許可を流用しない。

@@ -20,7 +20,18 @@ param(
 
 	[string[]]$ProjectDiff = @(),
 
-	[switch]$AllowDirtyTemplate
+	[switch]$AllowDirtyTemplate,
+
+	# Permits a lock whose template commit is not proven retrievable from the recorded template
+	# repository. The probe still runs when a repository is recorded, so the lock carries the real
+	# outcome (true/false) or null when the probe could not answer. It is never true for an
+	# unverified commit.
+	[switch]$AllowUnpublishedTemplate,
+
+	# Skips the retrieval probe entirely and records template_commit_published = null (未検査).
+	# Use it when the recorded repository cannot be reached from this host (offline work), never to
+	# turn an unpublished commit into a published one.
+	[switch]$SkipTemplatePublishCheck
 )
 
 $ErrorActionPreference = 'Stop'
@@ -146,6 +157,112 @@ function Read-TemplateDefs([string]$Path, [string]$TemplateName) {
 	$defs.Extensions = @($defs.Extensions | Select-Object -Unique)
 	$defs.SharedContentPacks = @($defs.SharedContentPacks | Select-Object -Unique)
 	return $defs
+}
+
+function Get-TemplateOriginInfo {
+	# Records where this checkout actually came from instead of asserting a fixed repository URL.
+	# The value is the measured `origin` URL (or null), because the lock is evidence about the
+	# template that produced the project, not about the repository the template is meant to live in.
+	param([Parameter(Mandatory = $true)][string]$RepositoryRoot)
+
+	$remoteNames = @()
+	foreach ($line in @(& git -C $RepositoryRoot remote)) {
+		if (-not [string]::IsNullOrWhiteSpace([string]$line)) { $remoteNames += ([string]$line).Trim() }
+	}
+	if ($LASTEXITCODE -ne 0) {
+		throw 'Could not read the template repository remotes, so the template provenance cannot be recorded.'
+	}
+	if ($remoteNames.Count -eq 0) {
+		return [pscustomobject]@{ Repository = $null; Kind = 'no-remote' }
+	}
+	# A checkout can carry remotes without an `origin` (a renamed remote, a multi-remote setup). The
+	# clone source is then genuinely unknown, so it is reported as such rather than guessed.
+	if ($remoteNames -cnotcontains 'origin') {
+		return [pscustomobject]@{ Repository = $null; Kind = 'no-origin' }
+	}
+
+	$originLines = @(& git -C $RepositoryRoot remote get-url origin)
+	if ($LASTEXITCODE -ne 0) {
+		throw 'Could not read the template repository origin URL, so the template provenance cannot be recorded.'
+	}
+	$originUrl = @($originLines | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) | Select-Object -First 1
+	if ($null -eq $originUrl) {
+		return [pscustomobject]@{ Repository = $null; Kind = 'no-origin' }
+	}
+	$originUrl = ([string]$originUrl).Trim()
+	if ($originUrl -match '^(https?|ssh|git|ftp)://' -or $originUrl -match '^[^/\\]+@[^/\\]+[:/]') {
+		return [pscustomobject]@{ Repository = $originUrl; Kind = 'remote' }
+	}
+	if ([System.IO.Path]::GetFileName($originUrl) -like '*.bundle') {
+		return [pscustomobject]@{ Repository = $originUrl; Kind = 'bundle' }
+	}
+	return [pscustomobject]@{ Repository = $originUrl; Kind = 'local-path' }
+}
+
+function Invoke-GitCaptured {
+	# Runs git and returns its exit code, keeping stderr out of PowerShell error handling. PowerShell
+	# 5.1 turns a failing native command's stderr into a terminating error under
+	# `$ErrorActionPreference = 'Stop'`, which would turn a measured 'not our ref' into an exception;
+	# pwsh 7 does not, so the same probe would behave differently per shell. Redirecting stderr to a file
+	# with a locally relaxed preference keeps both shells measuring the same thing.
+	param(
+		[string]$WorkingDirectory,
+		[Parameter(Mandatory = $true)][string]$StdErrPath,
+		[Parameter(Mandatory = $true)][string[]]$GitArguments
+	)
+
+	$previousPreference = $ErrorActionPreference
+	$ErrorActionPreference = 'Continue'
+	try {
+		if ([string]::IsNullOrWhiteSpace($WorkingDirectory)) {
+			& git @GitArguments 2> $StdErrPath | Out-Null
+		} else {
+			& git -C $WorkingDirectory @GitArguments 2> $StdErrPath | Out-Null
+		}
+		return $LASTEXITCODE
+	} finally {
+		$ErrorActionPreference = $previousPreference
+	}
+}
+
+function Test-TemplateCommitPublished {
+	# Answers "can the recorded repository serve this commit?" - the only claim a third party can
+	# check. true/false are measured; null means the probe could not answer (offline, missing remote
+	# object, unreachable host), and null must never be read as published.
+	param(
+		[Parameter(Mandatory = $true)][string]$Repository,
+		[Parameter(Mandatory = $true)][string]$Commit,
+		[Parameter(Mandatory = $true)][string]$SourceKind
+	)
+
+	# A bundle is an offline hand-off file, not a repository another party can consult, so it cannot
+	# establish publication. The lock records the bundle as the source and leaves this null.
+	if ($SourceKind -eq 'bundle') { return $null }
+
+	$probeRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('multica-template-probe-' + [Guid]::NewGuid().ToString('N'))
+	try {
+		[System.IO.Directory]::CreateDirectory($probeRoot) | Out-Null
+		$probeRepo = Join-Path $probeRoot 'probe.git'
+		$initErrorField = Join-Path $probeRoot 'init-stderr.txt'
+		if ((Invoke-GitCaptured -WorkingDirectory $probeRoot -StdErrPath $initErrorField -GitArguments @('init', '--quiet', '--bare', $probeRepo)) -ne 0) { return $null }
+		$fetchErrorField = Join-Path $probeRoot 'fetch-stderr.txt'
+		# A throwaway bare repository keeps the probe out of the template checkout's object store.
+		$fetchCode = Invoke-GitCaptured -WorkingDirectory $probeRepo -StdErrPath $fetchErrorField -GitArguments @('fetch', '--quiet', '--depth', '1', '--no-tags', $Repository, $Commit)
+		if ($fetchCode -eq 0) {
+			if ((Invoke-GitCaptured -WorkingDirectory $probeRepo -StdErrPath $initErrorField -GitArguments @('cat-file', '-e', ($Commit + '^{commit}')) ) -ne 0) { return $null }
+			return $true
+		}
+		$fetchMessage = ''
+		if (Test-Path -LiteralPath $fetchErrorField -PathType Leaf) {
+			$fetchMessage = [System.IO.File]::ReadAllText($fetchErrorField)
+		}
+		if ($fetchMessage -match 'not our ref|could not find remote ref|couldn''t find remote ref|no such remote ref|does not allow request for unadvertised object') {
+			return $false
+		}
+		return $null
+	} finally {
+		if (Test-Path -LiteralPath $probeRoot) { Remove-Item -LiteralPath $probeRoot -Recurse -Force }
+	}
 }
 
 function Copy-TextWithReplacement([string]$From, [string]$To, [string]$TemplateName, [string]$Name) {
@@ -398,6 +515,32 @@ if ($LASTEXITCODE -ne 0) {
 $templateDirty = $gitStatus.Count -gt 0
 if ($templateDirty -and -not $AllowDirtyTemplate) {
 	throw 'The template working tree is dirty. Commit the template before generating a reproducible project.'
+}
+
+# Template provenance. A lock that names a repository must name a commit that repository can serve,
+# otherwise the recorded template version cannot be reproduced by anyone else. The repository is the
+# measured origin (never a constant) and the publication state is a probe result, not a claim.
+$templateOrigin = Get-TemplateOriginInfo -RepositoryRoot $repoRoot
+$templateRepository = $templateOrigin.Repository
+$templateSourceKind = $templateOrigin.Kind
+$templateCommitPublished = $null
+if (-not $SkipTemplatePublishCheck) {
+	if ($null -ne $templateRepository) {
+		$templateCommitPublished = Test-TemplateCommitPublished -Repository $templateRepository -Commit $gitCommit -SourceKind $templateSourceKind
+	}
+	if ($templateCommitPublished -ne $true -and -not $AllowUnpublishedTemplate) {
+		$remedy = 'Publish the template commit to the recorded repository, or pass -AllowUnpublishedTemplate to record template_commit_published = false, or -SkipTemplatePublishCheck when the repository cannot be reached from this host.'
+		if ($null -eq $templateRepository) {
+			throw ("The template checkout has no 'origin' remote ($templateSourceKind), so the lock would name no repository and no retrievable commit. $remedy")
+		}
+		if ($templateSourceKind -eq 'bundle') {
+			throw ("The template checkout was cloned from the bundle {0}, which is an offline hand-off file rather than a repository another party can fetch from, so the lock cannot claim a published template. Clone from the repository instead, or pass -AllowUnpublishedTemplate to record template_commit_published = null as an unverified hand-off. $remedy" -f $templateRepository)
+		}
+		if ($templateCommitPublished -eq $false) {
+			throw ("The template commit {0} is not retrievable from the recorded template repository ({1}): the repository answers 'not our ref', so a lock written now would name a commit nobody else can fetch. $remedy" -f $gitCommit, $templateRepository)
+		}
+		throw ("Could not determine whether the template commit {0} is retrievable from the recorded template repository ({1}). $remedy" -f $gitCommit, $templateRepository)
+	}
 }
 
 # `$Data.<Field>` on a missing key yields $null, and `[long]$null` is 0 while `[string]$null` is ''.
@@ -680,9 +823,11 @@ try {
 	$packDetailLevels = [ordered]@{}
 	foreach ($pack in @($copyReport.SharedContentPacks)) { $packDetailLevels[$pack.Mount] = $pack.DetailLevel }
 	$lock = [ordered]@{
-		schema_version = 3
-		template_repository = 'https://github.com/eiei114/ue5-agent-template'
+		schema_version = 4
+		template_repository = $templateRepository
 		template_commit = $gitCommit
+		template_source_kind = $templateSourceKind
+		template_commit_published = $templateCommitPublished
 		template_worktree_dirty = $templateDirty
 		engine_template = $templateName
 		engine_version = $engineVersion
@@ -751,6 +896,10 @@ try {
 		throw "Project identity check stopped: $projectFileName was written without the expected EngineAssociation '$engineAssociationValue'."
 	}
 	Write-Output "Created $destinationName from the installed $templateName template ($projectFileName, EngineAssociation '$engineAssociationValue', UE $engineVersion, recipe $($recipeData.Recipe), purpose $($recipeData.Purpose))."
+
+	$provenanceSummary = if ($null -eq $templateRepository) { "template source $templateSourceKind (no repository recorded)" } else { "template source $templateSourceKind $templateRepository" }
+	$publishedSummary = if ($templateCommitPublished -eq $true) { 'commit published' } elseif ($templateCommitPublished -eq $false) { 'commit NOT retrievable from that repository (template_commit_published = false)' } else { 'publication not verified (template_commit_published = null)' }
+	Write-Output "Created $destinationName from the installed $templateName template ($projectFileName, EngineAssociation '$engineAssociationValue', UE $engineVersion, recipe $Recipe; $provenanceSummary; $publishedSummary)."
 } catch {
 	throw "Scaffold generation stopped. The exclusive output directory was left untouched by cleanup to avoid deleting work: $destinationPath. $($_.Exception.Message)"
 }

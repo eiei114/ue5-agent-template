@@ -5,6 +5,8 @@
 `templates/QA.md`に日時、Issue/run、hostname/OS、UE実version、GPU/VRAM、disk/RAM、既存toolchain、モデル指定/実効値、利用枠の観測範囲を記録。不明を0や無料と扱わない。これはQA記録だけの規則ではなく、`scripts/New-UETemplateScaffold.ps1`が書く`template-lock.json`にも等しく適用される：エンジンが書いていない値は`null`、0は「エンジンが0と書いた」値だけに使う（[構造と更新](07-architecture.md)のengine build identity）。
 
 `templates/QA.md`を**複製**して、`Production/.runs/run_<runid>/preflight.md`へ日時、Issue/run、hostname/OS、UE実version、GPU/VRAM、disk/RAM、既存toolchain、モデル指定/実効値、利用枠の観測範囲を記録。不明を0や無料と扱わない。`templates/`は雛形であり編集しない（tracked fileを汚すとgeneratorのclean-tree gateで停止する）。`Production/.runs/run_<runid>/`は生成先`Production/<Name>_<runid>/`の外にある台帳dirで、生成前にここへ書いても生成を妨げない。project生成後は同じ内容を`Production/<Name>_<runid>/Out/run_<runid>/QA.md`へ移し、以降はそこで追記する。
+
+`templates/QA.md`に日時、Issue/run、hostname/OS、UE実version、GPU/VRAM、disk/RAM、既存toolchain、モデル指定/実効値、利用枠の観測範囲を記録。不明を0や無料と扱わない。この規則は`template-lock.json`の`template_commit_published`にも適用され、未検査は`null`であって合格ではない。これはQA記録だけの規則ではなく、`scripts/New-UETemplateScaffold.ps1`が書く`template-lock.json`にも等しく適用される：エンジンが書いていない値は`null`、0は「エンジンが0と書いた」値だけに使う（[構造と更新](07-architecture.md)のengine build identity）。
 Multicaのissue runs / runtime activity（先に各--help）と現地UE/renderプロセス・project leaseを確認。onlineはbuild可能の証拠ではない。
 Windows offlineなら新規buildをqueueして成功扱いしない。MacBookは許可済みApple工程の候補、miniは軽い計画・文書確認のみ。
 
@@ -33,6 +35,8 @@ recipeの正本は各 [`recipe.json`](../templates/recipes/)。選択可能な�
 例の`RunId`は形式を示す値なので、実行時には新しい一意のrun IDへ置き換える。
 
 `-Recipe`には `templates/recipes/` にある`recipe.json`付きのレシピ名（上表の3つと、追加したレシピ）を指定する。存在しない名前と`recipe.json`を持たないディレクトリはgeneratorのデータ検証で停止し、出力ディレクトリを作らない。実行前に既存UEのversion/path、当該templateと必要なtoolchainを確認し、`Production/<ProjectName>_<runid>/`が未使用であることを確かめる。生成後は`template-lock.json`の`identity`と`.uproject`のplugin設定を照合してからEditorで開く。generatorはidentityの照合に失敗したら停止し、既存projectを上書きしない。実際のmap/Sequence/作品Contentは生成しない。
+
+生成前にtemplate側のprovenanceも検査される。既定では、記録する`template_commit`を`template_repository`（実測したclone元）から`git fetch`で取得できることを確認し、取得不能・未push・origin無し・bundleなどなら停止する。停止した場合は先にcommitをrepoへpushするか、その状態で作業する必要がある場合だけ`-AllowUnpublishedTemplate`（lockに実測の`false`/`null`を残す）または`-SkipTemplatePublishCheck`（probeせず`null`）を明示する。`template_commit_published`が`true`でないlockは、`template_commit`を取得できる保証がないため、第三者へ渡さない（新RunIdで再生成する）。契約は[構造と更新](07-architecture.md)。
 
 ### 手動fallback：Project Browserを使う場合
 

@@ -13,6 +13,27 @@
 
 実測（本 host、Windows、Windows PowerShell 5.1.26100.9711 と `pwsh 7.6.9` の両方、repo SHA `adfb5eebab9d1a3d90a60928ee31bfa35cb20b4a`、`templates/QA.md` の変更前 sha256 `AC1C02940CD6639C4CE451C4EF83A18E7E210D219D9031605F5C3D74470DC277` / 変更後 `D24FE74633EEC8649406C259B4E678177C177DCCF03BF28AF5511EEE1A72800D`）: `scripts/Test-UETemplateScaffold.ps1` は 11 group PASS / exit 0（既存 8 group を含む）。負例は 4 行それぞれ `required acceptance row <id> is missing` で exit 1、値の負例は `row QA-MRQ-01 uses 'ok' …` で exit 1 になることを、`a9e31bc` の clone に新 suite を当てて確認した（`QA template contract violated: … the table carries 11 data rows, fewer than the 24 required acceptance rows …` で exit 1）。suite 前後の `git status --porcelain --untracked-files=all` は同一（この変更の 4 ファイルのみ）。**UE install / compile / Editor / PIE / MRQ / render / Shipping / 実 LAN 接続は一切実行していない**（Unverified Scope）。行があることは 2-client 接続の実測ではない。
 
+## Unreleased — DOT-3119（UE-PROV-001）
+
+`template-lock.json`が「公開repoのcommit」を名乗りながら、未pushのcommitを書いていた問題を修正した。旧generatorは`template_repository`を文字列定数で固定し、`git rev-parse HEAD`の値を無条件に`template_commit`として書いていたため、bundle clone・fork・remote無しのcheckoutから生成してもlockは公開repoを名乗り、そのSHAは公開repoからは取得できなかった。
+
+- `scripts/New-UETemplateScaffold.ps1`
+  - `template_repository`は**実測値**。`git remote get-url origin`の結果を書き、remoteが0本なら`null`、`origin`が無い場合は`null`、`origin`がlocal pathならそのpath、`*.bundle`ならbundleのpath、URL/SSHならそのURL。定数は廃止した。
+  - `template_source_kind`を追加（`remote` / `local-path` / `bundle` / `no-remote` / `no-origin`）。
+  - `template_commit`の**到達性検査**を追加。使い捨てのbare repoへ`git fetch --depth 1 <template_repository> <sha>`を実行し、取得できた場合だけ既定経路が成功する。lockには`template_commit_published = true|false|null`を残す。`false`は「not our ref」の実測、`null`は未検査（bundle・probe不能）であり、`null`を公開済みと読ませない。
+  - 明示switchを2つ追加。`-AllowUnpublishedTemplate`（停止せず生成しlockに実測の`false`/`null`を残す）と`-SkipTemplatePublishCheck`（probeせず`null`を残す）。どちらも`true`を作らない。
+  - `schema_version`を`3`→`4`へ（`template_*` 追加のため）。
+- `scripts/Test-UETemplateScaffold.ps1`
+  - provenance群を追加。fixture remoteを持つ使い捨てrepoで「push済み / 未push / remote無し / bundle clone」の4状態を**実際に生成**し、既定の停止とlockの中身をassertする。
+  - `template_commit`のassertは「40桁hexか」から**fixture remoteからそのSHAを実際に`git fetch`できること**へ置き換え、全ゼロSHAがkillされることを固定した（旧suiteはM6変異を見逃していた）。
+  - `template_repository`のassertは0件だったため、実測origin・source kind・`published`の3値のassertを追加した。
+  - 既存群（dirty template / game+capture / vertical-loop / path traversal / engine build identity / 既存出力保護）は回帰で維持し、suiteは17群PASS（PR #20のbase時点13群＋provenance 4群。両shell実測、2026-11-12）。
+- `docs/07-architecture.md`: lockの`template_*`の意味と、`null` = 未検査で合格ではないことを明記。`docs/01-start.md` / `AGENTS.md` / `README.md`: 同じ契約と、lockを第三者へ渡す前の条件を記載。
+
+旧lockは**書き換えない**。`schema_version: 4`のlockが`template_commit_published: true`を持つ場合だけ、`template_commit`がlockの名指しするrepoから取得できると読める。`schema_version: 3`以下のlockはこの保証を持たないので、新契約が必要な作品は新RunIdで再生成し、旧lockとparse後のfieldで比較して採用する。
+
+`schema_version`の順序: `main`は`2`なので、本変更は`4`を使う。競合して未マージのUE-LOCK-001（DOT-3114、PR #20）が`3`を使っているため、`3`は予約であり、どちらが先にマージされても残った側が**単調増加**で再採番する（本PRが先なら#20が`5`、#20が先なら本PRをrebaseして`5`）。どちらも`schema_version`の値で新旧を判別できる。
+
 ## Unreleased — DOT-3114
 
 `template-lock.json`のengine build identityを、UE自身の規則と一致させた。旧generatorは`Build.version`／`.uplugin`に存在しないfieldを`0`／`""`へ黙って変換してlockに書いており、実測で**Engine installが異なる2つの生成物がbyte一致のlock**を持っていた。
