@@ -857,15 +857,68 @@ try {
 	Assert-True (@(Get-ProductionResidue).Count -eq 0) 'the residue check is silent again once the ignored leftover is removed'
 	Write-Output 'PASS: the untouched-input gate names removed, rewritten and added files and the ignored Production/ leftover, and is silent when they are restored'
 
-	# ============================================================ group 13: the inspector never changed its input
+	# ============================================================ group 13: the FramesDirectory guard alone is load-bearing
+	# The junction case above isolates the report-parent guard: the sequence is a plain directory and the
+	# report path is aliased into it. This group isolates the other half of that pair. The sequence is
+	# reached through a junction alias while the report parent is the real, plain directory, so the
+	# report-parent guard only ever sees a normal path and the refusal can come from
+	# Assert-NoReparsePointInPath on FramesDirectory alone. Without that guard the inspector resolves the
+	# alias, finds the report outside the alias string prefix, and writes it into the inspected sequence -
+	# the exact single-guard mutation the acceptance criteria inject. A refusal that names the
+	# "ReportPath parent" role instead means the guard under test is gone and the other one answered.
+	$guardProbeRoot = Join-Path $fixtureRoot 'guard-probe'
+	$guardRealFrames = Join-Path $guardProbeRoot 'real-frames'
+	New-FrameSequence -Directory $guardRealFrames -Start 0 -EndExclusive 6
+	Register-FixtureSnapshot 'guard-probe/real-frames'
+	Register-FixtureRootFile 'guard-probe'
+	$guardAlias = Join-Path $guardProbeRoot 'alias'
+	$escapedReport = Join-Path $guardRealFrames 'escaped-report.json'
+	$guardFramesBefore = Get-DirectorySnapshot $guardRealFrames
+	try {
+		New-Item -ItemType Junction -Path $guardAlias -Target $guardRealFrames -ErrorAction Stop | Out-Null
+
+		$plainReport = New-ReportPath 'guard-probe-plain'
+		$plainResult = Invoke-Measure @{
+			FramesDirectory    = $guardRealFrames
+			StartNumber        = 0
+			EndNumberExclusive = 6
+			ReportPath         = $plainReport
+			ExpectedWidth      = 64
+			ExpectedHeight     = 48
+		}
+		Assert-True (-not $plainResult.Threw) "a plain sequence with a plain report parent passes the guards: $($plainResult.Error)"
+		Assert-True ($plainResult.ExitCode -eq 0) "the guarded plain case exits 0, got $($plainResult.ExitCode): $($plainResult.Output)"
+		Assert-True (-not (Test-Path -LiteralPath $escapedReport)) 'the guarded plain case wrote nothing into the inspected directory'
+		Assert-True ((Get-DirectorySnapshot $guardRealFrames) -ceq $guardFramesBefore) 'the guarded plain case left the inspected directory unchanged'
+
+		$aliasResult = Invoke-Measure @{
+			FramesDirectory    = $guardAlias
+			StartNumber        = 0
+			EndNumberExclusive = 6
+			ReportPath         = $escapedReport
+			ExpectedWidth      = 64
+			ExpectedHeight     = 48
+		}
+		Assert-True ($aliasResult.Threw) 'a junction alias as FramesDirectory is refused before the sequence is inspected'
+		Assert-True ($aliasResult.Error.Contains('FramesDirectory path contains a reparse point')) "the refusal comes from the FramesDirectory guard, not the report-parent guard, got: $($aliasResult.Error)"
+		Assert-True (-not (Test-Path -LiteralPath $escapedReport)) 'the refused alias wrote no report through the junction into the inspected directory'
+		Assert-True ((Get-DirectorySnapshot $guardRealFrames) -ceq $guardFramesBefore) 'the refused alias left every inspected frame name and hash unchanged'
+	} finally {
+		# Keep the test safe and self-cleaning even when run against a mutation that writes through this alias.
+		if (Test-Path -LiteralPath $escapedReport) { Remove-Item -LiteralPath $escapedReport -Force }
+		if (Test-Path -LiteralPath $guardAlias) { [System.IO.Directory]::Delete($guardAlias, $false) }
+	}
+	Write-Output 'PASS: a junction alias as FramesDirectory is refused by that guard alone, and the plain guarded case stays silent'
+
+	# ============================================================ group 14: the inspector never changed its input
 	# Every fixture built above registered the snapshot it had when the suite finished building it.
-	# This gate compares all 16 of them again, so a later group that corrupts an earlier fixture is
+	# This gate compares all 18 of them again, so a later group that corrupts an earlier fixture is
 	# caught here by path instead of being reported as a pass by a tautology. reports/ is excluded from
 	# those snapshots because the suite writes it on purpose; its contents are accounted separately
 	# (one non-empty report per allocated path, minus the deliberately refused ones).
 	Assert-FixtureInputsUnchanged
 	$fixtureCount = $script:fixtureBaselines.Count
-	Assert-True ($fixtureCount -eq 17) "every fixture directory built by the suite is covered by the comparison, got $fixtureCount"
+	Assert-True ($fixtureCount -eq 18) "every fixture directory built by the suite is covered by the comparison, got $fixtureCount"
 	Assert-True (@(Get-FixtureInputDrift).Count -eq 0) 'no fixture directory was modified, added to or removed after it was built'
 	Assert-True (@(Get-ReportDrift).Count -eq 0) 'reports/ holds exactly one non-empty report per allocated report path'
 	Write-Output "PASS: all $fixtureCount fixture directories and the report directory are unchanged since they were built"

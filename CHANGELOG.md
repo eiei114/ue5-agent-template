@@ -347,6 +347,15 @@ Migration: **existing generated projects are not moved, renamed or regenerated.*
 - 本host実測（Windows 11 / `pwsh 7.6.9` / Windows PowerShell 5.1.26100.9711 / 実 UE 5.8.4 CL 58902052）: `scripts/Test-UETemplateScaffold.ps1` = 10 group PASS / `exit 0`（`pwsh`）、10 group PASS / `exit 0`（Windows PowerShell 5.1）。実 install から 3 recipe を生成し、`plugins` の key 集合が `.uproject` の `Plugins` と一致（`third-person-game` = 4件、`spectator-explore` = 8件、`vertical-loop` = 2件）。版は `ModelingToolsEditorMode` 0.1 / `StateTree` 0.1 / `GameplayStateTree` 1.0 / `MovieRenderPipeline` 1.3 / `OnlineSubsystem*` 1.0 / `MulticaOnlineStarter` 1.0.1 と、実 `.uplugin` の値に一致した。
 - **Unverified Scope**: UE 5.8.4 の起動 / compile / Editor / PIE / MRQ / render / Shipping / packaged build は本変更で一切実行していない。plugin 実在検証は `.uplugin` ファイルの有無と `VersionName` の読取に閉じており、「Editor が実際にその plugin をロードできるか」「`TargetAllowList` が効くか」は観測していない。検証は PowerShell と JSON の層と、本 host の実 install 上の read-only 参照に限る。GitHub Actions `windows-latest` での suite 実行結果は本変更の CI 実行で確認する（本 host の実測ではない）。
 
+## Unreleased — DOT-3463
+
+- `scripts/Test-UERenderArtifacts.ps1` に、`FramesDirectory`側のreparse-point guardだけを外したときに必ず落ちる回帰group（group 13）を追加した。既存のjunction fixtureはreport親だけをaliasしていて`FramesDirectory`は通常のdirectoryだったため、その検査対象が見ているのはreport親guardだけだった。報告（DOT-3395 comment 01a1bfb5-e80a）のとおり、`FramesDirectory` guardだけを外しても13群すべてPASSしていた。
+- 追加したfixtureは逆向きに隔離する。画像列の実体`guard-probe/real-frames`を通常のdirectoryとして作り、それを指すjunction `guard-probe/alias`を`FramesDirectory`に渡し、report先は実体側の通常path（`real-frames/escaped-report.json`）にする。report親guardは通常pathしか見ないので、拒否できるのは`FramesDirectory` guardだけになる。
+- assertは4点。(1) guard両方ありの通常path入力はexit 0とpass、(2) alias入力は検査前に拒否され、**拒否理由が`FramesDirectory path contains a reparse point`であること**（`ReportPath parent`が出たら、対象のguardではなくもう片方が答えている＝負例が空assert化している）、(3) 拒否時にreportが実体dirへ書かれていないこと、(4) 前後の全file名・SHA256が不変であること。
+- 実測（本host、Windows、`ffprobe 8.1.2`、`pwsh 7.6.9`とWindows PowerShell 5.1）：`scripts/Measure-UERenderArtifacts.ps1:194`の`Assert-NoReparsePointInPath -Path $framesItem.FullName -PathRole 'FramesDirectory'`を単独で無効化すると `ASSERT FAILED: a junction alias as FramesDirectory is refused before the sequence is inspected` / exit 1。同file:202のreport親guardだけを無効化すると既存group 2の `ASSERT FAILED: a report parent junction into the inspected directory is refused` / exit 1。両guard健全のclean treeでは PS7・PS5.1とも14 group PASS / exit 0（既存12群 + 新group + 入力不変gate）。
+- `docs/05-qa.md` の入力不変記載を18 fixtureへ合わせ、2つのguardを片方ずつ外す負例fixtureの存在を明記した。fixture総数は17→18。
+- 移行: helper（`Measure-UERenderArtifacts.ps1`）の判定ロジックは変更していない。本変更は回帰suiteと文書に閉じる。
+
 ## Unreleased — 動画モーキャプ
 
 書式: 各 `## ` 見出しは `## Unreleased — <DOT番号 or 名前> — <識別子>` の形にする。**識別子は必須**で、`YYYY-MM-DD`（main に入った merge commit の日付。`git log -1 --date=short --format=%cd <merge>` か `gh pr list --state merged` の `mergedAt`）または 40 桁 commit SHA のどちらかを書く。日付だけでは「どの変更か」を commit に結べないので、SHA を併記してよい（併記した SHA は `git cat-file -e <sha>^{commit}` で解決できること）。release も tag も作らないので全節が `Unreleased` のまま。各節の本文には、次を 1 項目ずつ残す:
