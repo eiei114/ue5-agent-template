@@ -575,6 +575,12 @@ try {
 	$ambiguousTemplateName = 'TP_IdentityAmbiguous'
 	$ambiguousTemplateRoot = Join-Path $fixtureEngine ('Templates\' + $ambiguousTemplateName)
 	Write-FixtureTemplate $ambiguousTemplateRoot $ambiguousTemplateName $ambiguousTemplateName
+	Write-FixtureTemplateDefs $ambiguousTemplateRoot @(
+		'[/Script/GameProjectGeneration.TemplateProjectDefs]',
+		'FoldersToIgnore=Media',
+		'FilesToIgnore="%TEMPLATENAME%.uproject"',
+		'FilesToIgnore="Config/TemplateDefs.ini"'
+	)
 	Write-FixtureJson (Join-Path $ambiguousTemplateRoot 'Config\DefaultGame.ini') ("[/Script/EngineSettings.GeneralProjectSettings]`r`nProjectID=(A=1,B=2,C=3,D=4)`r`nProjectName=Ambiguous Template`r`n`r`n[ProjectSettings]`r`nProjectID=(A=5,B=6,C=7,D=8)`r`nProjectName=Ambiguous Legacy`r`n")
 	$ambiguousRepoRoot = Join-Path $fixtureRoot 'AmbigIdentityTmpl'
 	& git -C $repoRoot clone --quiet --local --no-hardlinks --no-tags --no-checkout $repoRoot $ambiguousRepoRoot
