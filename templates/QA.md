@@ -40,6 +40,10 @@ writer/lease nonce・取得/解放receipt（`scripts/Lease-UETemplateProject.ps1
 | [QA-NET-07] failed search（`spectator-explore`使用時のみ対象。他は`non-goal`） | unverified | 0件検索・識別子不一致・拒否の通知内容。空検索を成功と扱わない |
 | [QA-NET-08] timeoutの発生（`spectator-explore`使用時のみ対象。他は`non-goal`） | unverified | watchdog（60秒上限）超過の操作・通知・時刻。timeoutを接続成功と扱わない |
 | [QA-NET-09] timeout後の後始末（`spectator-explore`使用時のみ対象。他は`non-goal`） | unverified | 遅延成功したcreate/joinのcleanup結果と、cleanup待ちの間operationを拒否した範囲。発生記録とは別行 |
+| エンコード前の画像列検査 | unverified | `evidence/frames-check.json`。start/end(exclusive)/命名/期待解像度（EXR列は`-Extension .exr`）、欠番・範囲外・曖昧名・0 byte・decode・解像度の各判定。経路B（`mrq-native-mp4`）は元PNG列が無いので本欄を`non-goal`とし、[QA-ENC-01]〜[QA-ENC-03]の記録で代替する（空欄のままpassにしない） |
+| [QA-ENC-01] `encode_path`（書き出し経路） | unverified | `mrq-image-sequence+external-ffmpeg` / `mrq-native-mp4`（他は自由記述）。`docs/05-qa.md`の経路A/Bに対応 |
+| [QA-ENC-02] `mrq_output_setting`（MRQの出力設定名） | unverified | 実際に選んだ表示名（例 `H.264 MP4 [8bit]`、`PNG image sequence`） |
+| [QA-ENC-03] `source_png_sequence`（元PNG列の有無） | unverified | 存在する／存在しない。経路B（direct-MRQ MP4）は「存在しない」と明記し、空欄にしない |
 
 ## 画像列・通知・MP4・目視・音の独立判定
 
