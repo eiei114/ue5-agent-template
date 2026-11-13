@@ -166,6 +166,25 @@ function New-FrameSequence {
 	}
 }
 
+function New-FrameLattice {
+	# A lattice fixture: `Count` frames starting at `First`, advancing by `Step`. Step 1 is the
+	# contiguous sequence; a larger step is the shape MRQ writes with `Output Frame Step` > 1.
+	param(
+		[string]$Directory,
+		[int]$First,
+		[int]$Count,
+		[int]$Step = 1,
+		[int]$Width = 64,
+		[int]$Height = 48
+	)
+	[System.IO.Directory]::CreateDirectory($Directory) | Out-Null
+	for ($k = 0; $k -lt $Count; $k++) {
+		$index = $First + ($k * $Step)
+		$name = '{0:D6}.png' -f $index
+		[System.IO.File]::WriteAllBytes((Join-Path $Directory $name), (New-FixturePng -Width $Width -Height $Height -Shade (($index * 11) % 220)))
+	}
+}
+
 function Add-Frame {
 	param([string]$Directory, [int]$Index, [int]$Width = 64, [int]$Height = 48)
 	$name = '{0:D6}.png' -f $Index
@@ -913,12 +932,150 @@ try {
 	# ============================================================ group 14: the inspector never changed its input
 	# Every fixture built above registered the snapshot it had when the suite finished building it.
 	# This gate compares all 18 of them again, so a later group that corrupts an earlier fixture is
+
+	# ============================================================ group 13: declared index lattice
+	# MRQ's `Output Frame Step` writes every N-th frame, so a legitimate step render has a gap after
+	# every frame. The helper has to be able to declare that lattice and pass it, and it has to name a
+	# mismatch as a lattice mismatch instead of reporting hundreds of "missing" frames.
+	$stepDir = Join-Path $fixtureRoot 'lattice-step2'
+	New-FrameLattice -Directory $stepDir -First 0 -Count 120 -Step 2
+	Register-FixtureSnapshot 'lattice-step2'
+	$stepBefore = Get-DirectorySnapshot $stepDir
+	$stepReport = New-ReportPath 'lattice-step2'
+	$stepResult = Invoke-Measure @{
+		FramesDirectory    = $stepDir
+		StartNumber        = 0
+		EndNumberExclusive = 240
+		FrameStep          = 2
+		ReportPath         = $stepReport
+		ExpectedWidth      = 64
+		ExpectedHeight     = 48
+	}
+	Assert-True (-not $stepResult.Threw) "step lattice inspection did not throw: $($stepResult.Error)"
+	Assert-True ($stepResult.ExitCode -eq 0) "a declared step-2 lattice exits 0, got $($stepResult.ExitCode): $($stepResult.Output)"
+	$stepData = Read-Report $stepReport
+	Assert-True ($stepData.artifact_verdict -eq 'pass') 'a declared step-2 lattice passes the artifact verdict'
+	foreach ($check in @('composition', 'naming', 'completeness', 'range', 'file_size', 'decode', 'resolution')) {
+		Assert-True ($stepData.checks.$check -eq 'pass') "step lattice check '$check' is pass, got '$($stepData.checks.$check)'"
+	}
+	Assert-True ($stepData.expectations.frame_count -eq 120) 'the report expects the 120 lattice indices, not the 240 contiguous ones'
+	Assert-True ($stepData.expectations.first_index -eq 0) 'the report records the first lattice index'
+	Assert-True ($stepData.expectations.last_index -eq 238) 'the report records the last lattice index'
+	Assert-True ($stepData.expectations.frame_step -eq 2) 'the report records the declared frame step'
+	Assert-True ($stepData.input.frame_step -eq 2 -and $stepData.input.frame_number_offset -eq 0) 'the report input records the declared step and offset'
+	Assert-True ($stepData.index_lattice.declared_step -eq 2) 'the report records the declared stride'
+	Assert-True ($stepData.index_lattice.observed_stride -eq 2) 'the report records the observed stride'
+	Assert-True ($stepData.index_lattice.mismatch -eq $false) 'a matching lattice is not reported as a mismatch'
+	Assert-True (@($stepData.failures).Count -eq 0) 'a declared step-2 lattice records no failure'
+	Assert-True (@($stepData.frames).Count -eq 120) 'every lattice frame is inspected'
+	Assert-True ($stepData.observed.contract_file_count -eq 120) 'the report counts the 120 lattice frames'
+	Assert-True ((Get-DirectorySnapshot $stepDir) -ceq $stepBefore) 'the step lattice inspection left every file unchanged'
+
+	# The same fixture inspected without the declaration must not be called 120 missing frames.
+	$stepUndeclaredReport = New-ReportPath 'lattice-step2-undeclared'
+	$stepUndeclaredResult = Invoke-Measure @{
+		FramesDirectory    = $stepDir
+		StartNumber        = 0
+		EndNumberExclusive = 240
+		ReportPath         = $stepUndeclaredReport
+		ExpectedWidth      = 64
+		ExpectedHeight     = 48
+	}
+	Assert-True ($stepUndeclaredResult.ExitCode -eq 1) "an undeclared step-2 lattice exits 1, got $($stepUndeclaredResult.ExitCode): $($stepUndeclaredResult.Output)"
+	$stepUndeclaredData = Read-Report $stepUndeclaredReport
+	Assert-True ($stepUndeclaredData.artifact_verdict -eq 'fail') 'an undeclared step-2 lattice fails'
+	Assert-True ($stepUndeclaredData.index_lattice.mismatch -eq $true) 'the report records the lattice mismatch'
+	Assert-True ($stepUndeclaredData.index_lattice.observed_stride -eq 2) 'the report names the observed stride'
+	$undeclaredCategories = Get-FailureCategories $stepUndeclaredData
+	Assert-True ($undeclaredCategories -contains 'index_lattice_mismatch') 'the undeclared lattice is reported as a lattice mismatch'
+	Assert-True (-not ($undeclaredCategories -contains 'missing_frames')) 'the undeclared lattice is not reported as missing frames'
+	Assert-True (-not ($undeclaredCategories -contains 'out_of_range_frames')) 'the undeclared lattice has no out-of-range frames'
+	$undeclaredFailure = @($stepUndeclaredData.failures | Where-Object { $_.category -eq 'index_lattice_mismatch' })[0]
+	Assert-True ($undeclaredFailure.detail.Contains('advance by 2')) 'the mismatch names the observed stride'
+	Assert-True ($undeclaredFailure.detail.Contains('declared frame step is 1')) 'the mismatch names the declared step'
+	Assert-True ($undeclaredFailure.detail.Contains('-FrameStep 2')) 'the mismatch names the declaration that would match'
+	Assert-True ($stepUndeclaredData.checks.completeness -eq 'fail') 'the absent declared indices still fail completeness'
+	Assert-True ($stepUndeclaredData.checks.range -eq 'pass') 'a lattice inside the declared range has no excess frames'
+	Write-Output 'PASS: a declared step-2 lattice passes and the same lattice undeclared is named as a lattice mismatch'
+
+	# A frame-number offset shifts the lattice. MRQ's `Frame Number Offset` produces this shape.
+	$offsetLatticeDir = Join-Path $fixtureRoot 'lattice-offset10'
+	New-FrameLattice -Directory $offsetLatticeDir -First 10 -Count 120 -Step 2
+	Register-FixtureSnapshot 'lattice-offset10'
+	$offsetLatticeReport = New-ReportPath 'lattice-offset10'
+	$offsetLatticeResult = Invoke-Measure @{
+		FramesDirectory    = $offsetLatticeDir
+		StartNumber        = 0
+		EndNumberExclusive = 240
+		FrameStep          = 2
+		FrameNumberOffset  = 10
+		ReportPath         = $offsetLatticeReport
+		ExpectedWidth      = 64
+		ExpectedHeight     = 48
+	}
+	Assert-True ($offsetLatticeResult.ExitCode -eq 0) "a declared offset lattice exits 0, got $($offsetLatticeResult.ExitCode): $($offsetLatticeResult.Output)"
+	$offsetLatticeData = Read-Report $offsetLatticeReport
+	Assert-True ($offsetLatticeData.artifact_verdict -eq 'pass') 'the offset lattice passes the artifact verdict'
+	Assert-True ($offsetLatticeData.expectations.first_index -eq 10) 'the report expects the offset first index'
+	Assert-True ($offsetLatticeData.expectations.last_index -eq 248) 'the report expects the offset last index'
+	Assert-True ($offsetLatticeData.input.frame_number_offset -eq 10) 'the report records the declared offset'
+	Assert-True (@($offsetLatticeData.failures).Count -eq 0) 'the offset lattice records no failure'
+
+	# The reverse direction: a contiguous run declared as a step lattice is also a mismatch. Without
+	# this, the check would only be proven in the direction the defect was found.
+	$contiguousDir = Join-Path $fixtureRoot 'lattice-contiguous-declared-step2'
+	New-FrameLattice -Directory $contiguousDir -First 0 -Count 120 -Step 1
+	Register-FixtureSnapshot 'lattice-contiguous-declared-step2'
+	$contiguousReport = New-ReportPath 'lattice-contiguous-declared-step2'
+	$contiguousResult = Invoke-Measure @{
+		FramesDirectory    = $contiguousDir
+		StartNumber        = 0
+		EndNumberExclusive = 240
+		FrameStep          = 2
+		ReportPath         = $contiguousReport
+		ExpectedWidth      = 64
+		ExpectedHeight     = 48
+	}
+	Assert-True ($contiguousResult.ExitCode -eq 1) "a contiguous run against a declared step-2 lattice exits 1, got $($contiguousResult.ExitCode): $($contiguousResult.Output)"
+	$contiguousData = Read-Report $contiguousReport
+	Assert-True ((Get-FailureCategories $contiguousData) -contains 'index_lattice_mismatch') 'a contiguous run against a step declaration is a lattice mismatch'
+	Assert-True (-not ((Get-FailureCategories $contiguousData) -contains 'missing_frames')) 'the contiguous run is not reported as missing frames'
+	Assert-True ($contiguousData.index_lattice.observed_stride -eq 1) 'the report names the observed contiguous stride'
+
+	# Handle frames extend a shot by a few frames on both sides. They are contiguous, so they are
+	# reported as frames outside the declared range rather than as a lattice mismatch; the documented
+	# handling is to widen the declared range when the handles belong to the deliverable.
+	$handleDir = Join-Path $fixtureRoot 'lattice-handles'
+	New-FrameLattice -Directory $handleDir -First 5 -Count 250 -Step 1
+	Register-FixtureSnapshot 'lattice-handles'
+	$handleReport = New-ReportPath 'lattice-handles'
+	$handleResult = Invoke-Measure @{
+		FramesDirectory    = $handleDir
+		StartNumber        = 10
+		EndNumberExclusive = 250
+		ReportPath         = $handleReport
+		ExpectedWidth      = 64
+		ExpectedHeight     = 48
+	}
+	Assert-True ($handleResult.ExitCode -eq 1) "handle frames outside the declared range exit 1, got $($handleResult.ExitCode): $($handleResult.Output)"
+	$handleData = Read-Report $handleReport
+	$handleCategories = Get-FailureCategories $handleData
+	Assert-True ($handleCategories -contains 'out_of_range_frames') 'handle frames are reported as outside the declared range'
+	Assert-True (-not ($handleCategories -contains 'index_lattice_mismatch')) 'contiguous handle frames are not called a lattice mismatch'
+	Assert-True ($handleData.index_lattice.mismatch -eq $false) 'the handle fixture is a uniform contiguous lattice'
+	Assert-True ((@($handleData.failures | Where-Object { $_.category -eq 'out_of_range_frames' })[0].sample) -eq '5,6,7,8,9,250,251,252,253,254') 'the out-of-range sample names every handle frame'
+	Assert-True (@($handleData.violations.missing_indices).Count -eq 0) 'every declared index is present behind the handles'
+	Write-Output 'PASS: declared step and offset lattices pass, a mismatch in either direction is named, and handle frames stay out-of-range'
+
+	# ============================================================ group 14: the inspector never changed its input
+	# Every fixture built above registered the snapshot it had when the suite finished building it.
+	# This gate compares all 21 of them again, so a later group that corrupts an earlier fixture is
 	# caught here by path instead of being reported as a pass by a tautology. reports/ is excluded from
 	# those snapshots because the suite writes it on purpose; its contents are accounted separately
 	# (one non-empty report per allocated path, minus the deliberately refused ones).
 	Assert-FixtureInputsUnchanged
 	$fixtureCount = $script:fixtureBaselines.Count
-	Assert-True ($fixtureCount -eq 18) "every fixture directory built by the suite is covered by the comparison, got $fixtureCount"
+	Assert-True ($fixtureCount -eq 21) "every fixture directory built by the suite is covered by the comparison, got $fixtureCount"
 	Assert-True (@(Get-FixtureInputDrift).Count -eq 0) 'no fixture directory was modified, added to or removed after it was built'
 	Assert-True (@(Get-ReportDrift).Count -eq 0) 'reports/ holds exactly one non-empty report per allocated report path'
 	Write-Output "PASS: all $fixtureCount fixture directories and the report directory are unchanged since they were built"

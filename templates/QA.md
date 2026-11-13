@@ -70,6 +70,7 @@ writer/lease nonce・取得/解放receipt（`scripts/Lease-UETemplateProject.ps1
 
 
 
+
 ## 画像列・通知・MP4・目視・音の独立判定
 
 1項目のpassを他項目へ読み替えない。特に次を守る。
@@ -79,6 +80,9 @@ writer/lease nonce・取得/解放receipt（`scripts/Lease-UETemplateProject.ps1
 - MP4のframe数だけでは、元の画像列の欠番・余分を排除できない。
 - **ffmpegのencodeがexit 0でも尺の合格にしない。** `-frames:v`は上限であり、短い画像列は短いMP4として成功裡に出力される。尺は`Measure-UECaptureEncode.ps1`がpreset定義と照合した結果で判定する。
 - ffprobeが報告した値を見てから「期待値」を書き換えない。期待値はpreset定義のみ。
+
+- 画像列のfailは2種類に切り分ける。**成果物の不備**（欠番・余分なframe・0 byte・decode不能・解像度不一致）と、**`index_lattice_mismatch`**（画像列は規律正しい等差数列だが、宣言した`FrameStep`と公差が違う＝renderは正常でhelper入力が違う）である。後者を「240枚欠番」と読んで再renderしない。MRQの`Output Frame Step`を確認し、同じ値で再検査する。
+- MP4のframe数だけでは、元画像列の欠番・余分を排除できない。step格子を`%06d`連番templateでencodeすると、ffmpegは**exit 0のまま1frameのMP4**を作る。尺と`nb_read_frames`を必ず見る。
 - 音声streamの存在は聴取ではない。
 - 解像度や範囲を入力しなかった項目は`unverified`と書き、空欄のままpassにしない。
 - Mac hostの判定は、EpicのUE5.8表とAppleのXcode対応表の**交差**で出す。片方の表だけでpassにしない。観測値が無い欄は`unverified`、公開表に記載の無い版も`unverified`とし、passに丸めない。
