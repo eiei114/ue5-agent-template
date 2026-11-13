@@ -95,7 +95,32 @@ generatorはrecipe名を一切見ない。`-Recipe` は `templates/recipes/<Reci
 | `EngineAssociation` | 空にしない。templateが値を持たない場合は`Engine/Build/Build.version`の`MajorVersion.MinorVersion`から導く | `identity.engine_association` |
 | 置換不能時 | コピー前に照合し、既知パターンに一致しない場合は停止して未一致pathを列挙する。生コピーを黙って出力しない | generatorのstderr/例外、`scripts/Test-UETemplateScaffold.ps1`の負例 |
 
-lockは`schema_version: 2`で、上記3項目を`identity`に持つ。単位は作品（`Production/<Name>_<runid>/template-lock.json`）であり、identityを手で書き換えない。
+lockは`schema_version: 3`で、上記3項目を`identity`に持つ。単位は作品（`Production/<Name>_<runid>/template-lock.json`）であり、identityを手で書き換えない。
+
+### lockが固定するengine build identity（`schema_version: 3`）
+
+| field | 由来 | 契約 |
+|---|---|---|
+| `engine_version` | `Build.version`の`MajorVersion`.`MinorVersion`.`PatchVersion` | 3 field全てが数値であること。欠落・非数値なら生成を停止する（`'5.8.'`のような断片を成功出力しない） |
+| `engine_changelist` | `Changelist`と`CompatibleChangelist`から導出 | UEの`FBuildVersion::GetEffectiveCompatibleChangelist()`と同じ規則（両方が非0なら`CompatibleChangelist`、それ以外は`Changelist`）。導出に使ったfieldが無ければ`null` |
+| `engine_changelist_source` | 導出に使ったfield名 | `CompatibleChangelist` / `Changelist` / `null` |
+| `engine_changelist_raw` | `Build.version`の`Changelist` | エンジンが書いた値をそのまま。キーが無ければ`null`（`0`と書かない） |
+| `engine_compatible_changelist` | `Build.version`の`CompatibleChangelist` | キーが無ければ`null` |
+| `engine_is_licensee_version` | `Build.version`の`IsLicenseeVersion` | キーが無ければ`null` |
+| `engine_is_promoted_build` | `Build.version`の`IsPromotedBuild` | キーが無ければ`null` |
+| `engine_branch_name` | `Build.version`の`BranchName` | キーが無ければ`null`（空文字と「未設定」を区別する） |
+
+Epic自身の`Build.version`は`Changelist: 0` + `CompatibleChangelist: <identifier>`の形を採る（`Engine/Source/Runtime/Core/Private/Modules/BuildVersion.cpp:21-24`、2026-11-03に実体を確認）。素の`Changelist`だけを読むと別のEngine installが同じlockになるため、導出と生値の両方を記録する。
+
+**`null` = 不明。0／空文字は「エンジンがそう書いた」値だけに使う。** plugin版も同じ規則で、`.uplugin`が`VersionName`/`Version`を持たない場合は`plugins.<name> = null`とする。
+
+### lockの比較規則（byte比較ではなく semantic比較）
+
+lockを比べるときはJSONをparseしてfield単位で比較する。byte比較は同一shell・同一入力の生成物にだけ使う。
+
+- 根拠（本host実測、2026-11-03）: 同一入力・同一template commitでWindows PowerShell 5.1とpwsh 7.6.9が生成したlockは semantic equal / byte different（`ConvertTo-Json`の既定整形が4-space + `":  "`と2-space + `": "`で異なる）。sha256も異なる。
+- したがってhostを跨いだlockの同一性判定にsha256や`diff`を使うと偽の不一致が出る。canonical serializerは未実装で、この差は意図的に残している。
+- 実装済みの範囲: `scripts/Test-UETemplateScaffold.ps1`は同一shell・同一入力のlock byte一致（`-ceq`）をassertionで固定する。cross-shellのbyte一致は主張しない（本hostの実測で差があるため）。
 
 同じlockが、templateの`Config/TemplateDefs.ini`から実際に何を適用したかを追加fieldで記録する（schema_versionは据え置き）。
 
@@ -110,6 +135,8 @@ lockは`schema_version: 2`で、上記3項目を`identity`に持つ。単位は�
 ## lockと更新手順
 
 lockはtemplate commit SHA、clean/dirty状態、UE version/changelist、Engine/plugin version、recipe/use、作品差分、project identityを固定する。`recipe`/`purpose`はrecipe.jsonから、`plugins`は`required_plugins`から生成される。実作はcommit済み・cleanなtemplateから生成する。dirty時の生成は拒否し、テストだけ明示的な`-AllowDirtyTemplate`を使う。
+
+lockはtemplate commit SHA、clean/dirty状態、engine template、UE version、engine build identity（`engine_changelist` / `engine_changelist_raw` / `engine_compatible_changelist` / `engine_is_licensee_version` / `engine_is_promoted_build` / `engine_branch_name`）、Engine/plugin version、recipe/use、作品差分、project identityを固定する。実作はcommit済み・cleanなtemplateから生成する。dirty時の生成は拒否し、テストだけ明示的な`-AllowDirtyTemplate`を使う。
 
 共通更新は新RunIdの空Production directoryへ生成し、既存projectを上書きせず、lock・作品差分・移行手順・対象版の検品結果を比較する。UE/Plugin更新の自動伝播はしない。
 

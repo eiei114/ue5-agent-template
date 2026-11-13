@@ -377,13 +377,12 @@ foreach ($pluginName in $sortedPluginNames) {
 		throw "Required plugin metadata is missing for '$pluginName': $pluginPath. Nothing was generated."
 	}
 	$pluginJson = Get-Content -Raw -LiteralPath $pluginPath | ConvertFrom-Json
-	$pluginVersion = if (-not [string]::IsNullOrWhiteSpace([string]$pluginJson.VersionName)) {
-		[string]$pluginJson.VersionName
-	} else {
-		[string]$pluginJson.Version
-	}
-	if ([string]::IsNullOrWhiteSpace($pluginVersion)) {
-		throw "Plugin '$pluginName' declares neither VersionName nor Version, so the lock cannot record its identity: $pluginPath. Nothing was generated."
+	$pluginVersion = $null
+	foreach ($field in @('VersionName', 'Version')) {
+		if ($null -ne $pluginJson.PSObject.Properties[$field] -and -not [string]::IsNullOrWhiteSpace([string]$pluginJson.$field)) {
+			$pluginVersion = [string]$pluginJson.$field
+			break
+		}
 	}
 	$pluginVersions[$pluginName] = $pluginVersion
 }
@@ -401,17 +400,82 @@ if ($templateDirty -and -not $AllowDirtyTemplate) {
 	throw 'The template working tree is dirty. Commit the template before generating a reproducible project.'
 }
 
+# `$Data.<Field>` on a missing key yields $null, and `[long]$null` is 0 while `[string]$null` is ''.
+# Both would be written to the lock as if the engine had said so, so every field is read only
+# after its PSObject property is proven to exist (engine build identity contract, UE-LOCK-001).
+function Get-BuildVersionField($Data, [string]$Name) {
+	if ($null -eq $Data.PSObject.Properties[$Name]) { return $null }
+	return $Data.$Name
+}
+
 $buildData = Get-Content -Raw -LiteralPath $engineBuildFile | ConvertFrom-Json
-# A missing, empty or non-numeric field cannot produce a describable EngineAssociation: the
+# A missing, empty or non-numeric version field cannot produce a describable EngineAssociation: the
 # derived value would be a fragment such as '.8', which the descriptor and the lock would then
-# record as fact. Reject it before anything is copied.
-foreach ($requiredBuildField in @('MajorVersion', 'MinorVersion', 'PatchVersion', 'Changelist')) {
+# record as fact. Reject before anything is copied.
+foreach ($requiredBuildField in @('MajorVersion', 'MinorVersion', 'PatchVersion')) {
 	$buildFieldValue = if ($null -ne $buildData.PSObject.Properties[$requiredBuildField]) { [string]$buildData.$requiredBuildField } else { '' }
 	if ($buildFieldValue -notmatch '^[0-9]+$') {
-		throw "Engine/Build/Build.version does not define a numeric $requiredBuildField, so the project engine association cannot be recorded: $engineBuildFile"
+		throw "Engine/Build/Build.version does not define a numeric $requiredBuildField, so the project engine association and the lock's engine build identity cannot be recorded: $engineBuildFile"
 	}
 }
 $engineVersion = '{0}.{1}.{2}' -f $buildData.MajorVersion, $buildData.MinorVersion, $buildData.PatchVersion
+
+# The optional build-identity fields stay optional: a mirror or an older installer may omit them.
+# Absent means 'unknown' and is recorded as JSON null, never as 0 / ''.
+$engineCompatibleChangelist = Get-BuildVersionField $buildData 'CompatibleChangelist'
+if ($null -ne $engineCompatibleChangelist) {
+	if ([string]$engineCompatibleChangelist -notmatch '^[0-9]+$') {
+		throw "Engine/Build/Build.version defines a non-numeric CompatibleChangelist, so the lock's engine build identity cannot be recorded: $engineBuildFile"
+	}
+	$engineCompatibleChangelist = [long]$engineCompatibleChangelist
+}
+$engineIsLicenseeVersion = Get-BuildVersionField $buildData 'IsLicenseeVersion'
+if ($null -ne $engineIsLicenseeVersion) {
+	if ([string]$engineIsLicenseeVersion -notmatch '^(?:[0-9]+|(?i:true)|(?i:false))$') {
+		throw "Engine/Build/Build.version defines a non-numeric IsLicenseeVersion, so the lock's engine build identity cannot be recorded: $engineBuildFile"
+	}
+}
+$engineIsPromotedBuild = Get-BuildVersionField $buildData 'IsPromotedBuild'
+if ($null -ne $engineIsPromotedBuild) {
+	if ([string]$engineIsPromotedBuild -notmatch '^(?:[0-9]+|(?i:true)|(?i:false))$') {
+		throw "Engine/Build/Build.version defines a non-numeric IsPromotedBuild, so the lock's engine build identity cannot be recorded: $engineBuildFile"
+	}
+}
+$engineBranchName = Get-BuildVersionField $buildData 'BranchName'
+if ($null -ne $engineBranchName) {
+	$engineBranchName = [string]$engineBranchName
+	if ([string]::IsNullOrWhiteSpace($engineBranchName)) { $engineBranchName = $null }
+}
+# UE itself does not use the raw Changelist as the build identity, and it does not simply prefer the
+# larger number either. Epic's Engine/Source/Runtime/Core/Private/Modules/BuildVersion.cpp:21-24
+# (read from the installed 5.8.4 tree, 2026-11-03) defines:
+#   int FBuildVersion::GetEffectiveCompatibleChangelist() const
+#   { return (Changelist != 0 && CompatibleChangelist != 0) ? CompatibleChangelist : Changelist; }
+# The effective value follows that rule, and every raw field the rule consumed is recorded next to
+# it, so an install that only differs in CompatibleChangelist never yields the same lock as another.
+# `Changelist` stays optional: UE's parser leaves the field at its default (0) when the file omits it,
+# but 'the file did not say' is not the same evidence as 'the file said 0', so an absent key makes the
+# derived value unknown (null) instead of throwing or silently writing 0.
+$engineChangelistRaw = Get-BuildVersionField $buildData 'Changelist'
+if ($null -ne $engineChangelistRaw) {
+	if ([string]$engineChangelistRaw -notmatch '^[0-9]+$') {
+		throw "Engine/Build/Build.version defines a non-numeric Changelist, so the lock's engine build identity cannot be recorded: $engineBuildFile"
+	}
+	$engineChangelistRaw = [long]$engineChangelistRaw
+}
+if ($null -eq $engineChangelistRaw) {
+	$engineChangelist = $null
+	$engineChangelistSource = $null
+} else {
+	$engineCompatibleChangelistForRule = if ($null -eq $engineCompatibleChangelist) { 0 } else { $engineCompatibleChangelist }
+	if ($engineChangelistRaw -ne 0 -and $engineCompatibleChangelistForRule -ne 0) {
+		$engineChangelist = [long]$engineCompatibleChangelistForRule
+		$engineChangelistSource = 'CompatibleChangelist'
+	} else {
+		$engineChangelist = [long]$engineChangelistRaw
+		$engineChangelistSource = 'Changelist'
+	}
+}
 $templateName = $recipeData.EngineTemplate
 $sourceTemplate = Join-Path $engineTemplateRoot $templateName
 $templateProjectFile = Join-Path $sourceTemplate ($templateName + '.uproject')
@@ -593,13 +657,19 @@ try {
 	$packDetailLevels = [ordered]@{}
 	foreach ($pack in @($copyReport.SharedContentPacks)) { $packDetailLevels[$pack.Mount] = $pack.DetailLevel }
 	$lock = [ordered]@{
-		schema_version = 2
+		schema_version = 3
 		template_repository = 'https://github.com/eiei114/ue5-agent-template'
 		template_commit = $gitCommit
 		template_worktree_dirty = $templateDirty
 		engine_template = $templateName
 		engine_version = $engineVersion
-		engine_changelist = [long]$buildData.Changelist
+		engine_changelist = $engineChangelist
+		engine_changelist_source = $engineChangelistSource
+		engine_changelist_raw = $engineChangelistRaw
+		engine_compatible_changelist = $engineCompatibleChangelist
+		engine_is_licensee_version = $engineIsLicenseeVersion
+		engine_is_promoted_build = $engineIsPromotedBuild
+		engine_branch_name = $engineBranchName
 		identity = [ordered]@{
 			project_file = $projectFileName
 			project_modules = @($moduleNames)

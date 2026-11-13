@@ -13,6 +13,27 @@
 
 実測（本 host、Windows、Windows PowerShell 5.1.26100.9711 と `pwsh 7.6.9` の両方、repo SHA `adfb5eebab9d1a3d90a60928ee31bfa35cb20b4a`、`templates/QA.md` の変更前 sha256 `AC1C02940CD6639C4CE451C4EF83A18E7E210D219D9031605F5C3D74470DC277` / 変更後 `D24FE74633EEC8649406C259B4E678177C177DCCF03BF28AF5511EEE1A72800D`）: `scripts/Test-UETemplateScaffold.ps1` は 11 group PASS / exit 0（既存 8 group を含む）。負例は 4 行それぞれ `required acceptance row <id> is missing` で exit 1、値の負例は `row QA-MRQ-01 uses 'ok' …` で exit 1 になることを、`a9e31bc` の clone に新 suite を当てて確認した（`QA template contract violated: … the table carries 11 data rows, fewer than the 24 required acceptance rows …` で exit 1）。suite 前後の `git status --porcelain --untracked-files=all` は同一（この変更の 4 ファイルのみ）。**UE install / compile / Editor / PIE / MRQ / render / Shipping / 実 LAN 接続は一切実行していない**（Unverified Scope）。行があることは 2-client 接続の実測ではない。
 
+## Unreleased — DOT-3114
+
+`template-lock.json`のengine build identityを、UE自身の規則と一致させた。旧generatorは`Build.version`／`.uplugin`に存在しないfieldを`0`／`""`へ黙って変換してlockに書いており、実測で**Engine installが異なる2つの生成物がbyte一致のlock**を持っていた。
+
+- `scripts/New-UETemplateScaffold.ps1`
+  - `Build.version`の`MajorVersion`／`MinorVersion`／`PatchVersion`を`PSObject.Properties`で存在確認し、欠落または非数値なら**停止**。`'5.8.'`のような壊れた版文字列を成功出力しない。
+  - `engine_changelist`をUEの`FBuildVersion::GetEffectiveCompatibleChangelist()`（`Engine/Source/Runtime/Core/Private/Modules/BuildVersion.cpp:21-24`）と同じ規則（両方が非0なら`CompatibleChangelist`、それ以外は`Changelist`）で導出。生値も`engine_changelist_raw`／`engine_compatible_changelist`／`engine_is_licensee_version`／`engine_is_promoted_build`／`engine_branch_name`として併記する。
+  - `Changelist`キー自体が無い場合は導出を中止し、`engine_changelist`／`engine_changelist_raw`／`engine_changelist_source`をJSON `null`にする。UEのparserは省略を既定値0として扱うが、「ファイルが0と書いた」と「ファイルが何も書いていない」は別の証拠なので0へ倒さない。
+  - `CompatibleChangelist`／`IsLicenseeVersion`／`IsPromotedBuild`／`BranchName`は存在するときだけlockに載せ、無い場合は`null`。`BranchName`は空文字も`null`へ正規化。
+  - plugin版は`VersionName`→`Version`の順に読み、両方とも未設定または空なら`plugins.<name> = null`（`""`ではない）。
+  - `schema_version`を`2`→`3`へ。
+- `scripts/Test-UETemplateScaffold.ps1`
+  - fixtureの`Build.version`をEpic実形状（`Changelist:58902052` + `CompatibleChangelist:55116800` + `IsLicenseeVersion`/`IsPromotedBuild`/`BranchName`）へ。`Changelist`単独形も併置。
+  - 追加group: (a) 必須field欠落＋非数値で停止、(b) `Changelist:0`＋`CompatibleChangelist`のみの実形状で導出値と生値が両方正しく載る、(c) **`CompatibleChangelist`だけが異なる2 installでlockがbyte一致にならない**、(d) 必須版field欠落で停止、(e) plugin版未設定が`null`、(f) `Changelist`キー欠落が`null`、(g) 整形だけが違うlockのsemantic比較。
+  - 既存5群（dirty template / game+capture / vertical-loop / 版field負例 / 既存出力保護）は回帰で維持。
+- `docs/07-architecture.md`: lockが固定するengine build identityを実field名で列挙し、`null` = 不明、0/空文字は「エンジンがそう書いた」値だけと明記。lock比較は**semantic比較**とし、byte比較は同一shell・同一入力に限定する理由（`ConvertTo-Json`の整形差でcross-shellのsha256が異なる）を記載。
+- `docs/01-start.md`: 「不明を0や無料と扱わない」がQA記録だけでなくgeneratorのlockにも適用されることを明記。
+- 移行: 既存生成物のlockは書き換えない。新しいengine build identityが必要な作品は**新RunIdで再生成**し、旧lock（`schema_version: 2`／`1`）と新lockをsemantic比較して差分を`QA.md`に記録する。`schema_version`で新旧を判別でき、旧lockを手で編集しない。
+
+本host実測（Windows PowerShell 5.1.26100.9711 / pwsh 7.6.9、2026-11-03、template `adfb5eebab9d1a3d90a60928ee31bfa35cb20b4a`）: `scripts/Test-UETemplateScaffold.ps1`は両shellで13 group PASS / exit 0。`a9e31bc`のgeneratorに同じsuiteを当てると`generated project descriptor has a non-empty EngineAssociation`で失敗（engine_changelist assertion 0件のbaseline）。UE install / compile / Editor / PIE / MRQ / render は実行していない（本変更はUE非依存、**Unverified Scope**）。
+
 ## Unreleased — DOT-3157
 
 - 生コピー経路（`materialize_project`を持たない`spectator-explore` / `vertical-loop`）がtemplateの`Config/TemplateDefs.ini`を一度も読まず、templateフォルダを丸ごとコピーしていた。出力`Content/`に`TP_FirstPerson`の既定mapが参照する共有content pack（`Characters` / `LevelPrototyping` / `Input` / `Weapons`）が入らず、逆にignore対象の`Media/`と`Config/TemplateDefs.ini`・`Config/config.ini`が残っていた。generatorはexit 0で`Created ...`を表示し、testは6群PASSしていたため、"assetが足りない"を出力から判別できなかった。
