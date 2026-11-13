@@ -28,6 +28,68 @@ function Assert-True([bool]$Condition, [string]$Message) {
 	if (-not $Condition) { throw "ASSERT FAILED: $Message" }
 }
 
+# Config branch names the engine resolves, read from the installed UE 5.8.4
+# Engine/Source/Runtime/Core/Public/Misc/ConfigCacheIni.h:101-111
+# (`ENUMERATE_KNOWN_INI_FILES`). A plugin config file reaches one of these branches by name;
+# anything else is dropped with a Verbose-only log
+# (Engine/Source/Runtime/Core/Private/Misc/ConfigCacheIni.cpp:7275,7294-7301,7300).
+$script:KnownConfigBranches = @(
+	'Engine', 'Game', 'Input', 'DeviceProfiles', 'GameUserSettings',
+	'Scalability', 'RuntimeOptions', 'InstallBundle', 'Hardware', 'GameplayTags'
+)
+
+function Get-PluginConfigCarrierProblems([string]$PluginDirectory, [string]$PluginName, [string]$PlatformName) {
+	# Plugin layers are {PLUGIN}/Config/Default{TYPE}.ini (TYPE = plugin name) and
+	# {PLUGIN}/Config/{PLATFORM}/{PLATFORM}{TYPE}.ini (ConfigHierarchy.h:61,66); the modification
+	# layers are {PLUGIN}/Config/{TYPE}.ini and {PLUGIN}/Config/{PLATFORM}/{PLATFORM}{TYPE}.ini with
+	# TYPE = a config branch (ConfigHierarchy.h:79,81). The runtime derives that branch name by
+	# stripping the plugin name and the platform from the file name
+	# (ConfigCacheIni.cpp:7275, PluginManager.cpp:1932). A file whose name matches neither layer is
+	# found on disk and then discarded, so a switch written there never reaches the branch.
+	$accepted = @((('Base' + $PluginName), $PluginName, ('Default' + $PluginName)) + $script:KnownConfigBranches)
+	$problems = New-Object System.Collections.Generic.List[string]
+	$configDirectory = Join-Path $PluginDirectory 'Config'
+	$candidates = @()
+	if (Test-Path -LiteralPath $configDirectory -PathType Container) {
+		$candidates += @(Get-ChildItem -LiteralPath $configDirectory -File -Force | Where-Object { $_.Extension -ieq '.ini' })
+		$platformDirectory = Join-Path $configDirectory $PlatformName
+		if (Test-Path -LiteralPath $platformDirectory -PathType Container) {
+			$candidates += @(Get-ChildItem -LiteralPath $platformDirectory -File -Force | Where-Object { $_.Extension -ieq '.ini' })
+		}
+	}
+	foreach ($file in $candidates) {
+		$base = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
+		$inPlatformDirectory = (Split-Path -Leaf $file.DirectoryName) -ieq $PlatformName
+		$resolvable = $false
+		if ($inPlatformDirectory -and $base.StartsWith($PlatformName, [System.StringComparison]::OrdinalIgnoreCase)) {
+			$base = $base.Substring($PlatformName.Length)
+		}
+		foreach ($name in $accepted) {
+			if ($base -ceq $name) { $resolvable = $true; break }
+		}
+		if (-not $resolvable) {
+			$relative = $file.FullName.Substring($PluginDirectory.Length + 1).Replace('\', '/')
+			$message = 'Plugins/{0}/{1}: the engine cannot resolve ''{2}'' to a config branch (known branches: {3}; plugin layers: Config/Default{0}.ini). Engine/Source/Runtime/Core/Public/Misc/ConfigCacheIni.h:101-111 and ConfigCacheIni.cpp:7275,7294-7301 drop it with a Verbose-only log, so a switch placed here never reaches the branch.' -f $PluginName, $relative, $file.Name, ($script:KnownConfigBranches -join '/')
+			$problems.Add($message)
+		}
+	}
+	return $problems.ToArray()
+}
+
+function Get-ProjectConfigCarrierProblem([string]$Path) {
+	# Project layers are {PROJECT}/Config/Default{TYPE}.ini and
+	# {PROJECT}/Config/{PLATFORM}/{PLATFORM}{TYPE}.ini (ConfigHierarchy.h:68,70); TYPE must be a
+	# branch the engine knows, so the project carrier's file name is part of the contract too.
+	$leaf = [System.IO.Path]::GetFileNameWithoutExtension($Path)
+	$parent = Split-Path -Leaf (Split-Path -Parent $Path)
+	if ($parent -ieq 'Config') {
+		if ($leaf -match '^Default(.+)$' -and $script:KnownConfigBranches -contains $Matches[1]) { return $null }
+	} elseif ($leaf -match '^Windows(.+)$' -and $script:KnownConfigBranches -contains $Matches[1]) {
+		return $null
+	}
+	return "the project config carrier '$($Path)' is not a {PROJECT}/Config/Default{TYPE}.ini (or {PLATFORM}/{PLATFORM}{TYPE}.ini) branch the engine merges"
+}
+
 function Get-ProductionResidue {
 	# .gitignore excludes Production/* from `git status --untracked-files=all`, so an ignored leftover
 	# from a crashed or interrupted run is invisible to the checkout comparison at the end of the
@@ -190,13 +252,39 @@ try {
 	$starterDescriptor = [System.IO.File]::ReadAllText((Join-Path $firstOutput 'Plugins\MulticaOnlineStarter\MulticaOnlineStarter.uplugin')) | ConvertFrom-Json
 	$nullPluginEntries = @($starterDescriptor.Plugins | Where-Object { $_.Name -eq 'OnlineSubsystemNull' })
 	Assert-True ($nullPluginEntries.Count -eq 1 -and $nullPluginEntries[0].Enabled -eq $true) 'online starter plugin enables OnlineSubsystemNull'
-	$pluginConfig = [System.IO.File]::ReadAllText((Join-Path $firstOutput 'Config\DefaultEngine.ini'))
-	Assert-True ($pluginConfig.Contains('DefaultPlatformService=Null')) 'generated project config selects the Null provider'
+	$pluginDirectory = Join-Path $firstOutput 'Plugins\MulticaOnlineStarter'
+	$projectConfigPath = Join-Path $firstOutput 'Config\DefaultEngine.ini'
+	# The provider switch has to sit in a carrier whose file name the engine resolves to a branch.
+	# Check the name, not the bytes: a stale assertion that only grep'd the file body passed while
+	# the declared provider was thrown away by the loader (DOT-3187).
+	$projectCarrierProblem = Get-ProjectConfigCarrierProblem -Path $projectConfigPath
+	Assert-True ([string]::IsNullOrEmpty($projectCarrierProblem)) ('generated project config carrier resolves to an engine branch: ' + $projectCarrierProblem)
+	Assert-True (Test-Path -LiteralPath $projectConfigPath -PathType Leaf) 'game recipe writes the project config carrier the scaffold appends to'
+	$mismatchedCarrierProblem = Get-ProjectConfigCarrierProblem -Path (Join-Path $fixtureRoot 'MismatchedProjectCarrier\Config\Engine.ini')
+	Assert-True (-not [string]::IsNullOrEmpty($mismatchedCarrierProblem)) 'a project carrier named Engine.ini instead of DefaultEngine.ini is rejected'
+	$pluginConfigProblems = @(Get-PluginConfigCarrierProblems -PluginDirectory $pluginDirectory -PluginName 'MulticaOnlineStarter' -PlatformName 'Windows')
+	Assert-True ($pluginConfigProblems.Count -eq 0) ('online plugin ships no config file the engine would silently drop: ' + ($pluginConfigProblems -join '; '))
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $pluginDirectory 'Config\DefaultEngine.ini'))) 'online plugin does not ship Config/DefaultEngine.ini, which the engine resolves to the unknown DefaultEngine branch'
+	$pluginConfig = [System.IO.File]::ReadAllText($projectConfigPath)
+	Assert-True ($pluginConfig.Contains('DefaultPlatformService=Null')) 'generated project config carrier selects the Null provider'
 	$expectedSessionIdentifier = "eiei114.ue5-agent-template:$projectName"
 	$otherSessionIdentifier = "eiei114.ue5-agent-template:$otherProjectName"
 	Assert-True ($pluginConfig.Contains("SessionProjectIdentifier=$expectedSessionIdentifier")) 'generated project config carries the requested stable project key'
-	Assert-True (-not (Test-Path -LiteralPath (Join-Path $firstOutput 'Plugins\MulticaOnlineStarter\Config\DefaultEngine.ini'))) 'online plugin does not ship a config the engine would ignore for its own section'
-	Assert-True ($pluginConfig.Contains('GlobalDefaultGameMode') -eq $false) 'generated project config does not add a template-specific GameMode override'
+	Assert-True ($pluginConfig.Contains('GlobalDefaultGameMode') -eq $false) 'the scaffold adds no template-specific GameMode override to the project config'
+	# Negative case: a carrier named so the engine cannot resolve it must be reported. This is the
+	# defect this issue records: a body-only assertion stayed green while the declared provider was
+	# thrown away by the loader, because the file name never mapped to a branch.
+	$unresolvableCarrierRoot = Join-Path $fixtureRoot 'UnresolvableCarrierPlugin'
+	Write-FixtureJson (Join-Path $unresolvableCarrierRoot 'Config\DefaultEngine.ini') "[OnlineSubsystem]`r`nDefaultPlatformService=Null`r`n"
+	$unresolvableCarrierProblems = @(Get-PluginConfigCarrierProblems -PluginDirectory $unresolvableCarrierRoot -PluginName 'MulticaOnlineStarter' -PlatformName 'Windows')
+	Assert-True ($unresolvableCarrierProblems.Count -eq 1) 'a plugin carrier the engine cannot resolve is reported instead of passing on file content'
+	Assert-True ($unresolvableCarrierProblems[0].Contains('DefaultEngine.ini')) 'the carrier check names the file the engine drops'
+	$resolvableCarrierRoot = Join-Path $fixtureRoot 'ResolvableCarrierPlugin'
+	Write-FixtureJson (Join-Path $resolvableCarrierRoot 'Config\Engine.ini') "[OnlineSubsystem]`r`nDefaultPlatformService=Null`r`n"
+	Write-FixtureJson (Join-Path $resolvableCarrierRoot 'Config\DefaultMulticaOnlineStarter.ini') "[MulticaOnlineStarter]`r`n"
+	Write-FixtureJson (Join-Path $resolvableCarrierRoot 'Config\Windows\WindowsEngine.ini') "[OnlineSubsystem]`r`n"
+	Assert-True (@(Get-PluginConfigCarrierProblems -PluginDirectory $resolvableCarrierRoot -PluginName 'MulticaOnlineStarter' -PlatformName 'Windows').Count -eq 0) 'Config/Engine.ini, Config/Default<PluginName>.ini and Config/Windows/WindowsEngine.ini resolve to engine branches'
+	Write-Output 'PASS: plugin config carriers are checked by resolved branch name, not by file content'
 	$generatedPlayPath = Join-Path $firstOutput 'Recipe\Play.md'
 	Assert-True (Test-Path -LiteralPath $generatedPlayPath) 'game recipe has a play delta'
 	$generatedPlay = [System.IO.File]::ReadAllText($generatedPlayPath)
