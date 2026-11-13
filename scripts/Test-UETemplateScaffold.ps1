@@ -968,7 +968,7 @@ try {
 	$dirtyOutput = Join-Path (Join-Path $dirtyTemplateRoot 'Production') "${dirtyProjectName}_dirty-rejected"
 	$dirtyFailure = ''
 	try {
-		& $dirtyGenerator -Recipe 'spectator-explore' -ProjectName $dirtyProjectName -RunId 'dirty-rejected' -EngineRoot $fixtureEngine -ProjectDiff @() -SkipTemplatePublishCheck | Out-Null
+		& $dirtyGenerator -MaxPathLength 32767 -Recipe 'spectator-explore' -ProjectName $dirtyProjectName -RunId 'dirty-rejected' -EngineRoot $fixtureEngine -ProjectDiff @() -SkipTemplatePublishCheck | Out-Null
 	} catch {
 		$dirtyFailure = $_.Exception.Message
 	}
@@ -1074,7 +1074,7 @@ try {
 	$provNoRemoteDefaultOutput = Join-Path (Join-Path $provNoRemoteRoot 'Production') "${provNoRemoteName}_$testId-default"
 	$provNoRemoteFailure = ''
 	try {
-		& $provNoRemoteGenerator -Recipe 'spectator-explore' -ProjectName $provNoRemoteName -RunId "$testId-default" -EngineRoot $fixtureEngine -ProjectDiff @() | Out-Null
+		& $provNoRemoteGenerator -MaxPathLength 32767 -Recipe 'spectator-explore' -ProjectName $provNoRemoteName -RunId "$testId-default" -EngineRoot $fixtureEngine -ProjectDiff @() | Out-Null
 	} catch {
 		$provNoRemoteFailure = $_.Exception.Message
 	}
@@ -1082,7 +1082,7 @@ try {
 	Assert-True (($provNoRemoteFailure.Contains('no-remote') -or $provNoRemoteFailure.Contains('no-origin'))) 'the no-remote stop reports which source kind it saw'
 	Assert-True (-not (Test-Path -LiteralPath $provNoRemoteDefaultOutput)) 'the no-remote stop writes no project'
 	$provNoRemoteAllowedOutput = Join-Path (Join-Path $provNoRemoteRoot 'Production') "${provNoRemoteName}_$testId-allowed"
-	& $provNoRemoteGenerator -Recipe 'spectator-explore' -ProjectName $provNoRemoteName -RunId "$testId-allowed" -EngineRoot $fixtureEngine -ProjectDiff @() -AllowUnpublishedTemplate | Out-Null
+	& $provNoRemoteGenerator -MaxPathLength 32767 -Recipe 'spectator-explore' -ProjectName $provNoRemoteName -RunId "$testId-allowed" -EngineRoot $fixtureEngine -ProjectDiff @() -AllowUnpublishedTemplate | Out-Null
 	$provNoRemoteLock = Get-LockProvenance $provNoRemoteAllowedOutput
 	Assert-True ($null -ne $provNoRemoteLock.PSObject.Properties['template_repository']) 'a checkout without an origin still declares template_repository'
 	Assert-True ($null -eq $provNoRemoteLock.template_repository) 'a checkout without an origin records no repository instead of the public repository constant'
@@ -1105,14 +1105,14 @@ try {
 	$provBundleDefaultOutput = Join-Path (Join-Path $provBundleClone 'Production') "${provBundleName}_$testId-default"
 	$provBundleFailure = ''
 	try {
-		& $provBundleGenerator -Recipe 'spectator-explore' -ProjectName $provBundleName -RunId "$testId-default" -EngineRoot $fixtureEngine -ProjectDiff @() | Out-Null
+		& $provBundleGenerator -MaxPathLength 32767 -Recipe 'spectator-explore' -ProjectName $provBundleName -RunId "$testId-default" -EngineRoot $fixtureEngine -ProjectDiff @() | Out-Null
 	} catch {
 		$provBundleFailure = $_.Exception.Message
 	}
 	Assert-True ($provBundleFailure.Contains('offline hand-off file')) 'a bundle clone stops the default path because a bundle cannot establish a published commit'
 	Assert-True (-not (Test-Path -LiteralPath $provBundleDefaultOutput)) 'the bundle stop writes no project'
 	$provBundleAllowedOutput = Join-Path (Join-Path $provBundleClone 'Production') "${provBundleName}_$testId-allowed"
-	& $provBundleGenerator -Recipe 'spectator-explore' -ProjectName $provBundleName -RunId "$testId-allowed" -EngineRoot $fixtureEngine -ProjectDiff @() -AllowUnpublishedTemplate | Out-Null
+	& $provBundleGenerator -MaxPathLength 32767 -Recipe 'spectator-explore' -ProjectName $provBundleName -RunId "$testId-allowed" -EngineRoot $fixtureEngine -ProjectDiff @() -AllowUnpublishedTemplate | Out-Null
 	$provBundleLock = Get-LockProvenance $provBundleAllowedOutput
 	Assert-True ($provBundleLock.template_source_kind -ceq 'bundle') 'a bundle clone records the bundle source kind'
 	Assert-True ($provBundleLock.template_repository -ceq $provBundle) 'a bundle clone records the bundle path instead of the public repository'
@@ -2570,7 +2570,7 @@ try {
 	$cleanTreeOutput = Join-Path (Join-Path $cleanTreeRepoRoot 'Production') "${cleanTreeProjectName}_qatemplate"
 	$cleanTreeFailure = ''
 	try {
-		& $cleanTreeGenerator -Recipe 'vertical-loop' -ProjectName $cleanTreeProjectName -RunId 'qatemplate' -EngineRoot $fixtureEngine -ProjectDiff @() | Out-Null
+		& $cleanTreeGenerator -MaxPathLength 32767 -Recipe 'vertical-loop' -ProjectName $cleanTreeProjectName -RunId 'qatemplate' -EngineRoot $fixtureEngine -ProjectDiff @() | Out-Null
 	} catch {
 		$cleanTreeFailure = $_.Exception.Message
 	}
