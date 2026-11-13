@@ -4,7 +4,7 @@ Issue/run/日時/担当：
 source commitまたはsnapshot SHA：
 host/OS/UE/SDK/GPU/RAM/disk：
 指定model/effort / 保存値 / 実session / 応答 / quota観測範囲：
-writer/lease nonce・取得/解放receipt：
+writer/lease nonce・取得/解放receipt（`scripts/Lease-UETemplateProject.ps1` の Acquire出力 / Releaseが残す `LEASE_RELEASED.<runid>.json`）：
 
 | 項目 | pass/fail/unverified/non-goal | 対象版/hash・実測・証拠 |
 |---|---|---|
