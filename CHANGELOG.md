@@ -226,6 +226,18 @@ Measured on this host (Windows 10.0.26300, Windows PowerShell 5.1.26100.9711, pw
 
 移行（重要）: **既存の生成済み project は自動変換しない。** 旧 scaffold が出した `Plugins/MulticaOnlineStarter/Config/DefaultEngine.ini` は engine に読まれない（`Test-UETemplateScaffold.ps1` のcarrier 検査を `aa11370` の実 tree へ当てると 1 件で落ちる）。必要な作品は**新しい RunId で再生成**するか、project 自身の `Config/DefaultEngine.ini` に `[OnlineSubsystem] DefaultPlatformService=Null` を書いて採用理由と日付を作品の QA に残す。旧ファイルを `Config/Engine.ini` へ改名して済ませる運用は、plugin modification layer として `Engine` branch に届くかどうかを未完のまま使うため、本 PR では勧めない（実測は `-dumpiniloads` の別 receipt とする）。
 
+## Unreleased — DOT-3186
+
+- `AMulticaOnlineGameMode` の leave 経路が人数を減らしていなかった。UE の `AController::Destroyed` は `GameMode->Logout(this)` を `CleanupPlayerState()` と `UWorld::RemoveController()` **より前**に呼ぶ（engine 5.8.4 同梱 source、`Controller.cpp:595-612`）。したがって `Logout` の時点で離脱する PlayerController は world の player-controller list にまだ入り、`PlayerState` もまだ非 null であり、`GetNumPlayers()` は離脱者を数え続ける。`AMulticaOnlineGameState::SetConnectedPlayerCountFromServer` は同値で早期 return するため、replicated `ConnectedPlayerCount` は join では増えるが **leave では 1 も減らなかった**。
+- 修正方針は「離脱者を数えない」ではなく「**残る player を数える**」。`Logout` は `RefreshConnectedPlayerCount(Exiting)` を呼び、`CountConnectedPlayers(ExcludedController)` が world の player-controller list を走査して `Exiting` を**数える前に除外**する。減算ではないので、元々数えていなかった spectator-only の離脱で実 player 数を下回ることはない。述語は engine と同じ 1 本（`PlayerState` が非 null、かつ `MustSpectate()` が false）。`PostLogin` は join 済み controller をそのまま数える。
+- 基底は `AGameModeBase` のままで、`AGameMode` への変更（`MatchState`/`NumPlayers` 減算経路を招く）はしていない。deferred 再計算（timer/tick/`PlayerArray` 後追い）も採らない。`Logout` の中で正しい値を 1 回 publish する。
+- 回帰は 3 本。`Private/Tests/MulticaConnectedPlayerCountTests.cpp`（`Multica.Online.PlayerCount.Connected`）が join/leave・最後の 1 人が抜ける場合・spectator の離脱・`PlayerState` なしの controller を固定する。`scripts/Test-MulticaOnlinePlayerCountContract.ps1` は plugin の C++ を text として読み、`Logout` が `GetNumPlayers()`/`GetNumSpectators()` に戻っていないこと、`Exiting` を渡していること、減算ではなく除外であること、test が存在することを検査する（UE を起動しない）。`scripts/Test-MulticaOnlinePlayerCountContract.Tests.ps1` はその gate 自体を disposable な copy に旧形（`GetNumPlayers()` / `nullptr` / deferred recount / 減算 / test 削除）を注入して、rule 名つきで落ちることを assert する（gate が空にならないことの固定）。
+- `templates/online/MulticaOnlineStarter/README.md:44` と `docs/08-online-foundations.md:24` を実装後の挙動へ合わせ、`MulticaOnlineStarter` を 1.0.1 から **1.0.2** へ上げ、`scripts/Test-UETemplateScaffold.ps1:216` の lock assertion を追随させた（assertion は削除していない）。`scripts/Test-UETemplateScaffold.ps1` には上の gate を 1 group として実行する行を足し（旧形の plugin ではこの group で落ちる）、`.github/workflows/verify.yml` の `scaffold` job には negative suite の step を 1 つ追加した（job 数は 2 のまま）。
+
+移行: 既存の生成 project は再生成しない。`Plugins/MulticaOnlineStarter` を新 1.0.2 の内容へ差し替え（再生成する場合は新しい RunId で行う）と、`template-lock.json` の `plugins.MulticaOnlineStarter` が `1.0.2` になる。plugin 差し替えだけを行った場合、lock の値は古いままなので手で書き換えず、必要なら新 RunId で再生成して差分を確認する。
+
+Unverified Scope: 本変更で UE 5.8.4 の起動 / compile / Editor build / PIE / 2-client Null/LAN / MRQ は **一切実行していない**。`Logout` 時点の engine 呼出順は、本 host の実 install にある engine source（`Controller.cpp:595-612`、`GameModeBase.cpp:179-188`）を read-only で参照したもので、plugin の compile 成否や実 2-client の人数減算を観測したものではない。上記の test も本 host では実行しておらず（UE 非起動のため）、`Multica.Online.PlayerCount.Connected` の合否は未観測。
+
 ## Unreleased — DOT-3395
 
 - 画像列QA helperは、`FramesDirectory`またはreport親pathにjunction/symlink等のreparse pointが含まれる場合に、実効出力境界を確認できないため検査前に拒否する。reportがjunction経由で画像列へ書き込まれるのを防ぐ回帰fixtureを追加した。

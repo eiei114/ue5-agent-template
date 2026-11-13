@@ -77,6 +77,16 @@ jobs:
           ./scripts/Test-UETemplateLease.ps1
           if ($LASTEXITCODE -ne 0) { throw "Test-UETemplateLease.ps1 exited $LASTEXITCODE" }
 
+      # The player-count gate reads the online plugin's C++ as text and refuses the shape that lost
+      # the leave decrement. Its own negative cases are run separately so a gate that silently stops
+      # matching fails here instead of passing forever.
+      - name: Test-MulticaOnlinePlayerCountContract.Tests.ps1
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./scripts/Test-MulticaOnlinePlayerCountContract.Tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Test-MulticaOnlinePlayerCountContract.Tests.ps1 exited $LASTEXITCODE" }
+
   render-artifacts:
     name: render artifact inspection
     runs-on: windows-latest

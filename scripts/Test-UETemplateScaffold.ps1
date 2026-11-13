@@ -1515,6 +1515,11 @@ try {
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $missingMapOutput 'template-lock.json'))) 'the default map stop happens before the lock is written, so success is never recorded'
 	Write-Output 'PASS: a missing default map stops generation instead of reporting success'
 
+	$playerCountGate = Join-Path $PSScriptRoot 'Test-MulticaOnlinePlayerCountContract.ps1'
+	$playerCountFindings = @(& $playerCountGate -RepositoryRoot $repoRoot)
+	Assert-True ($LASTEXITCODE -eq 0) ('the online player-count contract gate passes (the Logout path excludes the leaving controller and keeps the engine predicate): ' + ($playerCountFindings -join '; '))
+	Write-Output 'PASS: online player count excludes the leaving controller and keeps the engine player predicate'
+
 	$existingOutput = $outputPaths[3]
 	[System.IO.Directory]::CreateDirectory($existingOutput) | Out-Null
 	$sentinel = Join-Path $existingOutput 'KEEP.txt'
