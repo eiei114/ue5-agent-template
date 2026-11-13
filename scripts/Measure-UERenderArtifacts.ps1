@@ -9,6 +9,14 @@ param(
 	[Parameter(Mandatory = $true)]
 	[int]$EndNumberExclusive,
 
+	# The expected index lattice. MRQ's `Output Frame Step` writes every N-th frame and its
+	# `Frame Number Offset` shifts the numbering, so the expected indices are not always contiguous.
+	# The defaults keep the previous behaviour exactly: step 1 and offset 0 is the contiguous case.
+	[ValidateRange(1, 100000)]
+	[int]$FrameStep = 1,
+
+	[int]$FrameNumberOffset = 0,
+
 	[Parameter(Mandatory = $true)]
 	[string]$ReportPath,
 
@@ -178,6 +186,9 @@ if ($StartNumber -lt 0) {
 if ($EndNumberExclusive -le $StartNumber) {
 	throw 'Invalid input: EndNumberExclusive must be greater than StartNumber. The render range is end-exclusive.'
 }
+if (($StartNumber + $FrameNumberOffset) -lt 0) {
+	throw 'Invalid input: StartNumber plus FrameNumberOffset must be 0 or greater. A frame number offset shifts the expected indices; it cannot make them negative.'
+}
 if (($ExpectedWidth -eq 0) -ne ($ExpectedHeight -eq 0)) {
 	throw 'Invalid input: ExpectedWidth and ExpectedHeight must be given together, or both omitted when the resolution is unknown.'
 }
@@ -209,9 +220,18 @@ if (-not [string]::IsNullOrWhiteSpace($reportParent) -and -not (Test-Path -Liter
 }
 
 $resolutionConfigured = ($ExpectedWidth -gt 0 -and $ExpectedHeight -gt 0)
-$expectedCount = $EndNumberExclusive - $StartNumber
+# The declared range is shifted into absolute frame numbers by FrameNumberOffset and then sampled
+# with FrameStep. A step larger than 1 therefore expects a regular lattice, not a contiguous run.
+$latticeFirst = $StartNumber + $FrameNumberOffset
+$latticeLastExclusive = $EndNumberExclusive + $FrameNumberOffset
+$expectedCount = 0
+$expectedLast = $latticeFirst - $FrameStep
 $expectedIndices = New-Object System.Collections.Generic.HashSet[int]
-for ($index = $StartNumber; $index -lt $EndNumberExclusive; $index++) { $null = $expectedIndices.Add($index) }
+for ($index = $latticeFirst; $index -lt $latticeLastExclusive; $index += $FrameStep) {
+	$null = $expectedIndices.Add($index)
+	$expectedCount++
+	$expectedLast = $index
+}
 
 $strictPattern = '^(?<index>[0-9]{' + $Digits + '})' + [System.Text.RegularExpressions.Regex]::Escape($Extension) + '$'
 $strictRegex = New-Object System.Text.RegularExpressions.Regex($strictPattern, [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)
@@ -267,6 +287,26 @@ foreach ($frame in $frameFiles) {
 $missingIndices = New-Object System.Collections.Generic.List[int]
 foreach ($expected in ($expectedIndices | Sort-Object)) {
 	if (-not $byIndex.ContainsKey($expected)) { $missingIndices.Add($expected) }
+}
+
+# A sequence that is itself a regular lattice with a different stride is not a sequence full of
+# gaps: it is a render made with a different `Output Frame Step` than the one declared here. Naming
+# the 119 "missing" indices in that case sends the reader after the wrong defect, so the lattice is
+# reported as such. Frames that merely start at an unexpected number keep the old missing/out-of-range
+# pair, because a shifted-but-contiguous run is an input mistake, not a stride change.
+$observedStride = $null
+$observedLatticeMismatch = $false
+$presentIndices = @($byIndex.Keys | Sort-Object)
+if ($presentIndices.Count -ge 2) {
+	$stride = [int]$presentIndices[1] - [int]$presentIndices[0]
+	$uniform = $stride -gt 0
+	for ($i = 1; $i -lt $presentIndices.Count; $i++) {
+		if (([int]$presentIndices[$i] - [int]$presentIndices[$i - 1]) -ne $stride) { $uniform = $false; break }
+	}
+	if ($uniform) {
+		$observedStride = $stride
+		if ($stride -ne $FrameStep) { $observedLatticeMismatch = $true }
+	}
 }
 $outOfRangeIndices = New-Object System.Collections.Generic.List[int]
 foreach ($observed in ($byIndex.Keys | Sort-Object)) {
@@ -544,11 +584,19 @@ if ($compositionState -eq 'fail') {
 	})
 }
 if ($missingIndices.Count -gt 0) {
-	$failures.Add([ordered]@{
-		category = 'missing_frames'
-		detail = "$($missingIndices.Count) expected index(es) absent from ${StartNumber}..$($EndNumberExclusive - 1)"
-		sample = (Format-IndexList -Indices $missingIndices)
-	})
+	if ($observedLatticeMismatch) {
+		$failures.Add([ordered]@{
+			category = 'index_lattice_mismatch'
+			detail = "observed indices advance by $observedStride but the declared frame step is $FrameStep; $($missingIndices.Count) declared index(es) are absent because the lattices differ, not because the sequence has gaps. Declare -FrameStep $observedStride (and the matching -FrameNumberOffset) for this sequence, or render the declared step."
+			sample = (Format-IndexList -Indices $missingIndices)
+		})
+	} else {
+		$failures.Add([ordered]@{
+			category = 'missing_frames'
+			detail = "$($missingIndices.Count) expected index(es) absent from ${latticeFirst}..$($expectedLast) (step $FrameStep)"
+			sample = (Format-IndexList -Indices $missingIndices)
+		})
+	}
 }
 if ($outOfRangeIndices.Count -gt 0) {
 	$failures.Add([ordered]@{
@@ -629,14 +677,20 @@ $report = [ordered]@{
 		start_number = $StartNumber
 		end_number_exclusive = $EndNumberExclusive
 		end_is_exclusive = $true
+		frame_step = $FrameStep
+		frame_number_offset = $FrameNumberOffset
+		index_lattice = $(if ($FrameStep -eq 1) { 'contiguous' } else { "every $FrameStep frame(s) from $latticeFirst" })
 		expected_width = $ExpectedWidth
 		expected_height = $ExpectedHeight
 		resolution_configured = $resolutionConfigured
 	}
 	expectations = [ordered]@{
 		frame_count = $expectedCount
-		first_index = $StartNumber
-		last_index = $EndNumberExclusive - 1
+		first_index = $latticeFirst
+		last_index = $expectedLast
+		frame_step = $FrameStep
+		frame_number_offset = $FrameNumberOffset
+		index_lattice = $(if ($FrameStep -eq 1) { 'contiguous' } else { "every $FrameStep frame(s)" })
 		resolution = $(if ($resolutionConfigured) { "${ExpectedWidth}x${ExpectedHeight}" } else { 'not_configured' })
 	}
 	observed = [ordered]@{
@@ -646,6 +700,12 @@ $report = [ordered]@{
 		last_index = $(if ($inRangeFrames.Count -gt 0) { [int]$inRangeFrames[-1].index } else { $null })
 		total_bytes = [long](($inRangeFrames | ForEach-Object { [long]$_.file.Length } | Measure-Object -Sum).Sum)
 		nested_entries = @($nestedEntries)
+	}
+	index_lattice = [ordered]@{
+		declared_step = $FrameStep
+		declared_offset = $FrameNumberOffset
+		observed_stride = $(if ($null -eq $observedStride) { 'not_a_uniform_lattice' } else { $observedStride })
+		mismatch = $observedLatticeMismatch
 	}
 	checks = [ordered]@{
 		composition = $compositionState

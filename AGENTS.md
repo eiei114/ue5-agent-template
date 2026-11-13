@@ -2,16 +2,19 @@
 
 ## 先に読む
 
-README → docs/01-start → 対象工程のdocs。現行Issue・owner指示・ホストの既存AGENTSも読み、矛盾を隠さない。文書は権限付与ではない。
+README → docs/01-start → 対象工程のdocs。変更理由・移行手順・未検証範囲は`CHANGELOG.md`にあり、同じ順路で読む（`README.md`の「入口」表からも名指ししている）。現行Issue・owner指示・ホストの既存AGENTSも読み、矛盾を隠さない。文書は権限付与ではない。
 
 ## 最短ループ
 
 1. Issueの納品種別（映像/実行版/ソース）と非目標、既存writerを確認。
 2. online Windows Pi優先。OS/GPU/空き容量/既存UE/SDK/モデル・effort/利用枠/active runsを現地照合。Mac miniでbuild/render/downloadしない。
-3. 新規 `Production/<Name>_<runid>/` を排他的作成。既存なら停止。既存project再開は所有権照合後、`scripts/Lease-UETemplateProject.ps1 -Action Acquire` でLEASE.jsonをCreateNew相当で取得し、`-Action Release` で解放する（手作業の`Set-Content`/`New-Item -Force`を使わない）。照合は書込みをしない `-Action Test`。
+3. run台帳 `Production/.runs/run_<runid>/` を排他的mkdirし、preflight（`templates/QA.md`を複製した`preflight.md`）と`LEASE.json`（CreateNew相当）をその中へ書く。**生成先 `Production/<Name>_<runid>/` はlease工程で作らない**（ここを先に作ると手順4の生成が停止する）。生成先が未使用であることだけを確認する。
 4. 最初は追加素材なしの立方体・床・光・カメラ。小さいpreview→目視→調整→本番。UEテンプレートは当該hostの正規既存インストールから生成。
 5. 映像はフレーム・全編・継ぎ目・音を検査。実行版はShipping梱包後、別フォルダ展開から起動・操作・5分測定。
 6. CREDITS / QA / manifest / SHAを**同じ最終版**へ固定して納品。見た目未検品や旧版ZIPは完成でない。
+7. 自分のrun所有process（範囲は `docs/01-start.md` の「run所有プロセスの範囲」）を同期回収し、自分のleaseだけ解放。共有Chromeは維持指示と所有権に従い触らない。回収はsnapshotの`(process_id, creation_utc_ticks)`で行い、停止対象一覧を実行前に出す。
+
+6. CREDITS / QA / manifest / SHA と`README.md`（操作表）を**同じ最終版**へ固定して納品。見た目未検品や旧版ZIPは完成でない。納品セットの正本と各項目の雛形は`docs/06-delivery.md`の表。
 7. 自分のrun所有processを同期回収し、自分のleaseだけ解放。共有Chromeは維持指示と所有権に従い触らない。
 
 ## セッション切断時も復旧・続行する
@@ -28,30 +31,59 @@ README → docs/01-start → 対象工程のdocs。現行Issue・owner指示・�
 - RoomSevenの稼働writer/Content/素材/Audio/downloadsに接触・複製しない。運用知識は本書に抽出済み。必要な既存tool mapの限定読取はそのhostで許可がある場合だけ。
 - 新Claude/Anthropic割当は既定禁止。docs/02-runtimeのOpus例は過去案件固有の許可記録であり、汎用テンプレートの既定モデルにしない。
 - 購入、credit消費、追加API billing、新認証・資格情報移送、GitHub作成/push/public/SNS/配布はそれぞれの現行許可を確認。既存案件の2credit許可を再利用しない。
+- GitHubへpush/publicする前に `./scripts/Test-UETemplatePublishSurface.ps1 -RepoRoot <checkout>` を実行し、exit 0 と `SUMMARY: ... fail=0` を確認する。`FAIL:` は1行1件ずつ潰し、exit 2（worktreeでない・indexが空）は通過扱いにしない。`.gitignore` は未追跡物しか止めないので、この監査の代用にしない（詳細と3つのFALSE PASSの実測は `docs/06-delivery.md`）。
 - secrets、cookie、token、署名URL、auth.json、環境変数全体、生transcriptを読取/出力/commitしない。
-- 既存writerへ割込まない。名前指定kill、leaseの時刻だけでの強制解除、他人のdirty差分のstash/restore/削除は禁止。
-- run終了後に残すbuild/renderは不可。完了・安全停止を当該turn内で回収。
+- 既存writerへ割込まない。名前指定kill（`Stop-Process -Name` / `taskkill /IM` / `Get-Process <name> | Stop-Process`）、leaseの時刻だけでの強制解除、他人のdirty差分のstash/restore/削除は禁止。停止は `scripts/Stop-UETemplateRunProcesses.ps1` のidentity指定（`process_id` + `creation_utc_ticks`）だけを使う。
+- run終了後に残すbuild/renderは不可。完了・安全停止を当該turn内で回収。回収結果（停止対象件数・停止件数・残存件数・残存の帰属不明件数・判定）は `templates/QA.md` に記録し、空欄のまま納品しない。PIDの生存だけを根拠にleaseを`free`と言わず、`unknown`を`free`に読み替えない。
 - `completed` は成果完成でない。未検証はUnverified、owner受入前はDoneにしない。
 
 ## フォルダ
 
 ```text
-Production/<Name>_<runid>/
-  <ProjectFile>.uproject / Config/ / Content/ / Source/ [Plugins/]   # materialize_projectなら<Name>、それ以外は<EngineTemplate>
-  Art/                 # 許可済み取得物。Gitテンプレートへ入れない
-  Tools/               # 当該project用。秘密なし
-  Out/run_<runid>/
-    preview/ frames/ final/ staging/ extracted-check/ evidence/
-    QA.md CREDITS.md DELIVERY.json SHA256SUMS.txt
-  LEASE.json           # active所有者のみ。`scripts/Lease-UETemplateProject.ps1` が管理。Git外
+Production/
+  .runs/run_<runid>/        # 生成前の台帳。Git外。生成先projectの外にある
+    preflight.md           # templates/QA.md の複製。生成後はproject内のQA.mdへ移す
+    LEASE.json             # active所有者のみ。CreateNew相当。Git外
+  <Name>_<runid>/          # generatorが排他的mkdirする生成先。手順3で先に作らない
+    <ProjectFile>.uproject / Config/ / Content/ / Source/ [Plugins/]   # materialize_projectなら<Name>、それ以外は<EngineTemplate>
+    Art/                 # 許可済み取得物。Gitテンプレートへ入れない
+    Tools/               # 当該project用。秘密なし
+    Out/run_<runid>/
+      preview/ frames/ final/ staging/ extracted-check/ evidence/
+      README.md QA.md CREDITS.md DELIVERY.json SHA256SUMS.txt
 ```
+
+preflightとleaseの記録先は`Production/.runs/run_<runid>/`のみ。生成先`Production/<Name>_<runid>/`の内側（`Out/`・`LEASE.json`）に先行して書くと、generatorの排他的mkdirが既存扱いで停止する。生成後にpreflightの内容は`Out/run_<runid>/QA.md`へ移し、leaseの解放記録も台帳dirに残す。
+
+`Out/run_<runid>/CREDITS.md`は2階層上の`Content/`（作品のasset本体）の出所を説明する。監査は`scripts/Measure-UECreditsInventory.ps1`に**納品dirとproject rootのどちらを渡しても同じ結論**になること（片方だけの実行は証拠にならない）。engine同梱contentは`Content/`の先頭ディレクトリ単位で`出所区分 (origin)`と`同梱形態 (bundle)`を別行に書く（契約は`templates/CREDITS.md`、記入の正本は`template-lock.json`の`shared_content_packs`）。
 
 project identityの契約は1つだけ。`scripts/New-UETemplateScaffold.ps1`はインストール済みUE公式templateから生成し、**projectファイル名・`Modules[].Name`・`Source/<Module>`は常に互いに一致**していなければならない。`EngineAssociation`は`Engine/Build/Build.version`から導いた値（例`5.8`）を必ず書き込む。
 
-- `materialize_project: true`のrecipe（`third-person-game`）は、template自身の`Config/TemplateDefs.ini`をUEウィザードと同じ規則で適用するため、`<Name>.uproject` / `Source/<Name>` / `Modules[].Name = <Name>`になる。
+
+
+- `materialize_project: true`のrecipe（`third-person-game`）は、template自身の`Config/TemplateDefs.ini`のうち実装している7キー（`FoldersToIgnore` / `FilesToIgnore` / `FolderRenames` / `FilenameReplacements` / `ReplacementsInFiles` / `SharedContentPacks` / `EditDetailLevelPreference`）を適用するので、`<Name>.uproject` / `Source/<Name>` / `Modules[].Name = <Name>`になる。ファイル名のrenameは`FilenameReplacements`、本文の置換は`ReplacementsInFiles`で別の`Extensions`を持つ。`From` / `To` / `bCaseSensitive`はtupleごとに使い、`%TEMPLATENAME_UPPERCASE%`等のtokenも展開する。共有packの探索はmountごとの`DetailLevels`を優先する。実装していないキー（`LocalizedDisplayNames` / `Categories` / `Variants`等のwizard metadata）は**警告して継続**し、適用/未適用キーを`template-lock.json`の`template_defs`に記録する。"UEウィザードと同じ"とは書かない（公式文書にschemaが無く、engine実物との照合も限定的なので、実装範囲を列挙して示す）。
 - それ以外のrecipe（`spectator-explore` / `vertical-loop`）は生コピーするため、template名（`TP_FirstPerson` / `TP_BlankBP`）がそのまま残る。ここで`.uproject`だけrenameすると`Source/**/*.Build.cs`と食い違う。
 - renameを適用しない生コピー経路でも、template自身の`Config/TemplateDefs.ini`は読む。`FoldersToIgnore` / `FilesToIgnore`で`Media/`や`Config/TemplateDefs.ini`を出力に残さず、`SharedContentPacks`を`Content/<Mount>`へ展開する（`spectator-explore`なら`Characters` / `LevelPrototyping` / `Input` / `Weapons`）。既定mapを開くのに必要なpackを落として成功を名乗らない。展開結果は`template-lock.json`の`shared_content_packs`で確認できる。
 
-generatorはコピー前にdescriptorと`Source/`を照合し、既知パターンに一致しなければ**推測で続行せず停止**して未一致pathを列挙する。コピー後にもコピー物同士で同じ照合を行い、食い違えばdescriptorを書き換えずに停止する。生成後に`.uproject`を手でrenameしない。identityは`template-lock.json`の`identity`（`project_file` / `project_modules` / `engine_association`、`schema_version: 2`）に記録され、そこで確認できる。
+generatorはコピー前にdescriptorと`Source/`を照合し、既知パターンに一致しなければ**推測で続行せず停止**して未一致pathを列挙する。コピー後にもコピー物同士で同じ照合を行い、食い違えばdescriptorを書き換えずに停止する。生成後に`.uproject`を手でrenameしない。identityは`template-lock.json`の`identity`（`project_file` / `project_modules` / `engine_association`、`schema_version: 5`）に記録され、そこで確認できる。
+
+engine build identityも同じ規則でlockに載る。`engine_version`は`Build.version`の3つの版fieldが全て数値であることが前提で、欠落・非数値なら生成は停止する。`engine_changelist`はUEの導出規則（`Changelist`と`CompatibleChangelist`が両方非0なら後者、さもなくば前者）で求めた値で、生値`engine_changelist_raw`・`engine_compatible_changelist`・`engine_is_licensee_version`・`engine_is_promoted_build`・`engine_branch_name`を併記する。**エンジンが書いていない値は`null`**で、`0`や空文字を「不明」の代用にしない。plugin版も`.uplugin`が未設定なら`null`。lockを比べるときはbyteやsha256ではなくparseしたJSONのfield比較を使う（`ConvertTo-Json`の整形がshell間で異なるため）。
+
+template provenanceも`template-lock.json`に残る。`template_repository`は生成に使ったcheckoutの実測clone元（定数ではない。remote無しなら`null`）、`template_source_kind`は`remote` / `local-path` / `bundle` / `no-remote` / `no-origin`、`template_commit_published`は「そのSHAをそのrepoから取得できることを実測したか」で`true` / `false` / `null`（**`null`は未検査**）。既定の生成は`true`でなければ停止する。未pushやbundleで通す場合は`-AllowUnpublishedTemplate`（実測の`false`/`null`をlockに残す）または`-SkipTemplatePublishCheck`（probeせず`null`）を明示し、そのlockを**第三者へ渡す前に**記録SHAを配信可能なrepoへpushして新RunIdで再生成する。
+
+plugin identityも同じgeneratorが保証する。`template-lock.json`の`plugins`は生成`.uproject`の`Plugins`全entryを`{ version, source, enabled_in_project }`で持ち、`Enabled: true`のpluginはコピー**前**に`.uplugin`の実在を確認する。当該Engine installに存在しなければ出力directoryを作らずに停止し、plugin名と探索pathを列挙する（存在しないpluginを有効化したままexit 0で「開けないproject」を出さない）。版は`.uplugin`の`VersionName`（空なら`Version`）を写し、読めない場合はJSON `null`を残して推測しない。
+
+## 生成の公開と残骸の扱い
+
+- 生成物は`Production/.stage-<runid>-<nonce>/`に作り、**全部できた後に単一renameで`Production/<Name>_<runid>/`へ公開する**。`template-lock.json`は最後に書く完成マーカーであり、これが無い`Production/<Name>_<runid>/`は未完成として扱う。
+- 失敗したrunは**自分のstagingだけ**を削除して停止する。既存の公開済projectには触れない。失敗は`Production/<Name>_<runid>/`を作らないので、同じ`Name`/`RunId`での再実行を恒久的にブロックしない。
+- 公開済パスに`template-lock.json`が無い残骸は、**そのrunの生成が失敗終端していることを確認できた場合に限り**削除候補になる。他のrunの出力・他人のstagingは消さない。判断できない場合は`AGENTS.md:11`の「既存なら停止」を優先して停止し、確認した内容をQAへ記録する。
+- 削除を自動化しない。残骸の判断はwriter/人間に残す。
+
+generatorはコピー前にdescriptorと`Source/`を照合し、既知パターンに一致しなければ**推測で続行せず停止**して未一致pathを列挙する。コピー後にもコピー物同士で同じ照合を行い、食い違えばdescriptorを書き換えずに停止する。生成後に`.uproject`を手でrenameしない。identityは`template-lock.json`の`identity`（`project_file` / `project_modules` / `engine_association`）と`default_game_ini_identity`（`section` / `project_id` / `project_name` / `normalized_from_section` / `created_section`、`schema_version: 5`）に記録され、そこで確認できる。
+
+`Config/DefaultGame.ini`の`ProjectID`/`ProjectName`はengineが読む`[/Script/EngineSettings.GeneralProjectSettings]`配下にだけ置く。templateが短い`[ProjectSettings]` headerで持っている場合は長い名前に移し、identity blockが無いtemplateではセクションごと作る。生コピーrecipeもtemplateの`ProjectID`を引き継がず、生成project名から導いた自分の`ProjectID`を持つ。どのrecipeでも同じ短いheaderやtemplate既定の`ProjectName`が残ったままは完了にしない。
 
 旧版は上書きしない。Out/_v1のような旧運用よりrun別の分離を推奨。Outに置いただけで納品とは呼ばない。
+
+lease取得・照合・解放は `scripts/Lease-UETemplateProject.ps1` の `Acquire` / `Test` / `Release`。取得後に `scripts/Start-UETemplateRunProcessSnapshot.ps1` で帰属snapshotを保存する。新規生成の台帳は `Production/.runs/run_<runid>/`、生成先projectは事前に作らない。

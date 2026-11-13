@@ -14,7 +14,12 @@ asset. It is not an EOS/Steam-ready or internet-NAT-tested product.
    `MovieRenderPipeline` in the copied `.uproject`.
 2. Open the generated `TP_FirstPerson.uproject` with the exact Engine version
    in `template-lock.json`; allow the normal project-module build. Do not install
-   or download an engine/plugin to make the test pass.
+   or download an engine/plugin to make the test pass. The plugin ships the
+   `IMPLEMENT_MODULE` entry point for its declared module
+   (`Source/MulticaOnlineStarter/Private/MulticaOnlineStarter.cpp`); UE builds the
+   module against a forced `IMPLEMENT_MODULE_MulticaOnlineStarter` reference, so a
+   generated project copied without that file fails at build or plugin load, not
+   because of the project's own C++.
 3. Use the generated project map or create a new map. Place `PlayerStart`
    actors and select `AMulticaOnlineGameMode` (or a Blueprint child) for that
    map. Set the intended project Pawn on that mode; the plugin deliberately
@@ -41,7 +46,15 @@ project file by hand. Renaming only the file leaves `Modules[].Name` pointing at
 matches the `identity.project_file` its own lock recorded.
 
 `AMulticaOnlineGameMode` uses UE's server-owned default spawn/restart flow;
-server-side `PostLogin`/`Logout` update the replicated player count. Bind the
+server-side `PostLogin`/`Logout` update the replicated player count. `PostLogin`
+counts the players already registered in the world. `Logout` counts the players
+that remain with the departing controller excluded: UE calls `Logout` from
+`AController::Destroyed` before it removes the controller from the world's
+controller list and before `CleanupPlayerState`, so a count taken at that moment
+still contains the player who is leaving and the replicated value would never
+fall. Both paths apply one predicate: a controller counts only while it owns a
+`PlayerState` and is not spectator-only. A leaving spectator is skipped rather
+than subtracted, so it cannot reduce the real player count. Bind the
 GameState delegates to observe replicated changes. Configure the mode and its
 project-specific Pawn, then add a map with actual `PlayerStart` actors before
 claiming a spawn test. The generated project config selects Null as the session

@@ -30,9 +30,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# The record contract (docs/01-start.md, "leaseプロトコル"): exactly these fields, in this order.
+# The record contract (docs/01-start.md, "leaseプロトコル"): exactly these fields, in this order,
+# plus the optional attribution reference `process_snapshot` that DOT-3225 appends after the run
+# started. Acquire still writes the 8 required fields only, so a fresh record stays byte-comparable.
 $leaseFileName = 'LEASE.json'
 $leaseFields = @('run_id', 'issue_id', 'host', 'project_realpath', 'acquired_utc', 'nonce', 'writer_phase', 'pid')
+$optionalLeaseFields = @('process_snapshot')
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 
 function Get-FullPath([string]$Path, [string]$Label) {
@@ -84,9 +87,18 @@ function Read-LeaseRecord([string]$Path) {
 			throw "The lease record is missing the '$field' field: $Path"
 		}
 	}
-	$extraFields = @($record.PSObject.Properties | Where-Object { $leaseFields -notcontains $_.Name } | ForEach-Object { $_.Name })
+	$extraFields = @($record.PSObject.Properties | Where-Object { ($leaseFields -notcontains $_.Name) -and ($optionalLeaseFields -notcontains $_.Name) } | ForEach-Object { $_.Name })
 	if ($extraFields.Count -gt 0) {
 		throw ("The lease record has fields that docs/01-start.md does not define ({0}): update the doc contract together with the script: {1}" -f ($extraFields -join ', '), $Path)
+	}
+	# process_snapshot is optional (a lease taken before the run captured its process table has none),
+	# but when it is present it must still point at a snapshot and carry its hash, otherwise the
+	# attribution evidence the process-cleanup scripts rely on would be unusable.
+	if ($null -ne $record.PSObject.Properties['process_snapshot']) {
+		$snapshot = $record.process_snapshot
+		if ($null -eq $snapshot -or [string]::IsNullOrWhiteSpace([string]$snapshot.path) -or [string]::IsNullOrWhiteSpace([string]$snapshot.sha256)) {
+			throw "The lease record's process_snapshot needs a path and a sha256: $Path"
+		}
 	}
 	foreach ($field in @('run_id', 'issue_id', 'host', 'project_realpath', 'acquired_utc', 'nonce', 'writer_phase')) {
 		if ([string]::IsNullOrWhiteSpace([string]$record.$field)) { throw "The lease record has an empty '$field' field: $Path" }

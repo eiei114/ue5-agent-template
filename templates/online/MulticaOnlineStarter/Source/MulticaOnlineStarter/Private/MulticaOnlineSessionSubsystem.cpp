@@ -9,6 +9,7 @@
 #include "OnlineSubsystemUtils.h"
 #include "TimerManager.h"
 #include "MulticaOnlineDeferredDestroyCleanup.h"
+#include "MulticaOnlineDeferredSessionCleanup.h"
 
 namespace
 {
@@ -21,44 +22,46 @@ namespace
 		return World && Utils ? IOnlineSubsystem::Get(Utils->GetOnlineIdentifier(World)) : nullptr;
 	}
 
-	void RegisterDeferredCreateCleanup(const IOnlineSessionPtr& SessionInterface)
+	TSharedRef<FDeferredCreateSessionCleanupOperations> MakeCreateCleanupOperations(
+		const IOnlineSessionPtr& SessionInterface)
 	{
 		const IOnlineSessionPtr SessionForCleanup = SessionInterface;
-		const TSharedRef<FDelegateHandle> CleanupHandle = MakeShared<FDelegateHandle>();
-		*CleanupHandle = SessionForCleanup->AddOnCreateSessionCompleteDelegate_Handle(
-			FOnCreateSessionCompleteDelegate::CreateLambda(
-				[SessionForCleanup, CleanupHandle](FName SessionName, const bool bWasSuccessful)
-				{
-					if (SessionName != GameSessionName)
-					{
-						return;
-					}
-					SessionForCleanup->ClearOnCreateSessionCompleteDelegate_Handle(*CleanupHandle);
-					if (bWasSuccessful)
-					{
-						SessionForCleanup->DestroySession(SessionName);
-					}
-				}));
+		TSharedRef<FDeferredCreateSessionCleanupOperations> Operations =
+			MakeShared<FDeferredCreateSessionCleanupOperations>();
+		Operations->AddOnCreateComplete = [SessionForCleanup](FOnCreateSessionCompleteDelegate Delegate)
+		{
+			return SessionForCleanup->AddOnCreateSessionCompleteDelegate_Handle(MoveTemp(Delegate));
+		};
+		Operations->ClearOnCreateComplete = [SessionForCleanup](FDelegateHandle Handle)
+		{
+			SessionForCleanup->ClearOnCreateSessionCompleteDelegate_Handle(Handle);
+		};
+		Operations->DestroySession = [SessionForCleanup](const FName SessionName)
+		{
+			return SessionForCleanup->DestroySession(SessionName);
+		};
+		return Operations;
 	}
 
-	void RegisterDeferredJoinCleanup(const IOnlineSessionPtr& SessionInterface)
+	TSharedRef<FDeferredJoinSessionCleanupOperations> MakeJoinCleanupOperations(
+		const IOnlineSessionPtr& SessionInterface)
 	{
 		const IOnlineSessionPtr SessionForCleanup = SessionInterface;
-		const TSharedRef<FDelegateHandle> CleanupHandle = MakeShared<FDelegateHandle>();
-		*CleanupHandle = SessionForCleanup->AddOnJoinSessionCompleteDelegate_Handle(
-			FOnJoinSessionCompleteDelegate::CreateLambda(
-				[SessionForCleanup, CleanupHandle](FName SessionName, const EOnJoinSessionCompleteResult::Type Result)
-				{
-					if (SessionName != GameSessionName)
-					{
-						return;
-					}
-					SessionForCleanup->ClearOnJoinSessionCompleteDelegate_Handle(*CleanupHandle);
-					if (Result == EOnJoinSessionCompleteResult::Success)
-					{
-						SessionForCleanup->DestroySession(SessionName);
-					}
-				}));
+		TSharedRef<FDeferredJoinSessionCleanupOperations> Operations =
+			MakeShared<FDeferredJoinSessionCleanupOperations>();
+		Operations->AddOnJoinComplete = [SessionForCleanup](FOnJoinSessionCompleteDelegate Delegate)
+		{
+			return SessionForCleanup->AddOnJoinSessionCompleteDelegate_Handle(MoveTemp(Delegate));
+		};
+		Operations->ClearOnJoinComplete = [SessionForCleanup](FDelegateHandle Handle)
+		{
+			SessionForCleanup->ClearOnJoinSessionCompleteDelegate_Handle(Handle);
+		};
+		Operations->DestroySession = [SessionForCleanup](const FName SessionName)
+		{
+			return SessionForCleanup->DestroySession(SessionName);
+		};
+		return Operations;
 	}
 
 	TSharedRef<FDeferredDestroySessionCleanupOperations> MakeDestroyCleanupOperations(
@@ -110,13 +113,13 @@ void UMulticaOnlineSessionSubsystem::Deinitialize()
 		{
 			SessionInterface->ClearOnCreateSessionCompleteDelegate_Handle(CreateHandle);
 			CreateHandle.Reset();
-			RegisterDeferredCreateCleanup(SessionInterface);
+			RegisterDeferredCreateSessionCleanup(MakeCreateCleanupOperations(SessionInterface), GameSessionName);
 		}
 		if (ActiveOperation == EOperation::Join && JoinHandle.IsValid())
 		{
 			SessionInterface->ClearOnJoinSessionCompleteDelegate_Handle(JoinHandle);
 			JoinHandle.Reset();
-			RegisterDeferredJoinCleanup(SessionInterface);
+			RegisterDeferredJoinSessionCleanup(MakeJoinCleanupOperations(SessionInterface), GameSessionName);
 		}
 		if (CreateHandle.IsValid()) SessionInterface->ClearOnCreateSessionCompleteDelegate_Handle(CreateHandle);
 		if (FindHandle.IsValid()) SessionInterface->ClearOnFindSessionsCompleteDelegate_Handle(FindHandle);

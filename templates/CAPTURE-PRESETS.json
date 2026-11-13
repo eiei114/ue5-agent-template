@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "description": "The single definition of the capture presets. docs/05-qa.md, templates/QA.md and the scripts derive every number from this file; do not restate the values in prose or in test code.",
+  "contract": {
+    "frame_count_rule": "frame_count = fps x duration_seconds, and must be a whole number",
+    "range_rule": "image index range is start_number inclusive to start_number + frame_count exclusive",
+    "frame_count_field": "not allowed in a preset; the frame count is derived, so a second authoritative value cannot exist",
+    "edit_rule": "change a preset here and the plan, the inspection and the documentation follow; never hand-edit a number in the docs"
+  },
+  "presets": [
+    {
+      "name": "vertical",
+      "use": "縦動画・ループ",
+      "width": 1080,
+      "height": 1920,
+      "fps": 30,
+      "duration_seconds": 8,
+      "start_number": 0,
+      "digits": 6,
+      "extension": ".png",
+      "codec": "h264",
+      "pix_fmt": "yuv420p",
+      "crf": 18
+    },
+    {
+      "name": "landscape",
+      "use": "横動画・10秒尺",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "duration_seconds": 10,
+      "start_number": 0,
+      "digits": 6,
+      "extension": ".png",
+      "codec": "h264",
+      "pix_fmt": "yuv420p",
+      "crf": 18
+    }
+  ]
+}

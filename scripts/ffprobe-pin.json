@@ -1,0 +1,18 @@
+{
+  "declared_at": "2026-11-13",
+  "issue": "DOT-3404",
+  "purpose": "CI decoder for scripts/Test-UERenderArtifacts.ps1 and scripts/Measure-UERenderArtifacts.ps1; not a repo or artwork dependency.",
+  "version": "8.1.2",
+  "publisher": "GyanD/codexffmpeg (gyan.dev builds)",
+  "license": "GPL-3.0-or-later (ffmpeg essentials build). Used only inside CI to decode test fixtures; the binary is never vendored into the template, a Production/ folder or a delivered artifact.",
+  "archive": {
+    "url": "https://github.com/GyanD/codexffmpeg/releases/download/8.1.2/ffmpeg-8.1.2-essentials_build.zip",
+    "sha256": "db580001caa24ac104c8cb856cd113a87b0a443f7bdf47d8c12b1d740584a2ec",
+    "entry": "ffmpeg-8.1.2-essentials_build/bin/ffprobe.exe"
+  },
+  "ffprobe": {
+    "name": "ffprobe.exe",
+    "sha256": "b49ccc7c6547b141ad5a2f6ec69cc04323d7133d7704d70b331b904c63eecb07",
+    "version_line_prefix": "ffprobe version 8.1.2-"
+  }
+}
