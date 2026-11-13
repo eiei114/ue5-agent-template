@@ -405,9 +405,9 @@ function Copy-TemplateTree {
 	if ($Materialize) {
 		# Blueprints in the template Content were saved against /Script/<TemplateName>.
 		$engineIni = Join-Path $Destination 'Config\DefaultEngine.ini'
-		[System.IO.File]::AppendAllText($engineIni, [Environment]::NewLine + '[CoreRedirects]' + [Environment]::NewLine + ('+PackageRedirects=(OldName="/Script/{0}",NewName="/Script/{1}")' -f $TemplateName, $Name) + [Environment]::NewLine)
         $entries = @($classRenames | Sort-Object OldClassName | ForEach-Object { '+ActiveClassRedirects=(OldClassName="{0}",NewClassName="{1}")' -f $_.OldClassName,$_.NewClassName })
         Add-IniSectionEntries $engineIni '[/Script/Engine.Engine]' $entries
+		[System.IO.File]::AppendAllText($engineIni, [Environment]::NewLine + '[CoreRedirects]' + [Environment]::NewLine + ('+PackageRedirects=(OldName="/Script/{0}",NewName="/Script/{1}")' -f $TemplateName, $Name) + [Environment]::NewLine)
 
 	}
 	return [pscustomobject]@{
