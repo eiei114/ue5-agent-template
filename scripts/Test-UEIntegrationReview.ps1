@@ -111,3 +111,6 @@ try {
     if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force }
 }
 Write-Output 'INTEGRATION REVIEW SUITE PASSED'
+# Negative child-process probes deliberately leave LASTEXITCODE=1. Return an explicit
+# success code when invoked in the same PowerShell process by CI, not only via -File.
+exit 0
