@@ -2398,6 +2398,7 @@ try {
 	Write-FixtureJson (Join-Path $wsTemplateRoot 'Config\TemplateDefs.ini') (@(
 		'[/Script/GameProjectGeneration.TemplateProjectDefs]',
 		'FolderRenames=(From="Source/%TEMPLATENAME%",To="Source/%PROJECTNAME%")',
+		'FilenameReplacements=(Extensions=("cs"),From="%TEMPLATENAME%",To="%PROJECTNAME%",bCaseSensitive=false)',
 		'ReplacementsInFiles=(Extensions=("cs"),From="%TEMPLATENAME%",To="%PROJECTNAME%",bCaseSensitive=false)',
 		'FolderRenames=(From="Content/WriteScope",To="Content2/%PROJECTNAME%")'
 	) -join "`r`n")
@@ -2468,7 +2469,8 @@ try {
 	$wsCollisionFailure = Get-GeneratorFailure { & $wsInvoke 'ws-f' }
 	Assert-True ($wsCollisionFailure.Contains('Materialized template paths collide: Content/Characters/SK.uasset')) 'a shared pack file colliding with a template file stops the generator instead of overwriting'
 	$wsCollisionOutput = Join-Path $wsProduction "${wsProjectName}_ws-f"
-	Assert-True ([System.IO.File]::ReadAllText((Join-Path $wsCollisionOutput 'Content\Characters\SK.uasset')) -ceq 'TEMPLATE-OWNED-BYTES') 'the template-owned file keeps its own bytes after a pack collision'
+	Assert-True (-not (Test-Path -LiteralPath $wsCollisionOutput)) 'a pack collision publishes no partial project'
+	Assert-True ([System.IO.File]::ReadAllText((Join-Path $wsTemplateRoot 'Content\Characters\SK.uasset')) -ceq 'TEMPLATE-OWNED-BYTES') 'the template-owned source file keeps its own bytes after a pack collision'
 	Write-Output 'PASS: shared content pack colliding with a template file is rejected instead of overwriting it'
 
 	$existingOutput = $outputPaths[3]

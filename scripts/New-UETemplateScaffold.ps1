@@ -324,6 +324,7 @@ function Resolve-SharedContentPack([string]$EngineTemplateRoot, $Pack, [string]$
 	$candidates = @($declared + $fallBack | Select-Object -Unique)
 	foreach ($level in $candidates) {
 		$packContent = Join-Path $EngineTemplateRoot ("TemplateResources\{0}\{1}\Content" -f $level, $Pack.Mount)
+		$packContent = Resolve-ContainedPath -Root (Join-Path $EngineTemplateRoot ("TemplateResources\{0}" -f $level)) -Candidate $packContent -Label 'SharedContentPacks source mount'
 		if (Test-Path -LiteralPath $packContent -PathType Container) {
 			return [pscustomobject]@{
 				Mount               = [string]$Pack.Mount
@@ -374,7 +375,7 @@ function Copy-TemplateTree {
         $target = $projected.Target
         $isText = $projected.IsText
         $extension = $projected.Extension
-		$targetPath = Resolve-ContainedPath $Destination (Join-Path $Destination $target.Replace('/', '\')) 'template file target'
+		$targetPath = Resolve-ContainedPath $Destination (Join-Path $Destination $target.Replace('/', '\')) 'FolderRenames / FilenameReplacements template target'
 		[System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($targetPath)) | Out-Null
 		if (Test-Path -LiteralPath $targetPath) { throw "Template copy paths collide: $target" }
 		if ($isText) { Copy-TextWithReplacement -From $file.FullName -To $targetPath -Rules $defs.ContentRules -Extension $extension }
@@ -396,7 +397,7 @@ function Copy-TemplateTree {
         foreach ($entry in Get-ChildItem -LiteralPath $resolved.Path -File -Recurse -Force) {
             $relativeEntry = $entry.FullName.Substring($resolved.Path.TrimEnd('\', '/').Length + 1)
             $entryTarget = Resolve-ContainedPath $Destination (Join-Path $packTarget $relativeEntry) 'shared content file'
-            if (Test-Path -LiteralPath $entryTarget) { throw "Shared content pack paths collide: $entryTarget" }
+            if (Test-Path -LiteralPath $entryTarget) { throw ("Materialized template paths collide: Content/{0}/{1}" -f $resolved.Mount, $relativeEntry.Replace('\','/')) }
             [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($entryTarget)) | Out-Null
             Copy-Item -LiteralPath $entry.FullName -Destination $entryTarget
         }
