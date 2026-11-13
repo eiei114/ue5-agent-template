@@ -1,6 +1,8 @@
 # 三人称ゲーム（プレイ）
 
-- 公式 `TP_ThirdPerson`（C++、全variant同梱）を、テンプレート自身の `Config/TemplateDefs.ini` の置換規則で `<ProjectName>.uproject` / `Source/<ProjectName>` へ実体化する。UEウィザードと同じく共有content pack（LevelPrototyping / Characters / Input）も `Content/` へ入る。
+- 公式 `TP_ThirdPerson`（C++、全variant同梱）を、テンプレート自身の `Config/TemplateDefs.ini` の置換規則で `<ProjectName>.uproject` / `Source/<ProjectName>` へ実体化する。共有content pack（LevelPrototyping / Characters / Input）も `Content/` へ入る。
+- 適用するのは `FoldersToIgnore` / `FilesToIgnore` / `FolderRenames` / `ReplacementsInFiles` / `SharedContentPacks` だけで、UEウィザードの全規則ではない（`FilenameReplacements` や per-mount `DetailLevels` は未実装。Epic公式docsに `TemplateDefs.ini` のschemaは無い）。
+- `FolderRenames` / `SharedContentPacks` が出力ディレクトリ（`Production/<Name>_<runid>/`）の外を指す場合、generatorは**書き込み前に停止**する。生成先の外に残骸は残らない。共有packがテンプレート側の同名fileを持つ場合も、上書きせず停止する。
 - Blueprintは `/Script/TP_ThirdPerson` 参照で保存されているため、`Config/DefaultEngine.ini` に `[CoreRedirects] +PackageRedirects` を追記する。消さない。
 - ソース側でファイル名が変わった UObject ヘッダ（実測では `TP_ThirdPersonCharacter` / `TP_ThirdPersonGameMode` / `TP_ThirdPersonPlayerController` の3つ）は、内容に `*.generated.h"` を含むものだけを対象に、生成後のクラス名で `[/Script/Engine.Engine] +ActiveClassRedirects` を書く。`TP_ThirdPerson.h`（log category のみ）や `Variant_*` のようにファイル名が変わらない reflected class は対象外。
 - 生成時のstdoutに `Class redirects: <旧> -> <新>, ...` の行が出る。0件なら `Class redirects: none (...)`。何を書いたかはここで確認する（lockへは追記しない）。

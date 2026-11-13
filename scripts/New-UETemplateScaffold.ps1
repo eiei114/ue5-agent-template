@@ -417,6 +417,25 @@ function Set-OnlineSessionProjectIdentifier([string]$ProjectConfigPath, [string]
 	[System.IO.File]::WriteAllText($ProjectConfigPath, $configText, [System.Text.UTF8Encoding]::new($false))
 }
 
+function Resolve-ContainedPath([string]$Root, [string]$Candidate, [string]$Label) {
+	# Single containment rule for every write this generator performs: normalize the candidate and
+	# require it to stay under $Root (the exclusive output directory) before anything is created.
+	# TemplateDefs.ini decides the destination of individual files (FolderRenames / SharedContentPacks),
+	# so a value containing `..` must be rejected here rather than trusted.
+	$rootFull = [System.IO.Path]::GetFullPath($Root).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+	$rootPrefix = $rootFull + [System.IO.Path]::DirectorySeparatorChar
+	$resolved = ''
+	try {
+		$resolved = [System.IO.Path]::GetFullPath($Candidate)
+	} catch {
+		throw ("Container escape stopped the scaffold: {0} could not be normalized as a file path ({1})." -f $Label, $_.Exception.Message)
+	}
+	if (-not $resolved.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+		throw ("Container escape stopped the scaffold: {0} resolved to '{1}', outside the allowed root '{2}'. Nothing outside '{2}' was written." -f $Label, $resolved, $rootFull)
+	}
+	return $resolved
+}
+
 function Resolve-SharedContentPack([string]$EngineTemplateRoot, [string]$Mount, [string]$PreferredDetailLevel) {
 	# The installed engine only ships some mounts at some detail levels (TP_FirstPerson declares Weapons
 	# at "Standard" while its EditDetailLevelPreference is "High"). The preference of the template is
@@ -683,7 +702,7 @@ function Copy-MaterializedTemplate([string]$SourceTemplate, [string]$Destination
 				$target = ([System.IO.Path]::GetDirectoryName($target.Replace('/', '\')) + '\' + $leaf).TrimStart('\')
 			}
 		}
-		$targetPath = Join-Path $Destination $target.Replace('/', '\')
+		$targetPath = Resolve-ContainedPath -Root $Destination -Candidate (Join-Path $Destination $target.Replace('/', '\')) -Label "FolderRenames/ReplacementsInFiles target '$target' for template file '$relative'"
 		[System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($targetPath)) | Out-Null
 		if (Test-Path -LiteralPath $targetPath) { throw "Materialized template paths collide: $target" }
 		if ($isText) {
@@ -704,9 +723,27 @@ function Copy-MaterializedTemplate([string]$SourceTemplate, [string]$Destination
 	$copiedPacks = [System.Collections.Generic.List[object]]::new()
 	foreach ($mount in $defs.SharedContentPacks) {
 		$pack = Resolve-SharedContentPack -EngineTemplateRoot $EngineTemplateRoot -Mount $mount -PreferredDetailLevel $defs.DetailLevel
-		$packTarget = Join-Path $Destination ("Content\" + $mount)
+		$packContent = $pack.Path
+		$packTarget = Resolve-ContainedPath -Root $Destination -Candidate (Join-Path $Destination ("Content\" + $mount)) -Label "SharedContentPacks MountName '$mount' from TemplateDefs.ini"
 		[System.IO.Directory]::CreateDirectory($packTarget) | Out-Null
-		Get-ChildItem -LiteralPath $pack.Path -Force | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $packTarget $_.Name) -Recurse }
+		# The pack copy is a write target too: contain every entry under the output directory and
+		# refuse to overwrite an existing file, exactly like the per-file copy above. Recurse explicitly
+		# instead of Copy-Item -Recurse so each target is checked before it is written.
+		$packPrefix = $packContent.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+		foreach ($packEntry in @(Get-ChildItem -LiteralPath $packContent -Recurse -Force)) {
+			$packRelative = $packEntry.FullName.Substring($packPrefix.Length).Replace('\', '/')
+			$entryTarget = Resolve-ContainedPath -Root $Destination -Candidate (Join-Path $packTarget $packEntry.FullName.Substring($packPrefix.Length)) -Label "shared content pack entry 'Content/$mount/$packRelative'"
+			if ($packEntry.PSIsContainer) {
+				# Directories may merge with the template's own tree; a file where the pack needs a
+				# directory is a contradiction the caller has to resolve.
+				if (Test-Path -LiteralPath $entryTarget -PathType Leaf) { throw "Materialized template paths collide: Content/$mount/$packRelative" }
+				[System.IO.Directory]::CreateDirectory($entryTarget) | Out-Null
+			} else {
+				if (Test-Path -LiteralPath $entryTarget) { throw "Materialized template paths collide: Content/$mount/$packRelative" }
+				[System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($entryTarget)) | Out-Null
+				Copy-Item -LiteralPath $packEntry.FullName -Destination $entryTarget
+			}
+		}
 		$copiedPacks.Add($pack)
 	}
 	if ($Materialize) {
@@ -1104,6 +1141,8 @@ if (-not $stagingPath.StartsWith($productionPrefix, [System.StringComparison]::O
 if (Test-Path -LiteralPath $destinationPath) {
 	throw "Output already exists; it was not modified: $destinationPath"
 }
+
+$destinationPath = Resolve-ContainedPath -Root $productionRoot -Candidate (Join-Path $productionRoot $destinationName) -Label 'the output directory computed from Production'
 
 if (-not ('MulticaTemplateDirectory' -as [type])) {
 	Add-Type -TypeDefinition @'

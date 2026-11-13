@@ -370,6 +370,18 @@ Migration: **existing generated projects are not moved, renamed or regenerated.*
 
 未検証: PIE、2 clientのNull/LAN接続、EOS/Steamは実行していない。`scripts/Test-UETemplateScaffold.ps1`（8 group PASS / exit 0）と `scripts/Test-UERenderArtifacts.ps1`（exit 0）は本PRでも通したが、このC++修正の検証主体ではない。
 
+## Unreleased — DOT-3149
+
+- `scripts/New-UETemplateScaffold.ps1` の `materialize_project` 経路は、出力ディレクトリのパスだけを封じ込めており、その先の各書き込み先（`TemplateDefs.ini` の `FolderRenames` / `SharedContentPacks`）を検査していなかった。`To` / `MountName` に `..` を入れると exit 0 で「Created …」と表示したまま、`Production/` 内の別ディレクトリ・`Production/` の外・別 run が作業中の既存ディレクトリ・engine pack の外へ書けた（`.uasset` などは `.gitignore` 対象なので `git status` にも出ない）。
+- 封じ込め判定を `Resolve-ContainedPath` 1関数に集約した。`GetFullPath` で正規化した書き込み先が出力ディレクトリ+区切り文字で始まるか（`OrdinalIgnoreCase`）を、`CreateDirectory` / `Copy-Item` の**直前**に判定し、外れたら**書き込み前に**停止する。既存の出力ディレクトリの `Production/` 内判定も同じ関数を通す（判定ロジックを2つ持たない）。
+- shared content pack のコピーは `Copy-Item -Recurse` をやめ、entry ごとに封じ込めと衝突検査を通す。pack がテンプレート側の同名 file を持つ場合は上書きせず停止する（従来は `Content/Characters/SK.uasset` を pack 側のバイト列で黙って置き換えていた）。
+- `scripts/Test-UETemplateScaffold.ps1` に 6 group を追加した（`main`（DOT-3157）の既存 group は維持し、suite 全体で 18 PASS 行）。A: 出力ディレクトリ内の `FolderRenames` は従来どおり成功 / B: `Production/` 内の兄弟ディレクトリへの脱出を拒否 / C: `Production/` 外（repo root）への脱出を拒否し repo root に何も残さない / D: 別 run の作業ディレクトリへの脱出を拒否し、victim の file 集合と SHA256 が不変 / E: `SharedContentPacks` の `MountName` 脱出を拒否 / F: pack とテンプレートの衝突を停止し、テンプレート側のバイト列が残る。B〜E は「どの検査で止まったか」を例外メッセージで照合する。
+- `docs/07-architecture.md` / `templates/recipes/third-person-game/Play.md` / `AGENTS.md` の「UEウィザードと同じ規則」という宣言を、実装しているキー（`FoldersToIgnore` / `FilesToIgnore` / `FolderRenames` / `ReplacementsInFiles` / `SharedContentPacks`）と検査範囲（出力ディレクトリ配下への封じ込め・上書き禁止）を明示した記述に置き換えた。generatorのコメントとsuiteのPASS文言も同じ主張に揃えた。公式 docs に `TemplateDefs.ini` の schema が無いことも1文残した。規則解釈の忠実性（`FilenameReplacements` / `From`/`To`/`bCaseSensitive` / per-mount `DetailLevels`）は `DOT-3135` の担当で、本変更では扱わない。
+
+実測（本 host、Windows 10.0.26300、`pwsh 7.6.9` と Windows PowerShell 5.1.26100.9711、合成 engine fixtureのみ・UE は起動しない）: 修正前の generator では B〜F がすべて `exit=0` で脱出・上書きが成立（B: `Production/Sib_<id>/Notes.md` 1 file、C: repo root に `InRepo_<id>` が出現し `git status` が 1→2 行、D: victim に `Content/Notes.md` が注入され LEASE.json は無変更、E: repo root に `Esc_<id>/Content/SK.uasset`、F: `SK.uasset` が `PACK-ASSET` に置換）。修正後は B〜E が `Container escape stopped the scaffold` で停止し脱出先は 0 file、F は `Materialized template paths collide` で停止し `SK.uasset` は `TEMPLATE-OWNED-BYTES` のまま。A は両版とも `Content2/<Name>/Notes.md` を生成し exit 0。suite は 18 PASS 行 / exit 0（`scripts/Test-UETemplateScaffold.ps1`）、実行前後の `git status --porcelain --untracked-files=all` は不変。
+
+移行: 既存の生成済み project と `Production/` の成果物には触れない。`TemplateDefs.ini` の rename / pack 先が出力ディレクトリの外を指していた template で生成すると、従来は成功していたものが停止するようになる（それが本修正の意図）。該当する作品は新 RunId で再生成し、止まった場合は `TemplateDefs.ini` の `To` / `MountName` を出力ディレクトリ内に限定する。
+
 ## Unreleased — 動画モーキャプ
 
 書式: 各 `## ` 見出しは `## Unreleased — <DOT番号 or 名前> — <識別子>` の形にする。**識別子は必須**で、`YYYY-MM-DD`（main に入った merge commit の日付。`git log -1 --date=short --format=%cd <merge>` か `gh pr list --state merged` の `mergedAt`）または 40 桁 commit SHA のどちらかを書く。日付だけでは「どの変更か」を commit に結べないので、SHA を併記してよい（併記した SHA は `git cat-file -e <sha>^{commit}` で解決できること）。release も tag も作らないので全節が `Unreleased` のまま。各節の本文には、次を 1 項目ずつ残す:
