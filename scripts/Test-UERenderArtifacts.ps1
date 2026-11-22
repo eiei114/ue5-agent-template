@@ -1962,10 +1962,10 @@ try {
 		}
 		foreach ($key in $case.Bound.Keys) { $bound[$key] = $case.Bound[$key] }
 		$caseResult = Invoke-Measure $bound -KeepProvenanceAsGiven
-		Assert-True ($caseResult.Threw) "provenance case '$($case.Label)' is refused"
-		Assert-True ($caseResult.Error.Contains('Invalid input')) "provenance case '$($case.Label)' is an input refusal: $($caseResult.Error)"
+		Assert-True ($caseResult.ExitCode -eq 3) "provenance case '$($case.Label)' is refused with exit 3, got $($caseResult.ExitCode)"
+		Assert-True ($caseResult.Output.Contains('Invalid input')) "provenance case '$($case.Label)' is an input refusal: $($caseResult.Output)"
 		foreach ($name in $case.Names) {
-			Assert-True ($caseResult.Error.Contains($name)) "provenance case '$($case.Label)' names $name in the refusal: $($caseResult.Error)"
+			Assert-True ($caseResult.Output.Contains($name)) "provenance case '$($case.Label)' names $name in the refusal: $($caseResult.Output)"
 		}
 		Assert-True (-not (Test-Path -LiteralPath $caseReport)) "provenance case '$($case.Label)' created no report"
 	}
