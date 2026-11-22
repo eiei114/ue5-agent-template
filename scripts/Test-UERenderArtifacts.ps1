@@ -17,6 +17,63 @@ function Assert-True([bool]$Condition, [string]$Message) {
 	if (-not $Condition) { throw "ASSERT FAILED: $Message" }
 }
 
+# ---------------------------------------------------------------- assertion-group ledger
+# The one declaration of the assertion groups this suite must run. Every group ends in
+# Register-Group with the same identifier, and the end of the run compares the two. A group that
+# is deleted, skipped or renamed no longer registers, so the run fails and names it instead of
+# finishing with fewer PASS lines. Keys are words, never positions, so reordering cannot break them.
+$expectedGroups = @(
+	'clean-zero-based-240-frame',
+	'report-creation-exclusive-cannot-write',
+	'240-file-sequence-one-missing',
+	'leading-middle-trailing-gaps-all',
+	'241st-frame-against-240-frame',
+	'unpadded-indices-extension-case-differences',
+	'nested-layouts-unrelated-files-fail',
+	'0-byte-truncated-payload-corrupt',
+	'resolution-mismatches-fail-unconfigured-half',
+	'non-zero-starts-need-explicit',
+	'missing-failing-slow-decoders-stay',
+	'decode-failure-outranks-timeout-timeouts',
+	'untouched-input-gate-names-removed',
+	'junction-alias-framesdirectory-refused-guard',
+	'declared-step-2-lattice-passes',
+	'declared-step-offset-lattices-pass',
+	'per-frame-digests-equal-real',
+	'mrq-legacy-movie-graph-names',
+	'extension-carries-codec-contract-jpg',
+	'all-fixture-directories-report-directory',
+	'group-ledger-drift-fails'
+)
+$registeredGroups = New-Object 'System.Collections.Generic.List[string]'
+
+function Register-Group([string]$Id, [string]$Message) {
+	$script:registeredGroups.Add($Id)
+	Write-Output "PASS: $Message"
+}
+
+function Get-GroupLedgerProblems([string[]]$Expected, [string[]]$Registered) {
+	$Expected = @($Expected)
+	$Registered = @($Registered)
+	$problems = @()
+	if ($Expected.Count -eq 0) { $problems += 'the ledger declares no groups' }
+	$missing = @($Expected | Where-Object { $Registered -notcontains $_ })
+	$undeclared = @($Registered | Where-Object { $Expected -notcontains $_ } | Select-Object -Unique)
+	$duplicated = @($Registered | Group-Object | Where-Object { $_.Count -gt 1 } | ForEach-Object { $_.Name })
+	$declaredTwice = @($Expected | Group-Object | Where-Object { $_.Count -gt 1 } | ForEach-Object { $_.Name })
+	if ($missing.Count -gt 0) { $problems += ('missing groups: ' + ($missing -join ', ')) }
+	if ($undeclared.Count -gt 0) { $problems += ('undeclared groups: ' + ($undeclared -join ', ')) }
+	if ($duplicated.Count -gt 0) { $problems += ('groups registered twice: ' + ($duplicated -join ', ')) }
+	if ($declaredTwice.Count -gt 0) { $problems += ('groups declared twice: ' + ($declaredTwice -join ', ')) }
+	return $problems
+}
+
+function Assert-GroupLedger([string[]]$Expected, [string[]]$Registered) {
+	$problems = @(Get-GroupLedgerProblems $Expected $Registered)
+	Assert-True ($problems.Count -eq 0) ('every declared assertion group ran: expected {0}, got {1}; {2}' -f @($Expected).Count, @($Registered).Count, ($problems -join '; '))
+}
+
+
 function New-ReportPath([string]$Label) {
 	$script:reportCounter++
 	$path = Join-Path $reportRoot ("{0:D3}-{1}.json" -f $script:reportCounter, $Label)
@@ -440,7 +497,7 @@ try {
 	$cleanDigestViolations = @(Get-DigestViolations $cleanData $cleanDir)
 	Assert-True ($cleanDigestViolations.Count -eq 0) ("every clean-sequence frame digest is the real file SHA-256: " + ($cleanDigestViolations -join '; '))
 	Assert-True (@($cleanData.frames | Where-Object { $_.digest_state -ceq 'computed' }).Count -eq 240) 'all 240 clean-sequence frames report digest_state computed'
-	Write-Output 'PASS: clean zero-based 240-frame sequence passes and the inspected directory is untouched'
+	Register-Group 'clean-zero-based-240-frame' 'clean zero-based 240-frame sequence passes and the inspected directory is untouched'
 
 	# ============================================================ group 2: report exclusivity
 	$beforeHash = (Get-FileHash -LiteralPath $cleanReport -Algorithm SHA256).Hash
@@ -487,7 +544,7 @@ try {
 		if (Test-Path -LiteralPath $escapedReport) { Remove-Item -LiteralPath $escapedReport -Force }
 		if (Test-Path -LiteralPath $junctionPath) { [System.IO.Directory]::Delete($junctionPath, $false) }
 	}
-	Write-Output 'PASS: report creation is exclusive and cannot write inside the inspected sequence'
+	Register-Group 'report-creation-exclusive-cannot-write' 'report creation is exclusive and cannot write inside the inspected sequence'
 
 	# ============================================================ group 3: baseline blind spot
 	# The documented baseline only counts 240 output frames. A sequence that lost frame 120 and
@@ -529,7 +586,7 @@ try {
 	Assert-True ($swapData.render_evidence.exit_code -eq '0') 'the supplied render exit code is recorded, not hidden'
 	Assert-True ($swapData.render_evidence.conclusion -eq 'unevaluated_by_this_tool') 'render success is not inferred from or overridden by the artifact check'
 	Assert-True ($swapData.overall_qa_verdict -eq 'not_assessed') 'a negative artifact list does not become an overall QA verdict'
-	Write-Output 'PASS: a 240-file sequence with one missing and one trailing frame fails where a frame count alone passes'
+	Register-Group '240-file-sequence-one-missing' 'a 240-file sequence with one missing and one trailing frame fails where a frame count alone passes'
 
 	# ============================================================ group 4: first / middle / last gaps
 	foreach ($gapIndex in @(0, 3, 5)) {
@@ -553,7 +610,7 @@ try {
 		Assert-True ($gapData.checks.completeness -eq 'fail') "gap at $gapIndex fails the completeness check"
 		Assert-True ($gapData.artifact_verdict -eq 'fail') "gap at $gapIndex fails the artifact verdict"
 	}
-	Write-Output 'PASS: leading, middle and trailing gaps are all detected by index rather than by count'
+	Register-Group 'leading-middle-trailing-gaps-all' 'leading, middle and trailing gaps are all detected by index rather than by count'
 
 	# ============================================================ group 5: one extra frame beyond 240
 	$extraDir = Join-Path $fixtureRoot 'extra241'
@@ -574,7 +631,7 @@ try {
 	Assert-True ($extraData.checks.range -eq 'fail') 'the extra frame fails the range check'
 	Assert-True ($extraData.checks.completeness -eq 'pass') 'the extra frame alone does not fail completeness'
 	Assert-True ((Get-FailureCategories $extraData) -contains 'out_of_range_frames') 'the extra frame is reported as out of range'
-	Write-Output 'PASS: a 241st frame against a 240-frame end-exclusive range fails the range check'
+	Register-Group '241st-frame-against-240-frame' 'a 241st frame against a 240-frame end-exclusive range fails the range check'
 
 	# ============================================================ group 6: ambiguous naming
 	$paddingDir = Join-Path $fixtureRoot 'padding'
@@ -610,7 +667,7 @@ try {
 	$caseData = Read-Report $caseReport
 	Assert-True ($caseData.checks.naming -eq 'fail') 'an extension-case difference fails the naming check'
 	Assert-True ((Get-FailureCategories $caseData) -contains 'ambiguous_name') 'the case difference is reported as an ambiguous name'
-	Write-Output 'PASS: unpadded indices and extension-case differences are rejected as ambiguous, not silently accepted'
+	Register-Group 'unpadded-indices-extension-case-differences' 'unpadded indices and extension-case differences are rejected as ambiguous, not silently accepted'
 
 	# ============================================================ group 7: unexpected entries and layout
 	$nestedDir = Join-Path $fixtureRoot 'nested'
@@ -645,7 +702,7 @@ try {
 	Assert-True ($strayResult.ExitCode -eq 1) "an unrelated file exits 1, got $($strayResult.ExitCode): $($strayResult.Output)"
 	$strayData = Read-Report $strayReport
 	Assert-True ((Get-FailureCategories $strayData) -contains 'unexpected_name') 'a non-frame file is reported instead of being ignored'
-	Write-Output 'PASS: nested layouts and unrelated files fail instead of being skipped'
+	Register-Group 'nested-layouts-unrelated-files-fail' 'nested layouts and unrelated files fail instead of being skipped'
 
 	# ============================================================ group 8: empty and corrupt frames
 	$emptyDir = Join-Path $fixtureRoot 'empty'
@@ -708,7 +765,7 @@ try {
 	Assert-True ($truncatedEntry.detail.Contains('no decoded frame')) 'the truncated frame records that no picture decoded'
 	$corruptPayloadEntry = @($corruptData.frames | Where-Object { $_.index -eq 4 })[0]
 	Assert-True ($corruptPayloadEntry.decode -eq 'failed') 'the payload-corrupt frame is recorded as failed although ffprobe exited 0 and reported dimensions'
-	Write-Output 'PASS: 0-byte, truncated and payload-corrupt frames fail; a parseable header without a decoded frame never passes'
+	Register-Group '0-byte-truncated-payload-corrupt' '0-byte, truncated and payload-corrupt frames fail; a parseable header without a decoded frame never passes'
 
 	# ============================================================ group 9: resolution mismatch
 	$resolutionDir = Join-Path $fixtureRoot 'resolution'
@@ -756,7 +813,7 @@ try {
 	Assert-True ($halfResult.Threw) 'a half-configured resolution is refused instead of guessed'
 	$script:refusedReportCounter++
 	Assert-True ($halfResult.Error.Contains('must be given together')) 'the refusal explains the paired requirement'
-	Write-Output 'PASS: resolution mismatches fail and unconfigured or half-configured resolution stays unverified'
+	Register-Group 'resolution-mismatches-fail-unconfigured-half' 'resolution mismatches fail and unconfigured or half-configured resolution stays unverified'
 
 	# ============================================================ group 10: range inputs
 	$offsetDir = Join-Path $fixtureRoot 'offset'
@@ -799,7 +856,7 @@ try {
 	Assert-True ($equalRangeResult.Threw) 'an empty end-exclusive range is refused instead of passing trivially'
 	$script:refusedReportCounter++
 	Assert-True ($equalRangeResult.Error.Contains('greater than StartNumber')) 'the refusal explains the end-exclusive range rule'
-	Write-Output 'PASS: non-zero starts need an explicit declaration and an empty range cannot pass'
+	Register-Group 'non-zero-starts-need-explicit' 'non-zero starts need an explicit declaration and an empty range cannot pass'
 
 	# ============================================================ group 11: decoder absence, failure, timeout
 	$decoderDir = Join-Path $fixtureRoot 'decoder'
@@ -861,7 +918,7 @@ try {
 	Assert-True ($timeoutData.checks.decode -eq 'unverified') 'a decode timeout leaves decode unverified, not failed or passed'
 	Assert-True ((Get-FailureCategories $timeoutData) -contains 'decode_timeout') 'the timeout is recorded as an explicit timeout'
 	Assert-True ($timeoutData.artifact_verdict -eq 'unverified') 'a decode timeout cannot produce a pass'
-	Write-Output 'PASS: missing, failing and slow decoders stay unverified or fail, and the timeout is bounded'
+	Register-Group 'missing-failing-slow-decoders-stay' 'missing, failing and slow decoders stay unverified or fail, and the timeout is bounded'
 
 	# ============================================================ group 11b: fail outranks timeout, retry, total budget
 	# One stub decoder stands in for ffprobe. It answers by the file name it is given, so a single
@@ -1023,7 +1080,7 @@ try {
 	Assert-True ($roomyResult.ExitCode -eq 0) "a clean sequence inside a generous budget passes, got $($roomyResult.ExitCode): $($roomyResult.Output)"
 	$roomyData = Read-Report $roomyReport
 	Assert-True ($roomyData.decode_summary.budget_exhausted -eq $false -and $roomyData.decode_summary.frames_not_evaluated -eq 0) 'a generous budget is not exhausted'
-	Write-Output 'PASS: a decode failure outranks a timeout, timeouts are retried once with attempts recorded, and a total budget is explicit'
+	Register-Group 'decode-failure-outranks-timeout-timeouts' 'a decode failure outranks a timeout, timeouts are retried once with attempts recorded, and a total budget is explicit'
 
 	# ============================================================ group 12: the untouched-input gate can actually fail
 	# A gate that has never been observed to fail is the same defect one level up. This group corrupts a
@@ -1074,7 +1131,7 @@ try {
 	$restoredRootDrift = @(Get-FixtureRootDrift)
 	Assert-True ($restoredRootDrift.Count -eq 0) ("the gate reports no unexpected fixture-root entry once it is removed, got: " + ($restoredRootDrift -join '; '))
 	Assert-True (@(Get-ProductionResidue).Count -eq 0) 'the residue check is silent again once the ignored leftover is removed'
-	Write-Output 'PASS: the untouched-input gate names removed, rewritten and added files and the ignored Production/ leftover, and is silent when they are restored'
+	Register-Group 'untouched-input-gate-names-removed' 'the untouched-input gate names removed, rewritten and added files and the ignored Production/ leftover, and is silent when they are restored'
 
 	# ============================================================ group 13: the FramesDirectory guard alone is load-bearing
 	# The junction case above isolates the report-parent guard: the sequence is a plain directory and the
@@ -1127,7 +1184,7 @@ try {
 		if (Test-Path -LiteralPath $escapedReport) { Remove-Item -LiteralPath $escapedReport -Force }
 		if (Test-Path -LiteralPath $guardAlias) { [System.IO.Directory]::Delete($guardAlias, $false) }
 	}
-	Write-Output 'PASS: a junction alias as FramesDirectory is refused by that guard alone, and the plain guarded case stays silent'
+	Register-Group 'junction-alias-framesdirectory-refused-guard' 'a junction alias as FramesDirectory is refused by that guard alone, and the plain guarded case stays silent'
 
 	# ============================================================ group 13: declared index lattice
 	# MRQ's `Output Frame Step` writes every N-th frame, so a legitimate step render has a gap after
@@ -1192,7 +1249,7 @@ try {
 	Assert-True ($undeclaredFailure.detail.Contains('-FrameStep 2')) 'the mismatch names the declaration that would match'
 	Assert-True ($stepUndeclaredData.checks.completeness -eq 'fail') 'the absent declared indices still fail completeness'
 	Assert-True ($stepUndeclaredData.checks.range -eq 'pass') 'a lattice inside the declared range has no excess frames'
-	Write-Output 'PASS: a declared step-2 lattice passes and the same lattice undeclared is named as a lattice mismatch'
+	Register-Group 'declared-step-2-lattice-passes' 'a declared step-2 lattice passes and the same lattice undeclared is named as a lattice mismatch'
 
 	# A frame-number offset shifts the lattice. MRQ's `Frame Number Offset` produces this shape.
 	$offsetLatticeDir = Join-Path $fixtureRoot 'lattice-offset10'
@@ -1261,7 +1318,7 @@ try {
 	Assert-True ($handleData.index_lattice.mismatch -eq $false) 'the handle fixture is a uniform contiguous lattice'
 	Assert-True ((@($handleData.failures | Where-Object { $_.category -eq 'out_of_range_frames' })[0].sample) -eq '5,6,7,8,9,250,251,252,253,254') 'the out-of-range sample names every handle frame'
 	Assert-True (@($handleData.violations.missing_indices).Count -eq 0) 'every declared index is present behind the handles'
-	Write-Output 'PASS: declared step and offset lattices pass, a mismatch in either direction is named, and handle frames stay out-of-range'
+	Register-Group 'declared-step-offset-lattices-pass' 'declared step and offset lattices pass, a mismatch in either direction is named, and handle frames stay out-of-range'
 
 	# ============================================================ group 14: per-frame digests are real, and a fake one fails the suite
 	# The clean and 0-byte groups above already hold every frames[] entry to the digest contract. This group
@@ -1318,7 +1375,7 @@ try {
 			Assert-True ($mutantText.Contains("$($expectedFrame[0]) (index $($expectedFrame[1]))")) "the '$($mutation.Name)' mutant violation names $($expectedFrame[0]) at index $($expectedFrame[1]), got: $mutantText"
 		}
 	}
-	Write-Output 'PASS: per-frame digests equal the real SHA-256 with digest_state computed, a 0-byte frame follows the same rule, and a constant or empty digest fails by file and index'
+	Register-Group 'per-frame-digests-equal-real' 'per-frame digests equal the real SHA-256 with digest_state computed, a 0-byte frame follows the same rule, and a constant or empty digest fails by file and index'
 
 	# ============================================================ group 15: MRQ's real file names
 	# MRQ never writes a bare index. Its default is `<sequence_name>.<frame_number>` with a 4-digit pad
@@ -1478,7 +1535,7 @@ try {
 	$strayPrefixCategories = Get-FailureCategories (Read-Report $strayPrefixReport)
 	Assert-True ($strayPrefixCategories -contains 'naming_contract_mismatch') 'the prefixed sequence is still named as a mismatch beside a stray file'
 	Assert-True ($strayPrefixCategories -contains 'unexpected_name') 'the stray file is still reported as an unexpected name'
-	Write-Output 'PASS: MRQ legacy and Movie Graph names pass when declared, an undeclared prefix is a naming-contract mismatch rather than missing frames, and no input was renamed'
+	Register-Group 'mrq-legacy-movie-graph-names' 'MRQ legacy and Movie Graph names pass when declared, an undeclared prefix is a naming-contract mismatch rather than missing frames, and no input was renamed'
 
 	# ============================================================ group 17: codec contract for non-PNG extensions
 	# MRQ writes more than PNG (BMP/JPG/EXR output nodes), and -Extension accepts any of them. The codec
@@ -1549,7 +1606,7 @@ try {
 	Assert-True ($tifData.input.expected_codec -eq 'not_configured') 'the report says no codec was configured for the extension'
 	Assert-True ((Get-FailureCategories $tifData) -contains 'codec_not_configured') 'an unknown extension names codec_not_configured'
 	Assert-True ($tifData.checks.naming -eq 'pass' -and $tifData.checks.completeness -eq 'pass') 'the unknown extension is still accepted by the naming and completeness checks (not rejected)'
-	Write-Output 'PASS: -Extension carries a codec contract (.jpg mjpeg passes, a mixed or wrong-codec sequence fails by name, an unknown extension is unverified)'
+	Register-Group 'extension-carries-codec-contract-jpg' '-Extension carries a codec contract (.jpg mjpeg passes, a mixed or wrong-codec sequence fails by name, an unknown extension is unverified)'
 
 	# ============================================================ group 16: the inspector never changed its input
 	# Every fixture built above registered the snapshot it had when the suite finished building it.
@@ -1562,7 +1619,30 @@ try {
 	Assert-True ($fixtureCount -eq 35) "every fixture directory built by the suite is covered by the comparison, got $fixtureCount"
 	Assert-True (@(Get-FixtureInputDrift).Count -eq 0) 'no fixture directory was modified, added to or removed after it was built'
 	Assert-True (@(Get-ReportDrift).Count -eq 0) 'reports/ holds exactly one non-empty report per allocated report path'
-	Write-Output "PASS: all $fixtureCount fixture directories and the report directory are unchanged since they were built"
+	Register-Group 'all-fixture-directories-report-directory' "all $fixtureCount fixture directories and the report directory are unchanged since they were built"
+
+	# ============================================================ the declared groups all ran
+	# The ledger gate must fail for a dropped, undeclared, duplicated or empty ledger, or it is a
+	# tautology again. Each drift is applied to a copy of what this run registered and has to throw
+	# with the offending identifier in the message; the real ledger is then compared.
+	$selfGroup = 'group-ledger-drift-fails'
+	$simulatedRegistration = @($registeredGroups) + $selfGroup
+	$driftCases = @(
+		@{ Name = 'a declared group that never registers'; Expected = $expectedGroups; Registered = @($simulatedRegistration | Select-Object -Skip 1); Needle = ('missing groups: ' + $expectedGroups[0]) },
+		@{ Name = 'a registered group that was never declared'; Expected = $expectedGroups; Registered = @($simulatedRegistration) + 'injected-undeclared-group'; Needle = 'undeclared groups: injected-undeclared-group' },
+		@{ Name = 'a group that registers twice'; Expected = $expectedGroups; Registered = @($simulatedRegistration) + $expectedGroups[0]; Needle = ('groups registered twice: ' + $expectedGroups[0]) },
+		@{ Name = 'an empty declaration'; Expected = @(); Registered = @($simulatedRegistration); Needle = 'the ledger declares no groups' }
+	)
+	foreach ($driftCase in $driftCases) {
+		$driftMessage = $null
+		try { Assert-GroupLedger $driftCase.Expected $driftCase.Registered } catch { $driftMessage = $_.Exception.Message }
+		Assert-True ($null -ne $driftMessage) ("the ledger gate fails for $($driftCase.Name)")
+		Assert-True ($driftMessage.Contains($driftCase.Needle)) ("the ledger failure for $($driftCase.Name) names it: $($driftCase.Needle); got: $driftMessage")
+	}
+	Assert-GroupLedger $expectedGroups $simulatedRegistration
+	Register-Group $selfGroup 'a declared group that never registers, an undeclared or duplicated group and an empty declaration each fail the ledger by identifier'
+	Assert-GroupLedger $expectedGroups @($registeredGroups)
+	Write-Output ('GROUPS: {0}/{1} registered' -f $registeredGroups.Count, $expectedGroups.Count)
 } catch {
 	$suiteError = $_
 } finally {
