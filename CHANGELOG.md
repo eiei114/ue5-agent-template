@@ -30,6 +30,15 @@
 
 `SHA256SUMS.txt` に載せない `kind` は `sha256sums` と `delivery_manifest`（自己 hash を持てないため）。既存の run の manifest は書き換えない。`scripts/New-UETemplateScaffold.ps1`、recipe、online plugin、`templates/` は変更していない。**UE install / compile / Editor / PIE / MRQ / render / Shipping / packaged build は実行していない**（Unverified Scope）。実 UE artifact に対する manifest の正しさは未検証で、fixture（自作 bytes）での実測のみ。
 
+## Unreleased — DOT-3101 — 2026-11-22
+
+- **再renderのあとに古いMP4を検品する経路を塞いだ。** `ffmpeg -n` は出力が既存だと何も書かずに exit 0 で終わる（公式 docs は「exit immediately」とだけ述べ、終了 status の値は規定していない。本 host の ffmpeg 8.1.2 では exit 0、stderr に `already exists. Exiting.`）。`docs/05-qa.md` が黒 frame 時に指示する「再render」のあとに同じ encode 行を流すと前回の MP4 が残り、その ffprobe は前回の 240 frame / 8.0 s を正しく報告するため、期待値照合は PASS を返していた。
+- `scripts/Measure-UECaptureEncode.ps1` に `-RenderStartedUtc`（render 直前に採る UTC marker）と `-FramesDirectory` を追加した。MP4 の更新時刻が marker より古ければ `video_stale`、marker より古い画像が残っていれば `stale_source_frames` で `fail` にする（`render_attempt` / `source_frames_fresh` の2項目、更新時刻の比較のみで画像内容の正しさは保証しない）。どちらかを渡さない・marker が不正または未来の場合は `unverified` で、`pass` にしない。report には `provenance` を記録する。
+- `scripts/Test-UECaptureEncode.ps1` に負例を固定した: 既存 MP4 へ `-n` で再 encode（exit 0・未更新・frame 数と秒数は一致）、旧 render 残骸 + 少数の新 frame（枚数は合う）、途中欠番、読めない MP4（ffprobe 非0）、marker なし・未来の marker・frame directory なし。`Get-UECaptureEncodePlan.ps1` は `RENDER-MARKER` 行を出し、`INSPECT` 行に marker と frame directory を含める。
+- `docs/05-qa.md` の encode 例を `clean_<attempt>.mp4`（attempt ごとに新しい出力先）へ改め、`-n` の挙動と marker の取り方を明記した。根拠なく `-y` を既定にしない（採用版を潰すため）。`templates/QA.md` の `QA-MRQ-02` 行を、encode 実行の成否・mp4 の由来・ffprobe の exit code・期待値比較の別欄に分けた（行 ID は不変）。
+- 出典: FFmpeg 公式 docs https://ffmpeg.org/ffmpeg.html の `-n` / `-y` / `-frames:v`（2026-11-03 取得）。`-frames:v` は出力 frame 数の上限で、入力列の整合性検査ではない。
+- 移行: 既存作品の `Out/` は上書きしない。既存 MP4 は消さず、新しい attempt は別 path へ出す。元 PNG 列の集合契約（命名・offset・range・欠番）は `Measure-UERenderArtifacts.ps1` の担当で本変更の対象外。UE の compile / PIE / MRQ / render / 目視は未検証のまま（fixture の成功を UE 5.8.4 の動作確認へ昇格させない）。
+
 ## Unreleased — DOT-3117 — 2026-11-13
 
 - `templates/QA.md` が、repo 自身が要求する受入項目のうち10項目（起動map・Pawn・開始姿勢、座位/立位、host の session 作成、2 人目 client の join、score と player count の replication、client leave、reconnect、failed search、timeout）に対応する行を持っていなかった。行が無ければ検品者はその欄自体を書かないため、`docs/05-qa.md:36` の「合否・版/hash・実施者・日時・証拠・未確認をセットにする」を満たさないまま `Out/run_<runid>/` の QA が納品セットに入った。行を追加し、各行に機械検査用の `[QA-...]` ID を付けた。
