@@ -331,14 +331,14 @@ function Get-ProductionResidue {
 }
 
 function Invoke-Measure {
-	param([hashtable]$Bound)
+	param([hashtable]$Bound, [string]$Script = $measureScript)
 	$captured = New-Object System.Collections.Generic.List[string]
 	$exitCode = $null
 	$threw = $false
 	$errorMessage = ''
 	$stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 	try {
-		& $measureScript @Bound 2>&1 | ForEach-Object { $captured.Add([string]$_) }
+		& $Script @Bound 2>&1 | ForEach-Object { $captured.Add([string]$_) }
 		$exitCode = $LASTEXITCODE
 	} catch {
 		$threw = $true
@@ -357,6 +357,29 @@ function Invoke-Measure {
 function Read-Report([string]$Path) {
 	Assert-True (Test-Path -LiteralPath $Path -PathType Leaf) "report was created: $Path"
 	return [System.IO.File]::ReadAllText($Path) | ConvertFrom-Json
+}
+
+function Get-DigestViolations($Report, [string]$Directory) {
+	# The per-frame digest contract: every frames[] entry says whether its digest was computed. A
+	# 'computed' sha256 must equal the SHA-256 of the real file on disk; a 'not_computed' one must be
+	# null, never an empty or placeholder string. Each violation names the file and its index, so a
+	# regression that writes a constant or empty digest is reported by path instead of as a bare count.
+	$violations = New-Object System.Collections.Generic.List[string]
+	foreach ($frame in @($Report.frames)) {
+		$label = "$($frame.file) (index $($frame.index))"
+		$state = [string]$frame.digest_state
+		if ($state -ceq 'computed') {
+			$expected = (Get-FileHash -LiteralPath (Join-Path $Directory ([string]$frame.file)) -Algorithm SHA256).Hash.ToLowerInvariant()
+			if ($frame.sha256 -isnot [string] -or $frame.sha256 -cne $expected) {
+				$violations.Add("$label : sha256 '$($frame.sha256)' is not the SHA-256 of the file ($expected)")
+			}
+		} elseif ($state -ceq 'not_computed') {
+			if ($null -ne $frame.sha256) { $violations.Add("$label : digest_state is not_computed but sha256 is '$($frame.sha256)', not null") }
+		} else {
+			$violations.Add("$label : digest_state is '$state', expected computed or not_computed")
+		}
+	}
+	return $violations.ToArray()
 }
 
 function Get-FailureCategories($Report) {
@@ -410,6 +433,9 @@ try {
 	Assert-True ($cleanData.overall_qa_verdict -eq 'not_assessed') 'a clean artifact list is not an overall QA pass'
 	$cleanAfter = Get-DirectorySnapshot $cleanDir
 	Assert-True ($cleanBefore -ceq $cleanAfter) 'inspection left every inspected file and name unchanged'
+	$cleanDigestViolations = @(Get-DigestViolations $cleanData $cleanDir)
+	Assert-True ($cleanDigestViolations.Count -eq 0) ("every clean-sequence frame digest is the real file SHA-256: " + ($cleanDigestViolations -join '; '))
+	Assert-True (@($cleanData.frames | Where-Object { $_.digest_state -ceq 'computed' }).Count -eq 240) 'all 240 clean-sequence frames report digest_state computed'
 	Write-Output 'PASS: clean zero-based 240-frame sequence passes and the inspected directory is untouched'
 
 	# ============================================================ group 2: report exclusivity
@@ -636,6 +662,14 @@ try {
 	Assert-True ($emptyData.checks.file_size -eq 'fail') 'a 0-byte frame fails the file-size check'
 	Assert-True ((Get-FailureCategories $emptyData) -contains 'empty_file') 'the 0-byte frame is reported'
 	Assert-True ($emptyData.artifact_verdict -eq 'fail') 'the 0-byte frame cannot pass the artifact verdict'
+	# A 0-byte file follows the same digest rule as every other frame: it is hashed (SHA-256 of zero
+	# bytes), reported as computed, and never left as an empty string that reads like a missing digest.
+	$emptyEntry = @($emptyData.frames | Where-Object { $_.index -eq 2 })[0]
+	Assert-True ($emptyEntry.size_bytes -eq 0) 'the 0-byte frame is recorded with size_bytes 0'
+	Assert-True ($emptyEntry.digest_state -ceq 'computed') "the 0-byte frame digest_state is computed, got '$($emptyEntry.digest_state)'"
+	Assert-True ($emptyEntry.sha256 -ceq 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855') "the 0-byte frame carries the SHA-256 of zero bytes, got '$($emptyEntry.sha256)'"
+	$emptyDigestViolations = @(Get-DigestViolations $emptyData $emptyDir)
+	Assert-True ($emptyDigestViolations.Count -eq 0) ("the 0-byte fixture follows the digest contract: " + ($emptyDigestViolations -join '; '))
 
 	$corruptDir = Join-Path $fixtureRoot 'corrupt'
 	New-FrameSequence -Directory $corruptDir -Start 0 -EndExclusive 6
@@ -1067,15 +1101,72 @@ try {
 	Assert-True (@($handleData.violations.missing_indices).Count -eq 0) 'every declared index is present behind the handles'
 	Write-Output 'PASS: declared step and offset lattices pass, a mismatch in either direction is named, and handle frames stay out-of-range'
 
-	# ============================================================ group 14: the inspector never changed its input
+	# ============================================================ group 14: per-frame digests are real, and a fake one fails the suite
+	# The clean and 0-byte groups above already hold every frames[] entry to the digest contract. This group
+	# proves the contract can fail: it runs mutated copies of the helper that write a constant and an empty
+	# digest while still claiming 'computed', and requires Get-DigestViolations to name the file and index of
+	# each frame. A mutation that did not apply would pass vacuously, so each one is checked to differ from
+	# the shipped source before it runs. The copies live under the fixture root, never in scripts/.
+	$digestDir = Join-Path $fixtureRoot 'digest3'
+	New-FrameSequence -Directory $digestDir -Start 1 -EndExclusive 4
+	Register-FixtureSnapshot 'digest3'
+	$digestBound = {
+		param([string]$ReportPath)
+		@{
+			FramesDirectory    = $digestDir
+			StartNumber        = 1
+			EndNumberExclusive = 4
+			ReportPath         = $ReportPath
+			ExpectedWidth      = 64
+			ExpectedHeight     = 48
+		}
+	}
+	$digestReport = New-ReportPath 'digest3'
+	$digestResult = Invoke-Measure (& $digestBound $digestReport)
+	Assert-True ($digestResult.ExitCode -eq 0) "the three-frame digest fixture exits 0, got $($digestResult.ExitCode): $($digestResult.Output)"
+	$digestData = Read-Report $digestReport
+	Assert-True (@($digestData.frames).Count -eq 3) 'the digest fixture reports three frames'
+	Assert-True (@(Get-DigestViolations $digestData $digestDir).Count -eq 0) 'the shipped helper writes real SHA-256 digests with digest_state computed'
+	Assert-True (@($digestData.frames | Where-Object { $_.sha256 -match '^[0-9a-f]{64}$' }).Count -eq 3) 'each digest is 64 lowercase hex digits'
+
+	$measureSource = [System.IO.File]::ReadAllText($measureScript)
+	$realHashExpression = '(Get-FileHash -LiteralPath $fileInfo.FullName -Algorithm SHA256).Hash.ToLowerInvariant()'
+	Assert-True ($measureSource.IndexOf($realHashExpression, [System.StringComparison]::Ordinal) -ge 0) 'the helper computes the per-frame digest with the expression the mutations replace'
+	$mutantRoot = Join-Path $fixtureRoot 'mutants'
+	Register-FixtureRootFile 'mutants'
+	[System.IO.Directory]::CreateDirectory($mutantRoot) | Out-Null
+	foreach ($mutation in @(
+		@{ Name = 'constant'; Replacement = "'deadbeef'"; Expected = 'deadbeef' },
+		@{ Name = 'empty'; Replacement = "''"; Expected = '' }
+	)) {
+		$mutantSource = $measureSource.Replace($realHashExpression, $mutation.Replacement)
+		Assert-True ($mutantSource -cne $measureSource) "the '$($mutation.Name)' digest mutation changes the helper source"
+		$mutantScript = Join-Path $mutantRoot ("measure-$($mutation.Name).ps1")
+		[System.IO.File]::WriteAllText($mutantScript, $mutantSource, [System.Text.UTF8Encoding]::new($false))
+		$mutantReport = New-ReportPath ("digest3-$($mutation.Name)")
+		$mutantResult = Invoke-Measure (& $digestBound $mutantReport) -Script $mutantScript
+		Assert-True (-not $mutantResult.Threw) "the '$($mutation.Name)' mutant ran: $($mutantResult.Error)"
+		Assert-True ($mutantResult.ExitCode -eq 0) "the '$($mutation.Name)' mutant still reports an overall pass, which is the defect under test, got $($mutantResult.ExitCode): $($mutantResult.Output)"
+		$mutantData = Read-Report $mutantReport
+		Assert-True ($mutantData.artifact_verdict -eq 'pass') "the '$($mutation.Name)' mutant passes every other check, so only the digest assertion can catch it"
+		$mutantViolations = @(Get-DigestViolations $mutantData $digestDir)
+		$mutantText = $mutantViolations -join '; '
+		Assert-True ($mutantViolations.Count -eq 3) "the '$($mutation.Name)' mutant is reported once per frame, got $($mutantViolations.Count): $mutantText"
+		foreach ($expectedFrame in @(@('000001.png', 1), @('000002.png', 2), @('000003.png', 3))) {
+			Assert-True ($mutantText.Contains("$($expectedFrame[0]) (index $($expectedFrame[1]))")) "the '$($mutation.Name)' mutant violation names $($expectedFrame[0]) at index $($expectedFrame[1]), got: $mutantText"
+		}
+	}
+	Write-Output 'PASS: per-frame digests equal the real SHA-256 with digest_state computed, a 0-byte frame follows the same rule, and a constant or empty digest fails by file and index'
+
+	# ============================================================ group 15: the inspector never changed its input
 	# Every fixture built above registered the snapshot it had when the suite finished building it.
-	# This gate compares all 21 of them again, so a later group that corrupts an earlier fixture is
+	# This gate compares all 23 of them again, so a later group that corrupts an earlier fixture is
 	# caught here by path instead of being reported as a pass by a tautology. reports/ is excluded from
 	# those snapshots because the suite writes it on purpose; its contents are accounted separately
 	# (one non-empty report per allocated path, minus the deliberately refused ones).
 	Assert-FixtureInputsUnchanged
 	$fixtureCount = $script:fixtureBaselines.Count
-	Assert-True ($fixtureCount -eq 22) "every fixture directory built by the suite is covered by the comparison, got $fixtureCount"
+	Assert-True ($fixtureCount -eq 23) "every fixture directory built by the suite is covered by the comparison, got $fixtureCount"
 	Assert-True (@(Get-FixtureInputDrift).Count -eq 0) 'no fixture directory was modified, added to or removed after it was built'
 	Assert-True (@(Get-ReportDrift).Count -eq 0) 'reports/ holds exactly one non-empty report per allocated report path'
 	Write-Output "PASS: all $fixtureCount fixture directories and the report directory are unchanged since they were built"
