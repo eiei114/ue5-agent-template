@@ -45,6 +45,7 @@ $expectedGroups = @(
 	'render-exit-code-judged-not-only-recorded',
 	'same-run-reinspection-numbered-report-rule',
 	'frame-variety-declared-identical-frames',
+	'run-source-revision-provenance-required',
 	'all-fixture-directories-report-directory',
 	'group-ledger-drift-fails'
 )
@@ -399,7 +400,14 @@ function Invoke-Measure {
 	# passing render exit code here and keep their original expectations. A call that supplies its own
 	# RenderExitCode, or sets NoDefaultRenderExit, is passed through untouched; the render-exit group
 	# below uses that to test the unverified, fail and rejected cases.
-	param([hashtable]$Bound, [string]$Script = $measureScript, [switch]$NoDefaultRenderExit)
+	param([hashtable]$Bound, [string]$Script = $measureScript, [switch]$NoDefaultRenderExit, [switch]$KeepProvenanceAsGiven)
+	# The script refuses a missing or blank RunId / SourceRevision, so every case that is not about
+	# provenance gets fixed fixture values. The provenance group passes the switch to control them.
+	if (-not $KeepProvenanceAsGiven) {
+		$Bound = $Bound.Clone()
+		if (-not $Bound.ContainsKey('RunId')) { $Bound['RunId'] = "fixture-$testId" }
+		if (-not $Bound.ContainsKey('SourceRevision')) { $Bound['SourceRevision'] = 'fixture' }
+	}
 	if (-not $NoDefaultRenderExit -and -not $Bound.ContainsKey('RenderExitCode')) {
 		$Bound = $Bound.Clone()
 		$Bound['RenderExitCode'] = '0'
@@ -1928,6 +1936,63 @@ try {
 	Assert-True (@(Get-DigestViolations $distinctData $distinctDir).Count -eq 0) 'the distinct sequence digests are the real SHA-256 of each file'
 	Register-Group 'frame-variety-declared-identical-frames' 'identical frames across files are counted from the existing digests, frame_variety is unverified unless declared, a declared minimum fails a frozen or 239 + 1 sequence with exit 1, an allowance passes it without moving the other checks, bad declarations are refused with exit 3, and 240 distinct frames pass with exit 0'
 
+	# ============================================================ group 14b: run / revision provenance
+	# A report with an empty run_id or source_revision cannot be tied to the run or template version
+	# it inspected. The helper refuses before it creates anything, so no such report can exist.
+	$provenanceBefore = Get-DirectorySnapshot $cleanDir
+	$provenanceCases = @(
+		@{ Label = 'both omitted'; Bound = @{}; Names = @('RunId', 'SourceRevision') },
+		@{ Label = 'RunId omitted'; Bound = @{ SourceRevision = 'abc1234' }; Names = @('RunId') },
+		@{ Label = 'SourceRevision omitted'; Bound = @{ RunId = 'run-1' }; Names = @('SourceRevision') },
+		@{ Label = 'RunId empty'; Bound = @{ RunId = ''; SourceRevision = 'abc1234' }; Names = @('RunId') },
+		@{ Label = 'SourceRevision empty'; Bound = @{ RunId = 'run-1'; SourceRevision = '' }; Names = @('SourceRevision') },
+		@{ Label = 'RunId whitespace'; Bound = @{ RunId = '   '; SourceRevision = 'abc1234' }; Names = @('RunId') },
+		@{ Label = 'SourceRevision whitespace'; Bound = @{ RunId = 'run-1'; SourceRevision = "`t " }; Names = @('SourceRevision') }
+	)
+	foreach ($case in $provenanceCases) {
+		$caseReport = New-ReportPath ('provenance-' + ($case.Label -replace '[^A-Za-z]', ''))
+		$script:refusedReportCounter++
+		$bound = @{
+			FramesDirectory    = $cleanDir
+			StartNumber        = 0
+			EndNumberExclusive = 240
+			ReportPath         = $caseReport
+			ExpectedWidth      = 64
+			ExpectedHeight     = 48
+		}
+		foreach ($key in $case.Bound.Keys) { $bound[$key] = $case.Bound[$key] }
+		$caseResult = Invoke-Measure $bound -KeepProvenanceAsGiven
+		Assert-True ($caseResult.Threw) "provenance case '$($case.Label)' is refused"
+		Assert-True ($caseResult.Error.Contains('Invalid input')) "provenance case '$($case.Label)' is an input refusal: $($caseResult.Error)"
+		foreach ($name in $case.Names) {
+			Assert-True ($caseResult.Error.Contains($name)) "provenance case '$($case.Label)' names $name in the refusal: $($caseResult.Error)"
+		}
+		Assert-True (-not (Test-Path -LiteralPath $caseReport)) "provenance case '$($case.Label)' created no report"
+	}
+	Assert-True ((Get-DirectorySnapshot $cleanDir) -ceq $provenanceBefore) 'provenance refusals left the inspected frames unchanged'
+
+	$provenanceReport = New-ReportPath 'provenance-valid'
+	$provenanceResult = Invoke-Measure @{
+		FramesDirectory    = $cleanDir
+		StartNumber        = 0
+		EndNumberExclusive = 240
+		ReportPath         = $provenanceReport
+		ExpectedWidth      = 64
+		ExpectedHeight     = 48
+		RunId              = 'run-20261122-a'
+		SourceRevision     = '0123abc'
+	} -KeepProvenanceAsGiven
+	Assert-True (-not $provenanceResult.Threw) "explicit provenance is accepted: $($provenanceResult.Error)"
+	Assert-True ($provenanceResult.ExitCode -eq 0) "explicit provenance on the clean sequence exits 0, got $($provenanceResult.ExitCode): $($provenanceResult.Output)"
+	$provenanceData = Read-Report $provenanceReport
+	Assert-True ($provenanceData.run_id -ceq 'run-20261122-a') 'the report records RunId exactly as given'
+	Assert-True ($provenanceData.source_revision -ceq '0123abc') 'the report records SourceRevision exactly as given'
+	Assert-True ($provenanceData.artifact_verdict -eq 'pass') 'the sequence verdict is unchanged by provenance'
+	foreach ($check in @('composition', 'naming', 'completeness', 'range', 'file_size', 'decode', 'resolution')) {
+		Assert-True ($provenanceData.checks.$check -eq 'pass') "provenance run keeps check '$check' at pass"
+	}
+	Assert-True ((Get-DirectorySnapshot $cleanDir) -ceq $provenanceBefore) 'the accepted provenance run left the inspected frames unchanged'
+	Register-Group 'run-source-revision-provenance-required' 'a missing, empty or blank RunId / SourceRevision is refused before any report exists, and explicit values are recorded verbatim'
 	# ============================================================ group 16: the inspector never changed its input
 	# Every fixture built above registered the snapshot it had when the suite finished building it.
 	# This gate compares all 40 of them again, so a later group that corrupts an earlier fixture is
