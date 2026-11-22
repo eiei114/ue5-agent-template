@@ -1480,15 +1480,86 @@ try {
 	Assert-True ($strayPrefixCategories -contains 'unexpected_name') 'the stray file is still reported as an unexpected name'
 	Write-Output 'PASS: MRQ legacy and Movie Graph names pass when declared, an undeclared prefix is a naming-contract mismatch rather than missing frames, and no input was renamed'
 
+	# ============================================================ group 17: codec contract for non-PNG extensions
+	# MRQ writes more than PNG (BMP/JPG/EXR output nodes), and -Extension accepts any of them. The codec
+	# check used to run only for .png, so a .jpg sequence with one PNG frame in it passed every check.
+	# The JPEG below is a real 64x48 baseline mjpeg frame (generated once with ffmpeg, embedded so the
+	# suite needs no encoder); the "wrong codec" side reuses PNG bytes under a different extension.
+	$jpegBytes = [Convert]::FromBase64String('/9j/4AAQSkZJRgABAgAAAQABAAD//gAQTGF2YzYyLjI4LjEwMgD/2wBDAAgQEBMQExYWFhYWFhoYGhsbGxoaGhobGxsdHR0iIiIdHR0bGx0dICAiIiUmJSMjIiMmJigoKDAwLi44ODpFRVP/xABKAAEAAAAAAAAAAAAAAAAAAAAAAQEAAAAAAAAAAAAAAAAAAAAAEAEAAAAAAAAAAAAAAAAAAAAAEQEAAAAAAAAAAAAAAAAAAAAA/8AAEQgAMABAAwEiAAIRAAMRAP/aAAwDAQACEQMRAD8AAAAAAAAAAAAAAAAAAAAAAAAA/9k=')
+	function New-CodecFixture {
+		param([string]$Name, [string]$Extension, [string[]]$Kinds)
+		$dir = Join-Path $fixtureRoot $Name
+		[System.IO.Directory]::CreateDirectory($dir) | Out-Null
+		for ($i = 0; $i -lt $Kinds.Count; $i++) {
+			$bytes = if ($Kinds[$i] -eq 'jpeg') { $jpegBytes } else { New-FixturePng -Width 64 -Height 48 -Shade ($i * 11) }
+			[System.IO.File]::WriteAllBytes((Join-Path $dir ('{0:D6}{1}' -f $i, $Extension)), $bytes)
+		}
+		Register-FixtureSnapshot $Name
+		return $dir
+	}
+
+	$jpgRealDir = New-CodecFixture -Name 'codec-jpg-real' -Extension '.jpg' -Kinds @('jpeg', 'jpeg', 'jpeg')
+	$jpgRealReport = New-ReportPath 'codec-jpg-real'
+	$jpgRealResult = Invoke-Measure @{
+		FramesDirectory = $jpgRealDir; StartNumber = 0; EndNumberExclusive = 3; Extension = '.jpg'
+		ReportPath = $jpgRealReport; ExpectedWidth = 64; ExpectedHeight = 48
+	}
+	Assert-True ($jpgRealResult.ExitCode -eq 0) "real mjpeg frames named .jpg exit 0, got $($jpgRealResult.ExitCode): $($jpgRealResult.Output)"
+	$jpgRealData = Read-Report $jpgRealReport
+	Assert-True ($jpgRealData.artifact_verdict -eq 'pass') 'real mjpeg .jpg frames pass'
+	Assert-True ($jpgRealData.input.expected_codec -eq 'mjpeg' -and $jpgRealData.expectations.codec -eq 'mjpeg') 'the report records mjpeg as the codec expected for .jpg'
+	Assert-True (@($jpgRealData.frames | Where-Object { $_.codec -eq 'mjpeg' }).Count -eq 3) 'every .jpg frame reports the mjpeg codec'
+	Assert-True (@($jpgRealData.failures).Count -eq 0) 'a real .jpg sequence records no failure'
+
+	$jpgMixedDir = New-CodecFixture -Name 'codec-jpg-mixed' -Extension '.jpg' -Kinds @('png', 'jpeg', 'jpeg')
+	$jpgMixedReport = New-ReportPath 'codec-jpg-mixed'
+	$jpgMixedResult = Invoke-Measure @{
+		FramesDirectory = $jpgMixedDir; StartNumber = 0; EndNumberExclusive = 3; Extension = '.jpg'
+		ReportPath = $jpgMixedReport; ExpectedWidth = 64; ExpectedHeight = 48
+	}
+	Assert-True ($jpgMixedResult.ExitCode -eq 1) "a .jpg sequence with one PNG frame exits 1, got $($jpgMixedResult.ExitCode): $($jpgMixedResult.Output)"
+	$jpgMixedData = Read-Report $jpgMixedReport
+	Assert-True ($jpgMixedData.artifact_verdict -eq 'fail') 'a mixed-codec .jpg sequence fails'
+	Assert-True ((Get-FailureCategories $jpgMixedData) -contains 'codec_mismatch') 'the mixed-codec .jpg sequence names codec_mismatch'
+	Assert-True ($jpgMixedData.checks.decode -eq 'fail') 'the decode check fails for the mixed-codec .jpg sequence'
+	Assert-True (@($jpgMixedData.violations.codec_mismatches).Count -eq 1 -and $jpgMixedData.violations.codec_mismatches[0].file -eq '000000.jpg' -and $jpgMixedData.violations.codec_mismatches[0].codec -eq 'png') 'the odd frame is named with the codec it really decoded to'
+	Assert-True (((@($jpgMixedData.frames | ForEach-Object { $_.codec })) -join ',') -eq 'png,mjpeg,mjpeg') 'the report keeps frames[].codec for each frame'
+
+	$exrPngDir = New-CodecFixture -Name 'codec-exr-png' -Extension '.exr' -Kinds @('png')
+	$exrPngReport = New-ReportPath 'codec-exr-png'
+	$exrPngResult = Invoke-Measure @{
+		FramesDirectory = $exrPngDir; StartNumber = 0; EndNumberExclusive = 1; Extension = '.exr'
+		ReportPath = $exrPngReport; ExpectedWidth = 64; ExpectedHeight = 48
+	}
+	Assert-True ($exrPngResult.ExitCode -eq 1) "PNG bytes saved under an .exr name exit 1, got $($exrPngResult.ExitCode): $($exrPngResult.Output)"
+	$exrPngData = Read-Report $exrPngReport
+	Assert-True ($exrPngData.input.expected_codec -eq 'exr') 'the report records exr as the codec expected for .exr'
+	Assert-True ((Get-FailureCategories $exrPngData) -contains 'codec_mismatch') 'PNG bytes under an .exr name are a codec mismatch'
+
+	$tifDir = New-CodecFixture -Name 'codec-tif-unknown' -Extension '.tif' -Kinds @('png', 'png')
+	$tifReport = New-ReportPath 'codec-tif-unknown'
+	$tifResult = Invoke-Measure @{
+		FramesDirectory = $tifDir; StartNumber = 0; EndNumberExclusive = 2; Extension = '.tif'
+		ReportPath = $tifReport; ExpectedWidth = 64; ExpectedHeight = 48
+	}
+	Assert-True ($tifResult.ExitCode -eq 2) "an extension with no codec contract exits 2 (unverified), got $($tifResult.ExitCode): $($tifResult.Output)"
+	$tifData = Read-Report $tifReport
+	Assert-True ($tifData.artifact_verdict -eq 'unverified') 'an unknown extension is unverified, never pass'
+	Assert-True ($tifData.checks.decode -eq 'unverified') 'the decode check stays unverified when the codec was not checked'
+	Assert-True ($tifData.input.expected_codec -eq 'not_configured') 'the report says no codec was configured for the extension'
+	Assert-True ((Get-FailureCategories $tifData) -contains 'codec_not_configured') 'an unknown extension names codec_not_configured'
+	Assert-True ($tifData.checks.naming -eq 'pass' -and $tifData.checks.completeness -eq 'pass') 'the unknown extension is still accepted by the naming and completeness checks (not rejected)'
+	Write-Output 'PASS: -Extension carries a codec contract (.jpg mjpeg passes, a mixed or wrong-codec sequence fails by name, an unknown extension is unverified)'
+
 	# ============================================================ group 16: the inspector never changed its input
 	# Every fixture built above registered the snapshot it had when the suite finished building it.
-	# This gate compares all 26 of them again, so a later group that corrupts an earlier fixture is
+	# This gate compares all 35 of them again, so a later group that corrupts an earlier fixture is
 	# caught here by path instead of being reported as a pass by a tautology. reports/ is excluded from
 	# those snapshots because the suite writes it on purpose; its contents are accounted separately
 	# (one non-empty report per allocated path, minus the deliberately refused ones).
 	Assert-FixtureInputsUnchanged
 	$fixtureCount = $script:fixtureBaselines.Count
-	Assert-True ($fixtureCount -eq 31) "every fixture directory built by the suite is covered by the comparison, got $fixtureCount"
+	Assert-True ($fixtureCount -eq 35) "every fixture directory built by the suite is covered by the comparison, got $fixtureCount"
 	Assert-True (@(Get-FixtureInputDrift).Count -eq 0) 'no fixture directory was modified, added to or removed after it was built'
 	Assert-True (@(Get-ReportDrift).Count -eq 0) 'reports/ holds exactly one non-empty report per allocated report path'
 	Write-Output "PASS: all $fixtureCount fixture directories and the report directory are unchanged since they were built"
