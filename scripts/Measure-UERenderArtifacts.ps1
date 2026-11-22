@@ -240,6 +240,14 @@ if ($renderExitProvided) {
 	$renderExitText = $renderExitValue.ToString([System.Globalization.CultureInfo]::InvariantCulture)
 }
 
+# A report that cannot be tied to the run and the template revision it inspected is easy to reuse as
+# evidence for a different image sequence or version. Refuse before anything is created.
+$missingProvenance = @()
+if ([string]::IsNullOrWhiteSpace($RunId)) { $missingProvenance += 'RunId' }
+if ([string]::IsNullOrWhiteSpace($SourceRevision)) { $missingProvenance += 'SourceRevision' }
+if ($missingProvenance.Count -gt 0) {
+	throw ('Invalid input: ' + ($missingProvenance -join ' and ') + ' must be given and not blank so the report can be tied to the run and the template revision it inspected.')
+}
 if ($StartNumber -lt 0) {
 	throw 'Invalid input: StartNumber must be 0 or greater. A non-zero start is supported but must be set explicitly from the render range.'
 }
