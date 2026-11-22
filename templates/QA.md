@@ -46,7 +46,7 @@ writer/lease nonce・取得/解放receipt（`scripts/Lease-UETemplateProject.ps1
 | [QA-AUDIO-01] ゲーム実音の聴取 | unverified | |
 | [QA-IMG-01] エンコード前の画像列検査 | unverified | `evidence/frames-check.json`。start/end(exclusive)/命名/期待解像度、MRQ Output Frame Step / Frame Number Offset / Handle Frame Count / Zero Pad Frame Numbers / File Name FormatとhelperのFrameStep/FrameNumberOffset/Digits、欠番・範囲外・曖昧名・0 byte・decode・解像度の各判定 |
 | [QA-MRQ-01] MRQ完了通知・exit code | unverified | 通知本文/exit。画像列検査とは別欄に記録 |
-| [QA-MRQ-02] MRQ/ffprobe実測 | unverified | 幅/高さ/fps/frame数/秒数/codec/音声 |
+| [QA-MRQ-02] MRQ/ffprobe実測 | unverified | 次を別々に記録する。(1) エンコード実行の成否: ffmpegのexit codeとstderr（`-n`は出力が既存だとexit 0で何も書かない）、(2) mp4の由来: 出力path・今回のrender attempt・`-RenderStartedUtc`のmarker・mp4の更新時刻・markerより古い画像の枚数（`render_attempt`/`source_frames_fresh`）、(3) ffprobeのexit codeとtool path/版、(4) 期待値比較: 幅/高さ/fps/frame数/秒数/codec/音声。「枚数が合った」は今回のrenderを検品した証拠ではない。`evidence/encode-check.json` |
 | [QA-VISUAL-01] 先頭/中間/末尾目視・全編再生 | unverified | |
 | [QA-VISUAL-02] 映像と音のloop継ぎ目 | unverified | |
 | [QA-SHIP-01] Shipping成功・ZIP別展開起動/操作 | unverified | |
