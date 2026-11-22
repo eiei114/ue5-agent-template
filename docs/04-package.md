@@ -16,7 +16,37 @@ if ($LASTEXITCODE -ne 0) { throw 'BuildCookRun failed' }
 4. staged exeだけでなく必要Pak/IoStore/依存一式とREADME/CREDITSを梱包。Development/Editor exeを誤納品しない。READMEは`Out/run_<runid>/README.md`として`templates/README.md`から記入し、起動方法と操作表を実機の値にする（雛形の場所・受領証の契約は`docs/06-delivery.md`）。
 5. 新規 `extracted-check/` へZIPを展開し、そこからexeを起動。UE/元sourceへの絶対path依存がないか確認。docs/05-qaの操作/実音/性能/5分検証を**この版**で行う。
    Shippingでは既定でengine内の計測（`stat unit` / FPS chart / `stat startfile`）が使えない（UE 5.8.4のEngineソース読取による静的事実）。性能は外部計測器（`external-capture`）で測るか、別のbuild config（Development等）で測ったことを`measured_build_config`として明記する。Editor Playの数値をShippingの性能として書かない。記録の形と機械判定は`docs/05-qa.md`の「Performance record contract」と`scripts/Test-UEPerformanceRecord.ps1`。Shipping / `-archive` / ZIP手順自体は変えない。
-6. ZIPを閉じてからSHA256を採る（PowerShell `Get-FileHash -Algorithm SHA256 <zip>`）。bytes/内部構成/UE/OS/GPU/ビルド設定/hashをDELIVERYへ。hash後にZIPを編集したら再計測。
+6. ZIPを閉じてからSHA256を採る。bytes/内部構成/UE/OS/GPU/ビルド設定/hashをDELIVERYへ（`artifacts[].bytes`を実file長で書く）。hash後にZIPを編集したら再計測。納品全体の完全性は次節の`SHA256SUMS.txt`で固定する。
+
+## SHA256SUMS.txt（書式契約・生成・検証）
+
+`DELIVERY.json`の`artifacts[]`を入力に、`Out/run_<runid>/SHA256SUMS.txt`を生成して検証する。手で`Out-File`や`Set-Content`で書かない（下記の理由）。
+
+```powershell
+powershell -NoProfile -File scripts\New-DeliveryManifest.ps1 -DeliveryJson Out\run_<runid>\DELIVERY.json
+powershell -NoProfile -File scripts\Test-DeliveryManifest.ps1 -ManifestPath Out\run_<runid>\SHA256SUMS.txt -DeliveryJson Out\run_<runid>\DELIVERY.json
+```
+
+**書式契約**（bytesで検査する）
+
+- UTF-8 **BOMなし**、改行は**LFのみ**、末尾にLF 1つ、空行なし。
+- 1行 = `<小文字hex 64桁>` + **空白2つ** + `<相対path>`。pathは`/`区切り、`./`・`../`・絶対path・drive・先頭`*`（GNUのbinary flag）・重複を許さない。
+- pathの基準dirは`SHA256SUMS.txt`のあるdir。`DELIVERY.json`の`filename`も同じdirからの相対（例: `final/clean.mp4`、`README.md`）。
+- 自分自身のhashを持てない`kind`（`sha256sums`、`delivery_manifest`）は載せない。それ以外の`artifacts[]`は全て載せる。
+
+**手書きが落ちる理由**（実測、2026-11-02、Windows PowerShell 5.1 / pwsh 7）: PS 5.1の`Out-File`既定はUTF-16LE、`Set-Content -Encoding UTF8`はBOM付きCRLF、pwsh 7の`Out-File`既定はBOMなしだがCRLF。GNU `sha256sum -c`はいずれも検証できない（UTF8 BOMなし+LFを明示した場合だけ通る）。検証器はこれらを書式違反として落とす。
+
+**hash実装**: .NET `SHA256`を既定にする。`Get-FileHash`はモジュールcmdletで、`PSModulePath`の解決順によっては当該hostのWindows PowerShell 5.1で解決しない。fallbackを持たない単一cmdlet依存にしない。`Get-FileHash`・`certutil -hashfile <file> SHA256`・`sha256sum`と同じ値になることはsuiteで固定している。
+
+**検証**: 第一は`scripts/Test-DeliveryManifest.ps1`（exit 0=合格 / 1=違反 / 2=入力不備）。`SHA256SUMS.txt`のあるdirから各fileを解決するためcwdに左右されず、書式・`DELIVERY.json`との集合一致（双方向）・`bytes`・hashを一度に見る。GNUで確認する場合は**`SHA256SUMS.txt`のあるdirで**次を実行する。
+
+```sh
+cd Out/run_<runid> && sha256sum -c SHA256SUMS.txt
+```
+
+`sha256sum -c`はcwd依存で、**manifestが一部の行しか持たなくても通る**（完全性は閉じない）ため、納品の合否は`Test-DeliveryManifest.ps1 -DeliveryJson`で判定する。`extracted-check/`からの照合の注意は`docs/05-qa.md`。
+
+生成器は、宣言されたartifactが無い・`bytes`が実file長と違う・`sha256`を書いてあって実hashと違う・pathが不正・載せるartifactが0件のいずれでも停止し、`SHA256SUMS.txt`を書かない。書いた後に検証器と同じ検査を自分で行い、通らなければ削除して停止する。回帰は`scripts/Test-DeliveryManifest.Tests.ps1`（fixtureは自作bytes。UE・ffmpeg不要）。
 
 ## 記入と監査（UE不要・Windows PowerShell）
 
