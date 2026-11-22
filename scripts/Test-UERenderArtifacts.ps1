@@ -42,6 +42,7 @@ $expectedGroups = @(
 	'per-frame-digests-equal-real',
 	'mrq-legacy-movie-graph-names',
 	'extension-carries-codec-contract-jpg',
+	'render-exit-code-judged-not-only-recorded',
 	'all-fixture-directories-report-directory',
 	'group-ledger-drift-fails'
 )
@@ -392,7 +393,15 @@ function Get-ProductionResidue {
 }
 
 function Invoke-Measure {
-	param([hashtable]$Bound, [string]$Script = $measureScript)
+	# Groups written before render_exit existed test the image sequence checks, so they declare a
+	# passing render exit code here and keep their original expectations. A call that supplies its own
+	# RenderExitCode, or sets NoDefaultRenderExit, is passed through untouched; the render-exit group
+	# below uses that to test the unverified, fail and rejected cases.
+	param([hashtable]$Bound, [string]$Script = $measureScript, [switch]$NoDefaultRenderExit)
+	if (-not $NoDefaultRenderExit -and -not $Bound.ContainsKey('RenderExitCode')) {
+		$Bound = $Bound.Clone()
+		$Bound['RenderExitCode'] = '0'
+	}
 	$captured = New-Object System.Collections.Generic.List[string]
 	$exitCode = $null
 	$threw = $false
@@ -490,7 +499,9 @@ try {
 	Assert-True (@($cleanData.failures).Count -eq 0) 'clean sequence records no failure'
 	Assert-True ($cleanData.decoder.resolution -eq 'path_lookup' -or $cleanData.decoder.resolution -eq 'explicit') 'report records the decoder resolution route'
 	Assert-True ($cleanData.decoder.install_attempted -eq $false) 'the inspector did not install a decoder'
-	Assert-True ($cleanData.render_evidence.conclusion -eq 'unevaluated_by_this_tool') 'artifact verdict does not claim render success'
+	Assert-True ($cleanData.render_evidence.conclusion -eq 'evaluated_from_exit_code') 'the render conclusion says it came from the declared exit code'
+	Assert-True ($cleanData.render_evidence.render_artifacts_cannot_prove_render_success -eq $true) 'the report still says artifacts cannot prove render success'
+	Assert-True ($cleanData.checks.render_exit -eq 'pass') 'a declared exit code 0 passes render_exit'
 	Assert-True ($cleanData.overall_qa_verdict -eq 'not_assessed') 'a clean artifact list is not an overall QA pass'
 	$cleanAfter = Get-DirectorySnapshot $cleanDir
 	Assert-True ($cleanBefore -ceq $cleanAfter) 'inspection left every inspected file and name unchanged'
@@ -584,7 +595,8 @@ try {
 	Assert-True (@($swapData.violations.out_of_range_indices) -join ',' -eq '240') 'the violations block lists the raw out-of-range index'
 	Assert-True (@($swapData.violations.decode_failures).Count -eq 0) 'the same-count fixture has no decode failure, so only the index set catches it'
 	Assert-True ($swapData.render_evidence.exit_code -eq '0') 'the supplied render exit code is recorded, not hidden'
-	Assert-True ($swapData.render_evidence.conclusion -eq 'unevaluated_by_this_tool') 'render success is not inferred from or overridden by the artifact check'
+	Assert-True ($swapData.render_evidence.conclusion -eq 'evaluated_from_exit_code') 'render success is not inferred from or overridden by the artifact check'
+	Assert-True ($swapData.checks.render_exit -eq 'pass') 'a declared exit code 0 stays pass while the artifact checks fail'
 	Assert-True ($swapData.overall_qa_verdict -eq 'not_assessed') 'a negative artifact list does not become an overall QA verdict'
 	Register-Group '240-file-sequence-one-missing' 'a 240-file sequence with one missing and one trailing frame fails where a frame count alone passes'
 
@@ -1607,6 +1619,85 @@ try {
 	Assert-True ((Get-FailureCategories $tifData) -contains 'codec_not_configured') 'an unknown extension names codec_not_configured'
 	Assert-True ($tifData.checks.naming -eq 'pass' -and $tifData.checks.completeness -eq 'pass') 'the unknown extension is still accepted by the naming and completeness checks (not rejected)'
 	Register-Group 'extension-carries-codec-contract-jpg' '-Extension carries a codec contract (.jpg mjpeg passes, a mixed or wrong-codec sequence fails by name, an unknown extension is unverified)'
+
+	# ============================================================ group 15b: render exit code is judged, not only recorded
+	# Before this group the helper recorded -RenderExitCode and ignored it: a declared exit 1 still
+	# ended in VERDICT pass / exit 0 / no failure, and a non-numeric value was written into the report as
+	# if it were an observed exit code. The fixture is the clean 240-frame sequence, so every image
+	# sequence check passes and only the render argument differs between the cases below.
+	$renderExitCases = @(
+		@{ Label = 'exit1'; Args = @{ RenderExitCode = '1'; RenderNotification = 'MRQFAILED' }; State = 'fail'; Verdict = 'fail'; Exit = 1; Text = '1' },
+		@{ Label = 'exit7'; Args = @{ RenderExitCode = '7' }; State = 'fail'; Verdict = 'fail'; Exit = 1; Text = '7' },
+		@{ Label = 'exit-negative'; Args = @{ RenderExitCode = '-1' }; State = 'fail'; Verdict = 'fail'; Exit = 1; Text = '-1' },
+		@{ Label = 'exit0'; Args = @{ RenderExitCode = '0'; RenderNotification = 'MRQOK' }; State = 'pass'; Verdict = 'pass'; Exit = 0; Text = '0' },
+		@{ Label = 'exit0-padded'; Args = @{ RenderExitCode = ' 0 ' }; State = 'pass'; Verdict = 'pass'; Exit = 0; Text = '0' },
+		@{ Label = 'not-given'; Args = @{}; State = 'unverified'; Verdict = 'unverified'; Exit = 2; Text = 'not_provided' },
+		@{ Label = 'notification-only'; Args = @{ RenderNotification = 'MRQOK' }; State = 'unverified'; Verdict = 'unverified'; Exit = 2; Text = 'not_provided' },
+		@{ Label = 'failure-wording-exit0'; Args = @{ RenderExitCode = '0'; RenderNotification = 'MRQ FAILED: render error' }; State = 'pass'; Verdict = 'pass'; Exit = 0; Text = '0' }
+	)
+	foreach ($renderExitCase in $renderExitCases) {
+		$caseReport = New-ReportPath ('render-' + $renderExitCase.Label)
+		$caseBound = @{
+			FramesDirectory    = $cleanDir
+			StartNumber        = 0
+			EndNumberExclusive = 240
+			ReportPath         = $caseReport
+			ExpectedWidth      = 64
+			ExpectedHeight     = 48
+		}
+		foreach ($caseKey in $renderExitCase.Args.Keys) { $caseBound[$caseKey] = $renderExitCase.Args[$caseKey] }
+		$caseResult = Invoke-Measure $caseBound -NoDefaultRenderExit
+		$caseLabel = "render case '$($renderExitCase.Label)'"
+		Assert-True (-not $caseResult.Threw) "$caseLabel did not throw: $($caseResult.Error)"
+		Assert-True ($caseResult.ExitCode -eq $renderExitCase.Exit) "$caseLabel exits $($renderExitCase.Exit), got $($caseResult.ExitCode): $($caseResult.Output)"
+		$caseData = Read-Report $caseReport
+		Assert-True ($caseData.artifact_verdict -eq $renderExitCase.Verdict) "$caseLabel artifact_verdict is $($renderExitCase.Verdict), got $($caseData.artifact_verdict)"
+		Assert-True ($caseData.checks.render_exit -eq $renderExitCase.State) "$caseLabel checks.render_exit is $($renderExitCase.State), got $($caseData.checks.render_exit)"
+		Assert-True ($caseData.render_evidence.exit_code -ceq $renderExitCase.Text) "$caseLabel records exit_code '$($renderExitCase.Text)', got '$($caseData.render_evidence.exit_code)'"
+		Assert-True ($caseData.render_evidence.render_artifacts_cannot_prove_render_success -eq $true) "$caseLabel keeps the artifacts-cannot-prove-render-success note"
+		Assert-True ($caseData.overall_qa_verdict -eq 'not_assessed') "$caseLabel does not become an overall QA verdict"
+		foreach ($artifactCheck in @('composition', 'naming', 'completeness', 'range', 'file_size', 'decode', 'resolution')) {
+			Assert-True ($caseData.checks.$artifactCheck -eq 'pass') "$caseLabel leaves the artifact check '$artifactCheck' at pass, got '$($caseData.checks.$artifactCheck)'"
+		}
+		$caseCategories = Get-FailureCategories $caseData
+		if ($renderExitCase.State -eq 'fail') {
+			Assert-True (@($caseCategories | Where-Object { $_ -eq 'render_exit_nonzero' }).Count -eq 1) "$caseLabel lists exactly one render_exit_nonzero failure"
+			Assert-True (@($caseData.failures).Count -eq 1) "$caseLabel has no failure besides the render one, got $(@($caseData.failures).Count)"
+			Assert-True ($caseData.render_evidence.conclusion -eq 'evaluated_from_exit_code') "$caseLabel concludes from the declared exit code"
+			Assert-True ($caseResult.Output.Contains('render_exit=fail')) "$caseLabel prints render_exit=fail in the CHECKS line"
+		} elseif ($renderExitCase.State -eq 'pass') {
+			Assert-True (@($caseData.failures).Count -eq 0) "$caseLabel records no failure"
+			Assert-True ($caseData.render_evidence.conclusion -eq 'evaluated_from_exit_code') "$caseLabel concludes from the declared exit code"
+		} else {
+			Assert-True ($caseCategories -contains 'render_exit_not_provided') "$caseLabel names render_exit_not_provided"
+			Assert-True ($caseData.render_evidence.conclusion -eq 'not_provided') "$caseLabel records that no exit code was provided"
+			Assert-True ($caseData.render_evidence.exit_code_provided -eq $false) "$caseLabel records exit_code_provided false"
+		}
+		if ($renderExitCase.Args.ContainsKey('RenderNotification')) {
+			Assert-True ($caseData.render_evidence.notification -ceq $renderExitCase.Args['RenderNotification']) "$caseLabel records the notification text verbatim"
+		}
+	}
+
+	# A value that is not an integer is rejected before any report exists. It exits 3, which is neither
+	# the artifact fail (1) nor unverified (2), so it cannot be read as a verdict.
+	foreach ($badExit in @('unknown', '1.5', '0x1', '1e3', '--1', '12345678901', 'exit code 0 (warning: none)')) {
+		$badReport = New-ReportPath 'render-invalid'
+		$script:refusedReportCounter++
+		$badResult = Invoke-Measure @{
+			FramesDirectory    = $cleanDir
+			StartNumber        = 0
+			EndNumberExclusive = 240
+			ReportPath         = $badReport
+			ExpectedWidth      = 64
+			ExpectedHeight     = 48
+			RenderExitCode     = $badExit
+		} -NoDefaultRenderExit
+		Assert-True ($badResult.ExitCode -eq 3) "RenderExitCode '$badExit' is rejected with exit 3, got $($badResult.ExitCode): $($badResult.Output)"
+		Assert-True (-not (Test-Path -LiteralPath $badReport)) "RenderExitCode '$badExit' writes no report"
+		Assert-True (-not $badResult.Output.Contains('VERDICT:')) "RenderExitCode '$badExit' prints no verdict"
+		Assert-True ($badResult.Output.Contains('Invalid input: RenderExitCode')) "RenderExitCode '$badExit' is reported as invalid input, got: $($badResult.Output)"
+	}
+	Register-Group 'render-exit-code-judged-not-only-recorded' 'a declared non-zero render exit code fails the verdict and exit 1, 0 passes, no declaration or only a notification stays unverified, and a non-integer is rejected with exit 3 and no report'
 
 	# ============================================================ group 16: the inspector never changed its input
 	# Every fixture built above registered the snapshot it had when the suite finished building it.
