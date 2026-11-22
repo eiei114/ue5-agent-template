@@ -116,7 +116,9 @@ function Invoke-EncodeFixture {
 		[int]$FrameLimit,
 		[int]$EncodeFps,
 		[string]$Name,
-		[string[]]$ExtraArguments = @()
+		[string[]]$ExtraArguments = @(),
+		# An empty value drops -pix_fmt altogether, to reproduce an encode that left the choice to ffmpeg.
+		[string]$PixFmt = 'yuv420p'
 	)
 	$sourceDir = Join-Path $sourceRoot $Name
 	[System.IO.Directory]::CreateDirectory($sourceDir) | Out-Null
@@ -136,7 +138,9 @@ function Invoke-EncodeFixture {
 		'-frames:v', "$FrameLimit"
 	) + $ExtraArguments + @(
 		'-vf', ("scale={0}:{1}" -f $Preset.Width, $Preset.Height),
-		'-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '28', '-preset', 'veryfast',
+		'-c:v', 'libx264'
+	) + $(if ([string]::IsNullOrEmpty($PixFmt)) { @() } else { @('-pix_fmt', $PixFmt) }) + @(
+		'-crf', '28', '-preset', 'veryfast',
 		'-movflags', '+faststart',
 		$videoPath
 	)
@@ -532,7 +536,103 @@ try {
 	Assert-True (@(Get-FailureCategories (Read-Report $futureReport)) -contains 'marker_in_future') 'the report names marker_in_future'
 	Write-Output 'PASS: a missing or impossible marker and a missing frame directory leave the verdict unverified, never pass'
 
-	# ============================================================ group 12: reports are exclusive and the inputs are untouched
+	# ============================================================ group 12: the receipt measures pixel format and profile
+	# The documented encode line declares H.264/yuv420p, but -pix_fmt is a request: ffmpeg warns and
+	# picks another format when the encoder cannot take it, and exits 0. A receipt without pix_fmt and
+	# profile records a yuv444p or 10 bit file as the same pass as the yuv420p one.
+	function Get-ReceiptEntryNames([string]$Text, [string]$Marker) {
+		# The entry names of the first ffprobe line of a document that lists stream entries.
+		$line = @($Text -split "`r?`n" | Where-Object { $_.Contains($Marker) -and $_.Contains('-show_entries') }) | Select-Object -First 1
+		if ($null -eq $line) { return @() }
+		$match = [regex]::Match($line, 'stream=([A-Za-z0-9_,]+)')
+		if (-not $match.Success) { return @() }
+		return @($match.Groups[1].Value -split ',')
+	}
+	$receiptRequired = @('pix_fmt', 'profile', 'level', 'color_range', 'color_space', 'color_transfer', 'color_primaries')
+
+	$pixelCases = @(
+		[pscustomobject]@{ Name = 'pix-420'; PixFmt = 'yuv420p'; ExpectedPixFmt = 'yuv420p'; ExpectedProfileLike = 'High'; Verdict = 0 }
+		[pscustomobject]@{ Name = 'pix-444'; PixFmt = 'yuv444p'; ExpectedPixFmt = 'yuv444p'; ExpectedProfileLike = '4:4:4'; Verdict = 1 }
+		[pscustomobject]@{ Name = 'pix-10bit'; PixFmt = 'yuv420p10le'; ExpectedPixFmt = 'yuv420p10le'; ExpectedProfileLike = 'High 10'; Verdict = 1 }
+		[pscustomobject]@{ Name = 'pix-flag-dropped'; PixFmt = ''; ExpectedPixFmt = 'yuv444p'; ExpectedProfileLike = '4:4:4'; Verdict = 1 }
+		[pscustomobject]@{ Name = 'pix-rgb24-fallback'; PixFmt = 'rgb24'; ExpectedPixFmt = 'yuv444p'; ExpectedProfileLike = '4:4:4'; Verdict = 1 }
+	)
+	$pixelReceipts = @{}
+	foreach ($case in $pixelCases) {
+		$fixture = Invoke-EncodeFixture -Preset $vertical -SourceFrames $vertical.FrameCount -FrameLimit $vertical.FrameCount -EncodeFps 30 -Name $case.Name -PixFmt $case.PixFmt
+		Assert-True ($fixture.ExitCode -eq 0) "the '$($case.Name)' encode exits 0 (a fallback is not an error), got $($fixture.ExitCode): $($fixture.Output)"
+		if ($case.Name -eq 'pix-rgb24-fallback') {
+			Assert-True ($fixture.Output -match 'Incompatible pixel format') "ffmpeg warns on stderr that rgb24 was replaced: $($fixture.Output)"
+		}
+		$caseReport = New-ReportPath $case.Name
+		$caseResult = Invoke-Tool -Script $measureScript -Bound @{ Preset = 'vertical'; VideoPath = $fixture.VideoPath; ReportPath = $caseReport; RenderStartedUtc = $suiteStartUtc; FramesDirectory = $fixture.SourceDirectory }
+		Assert-True (-not $caseResult.Threw) "the '$($case.Name)' inspection did not throw: $($caseResult.Error)"
+		Assert-True ($caseResult.ExitCode -eq $case.Verdict) "'$($case.Name)' exits $($case.Verdict), got $($caseResult.ExitCode): $($caseResult.Output)"
+		$caseData = Read-Report $caseReport
+		Assert-True ($caseData.observed.pix_fmt -eq $case.ExpectedPixFmt) "'$($case.Name)' receipt records pix_fmt $($case.ExpectedPixFmt), got '$($caseData.observed.pix_fmt)'"
+		Assert-True ([string]$caseData.observed.profile -like "*$($case.ExpectedProfileLike)*") "'$($case.Name)' receipt records a profile like '$($case.ExpectedProfileLike)', got '$($caseData.observed.profile)'"
+		Assert-True ($caseData.expectations.pix_fmt -eq 'yuv420p') 'the expected pix_fmt comes from the preset definition (yuv420p)'
+		foreach ($colorField in @('level', 'color_range', 'color_space', 'color_transfer', 'color_primaries')) {
+			$colorValue = [string]$caseData.observed.$colorField
+			Assert-True (-not [string]::IsNullOrWhiteSpace($colorValue)) "'$($case.Name)' receipt records $colorField as a value ('unknown' when unset), never as an empty field"
+		}
+		# Everything else about the file is right: only the pixel format separates the receipts.
+		Assert-True ($caseData.checks.frame_count -eq 'pass' -and $caseData.checks.duration -eq 'pass' -and $caseData.checks.resolution -eq 'pass' -and $caseData.checks.fps -eq 'pass') "'$($case.Name)' matches the preset on frames, duration, resolution and fps"
+		if ($case.Verdict -eq 0) {
+			Assert-True ($caseData.checks.pixel_format -eq 'pass' -and $caseData.artifact_verdict -eq 'pass') 'the yuv420p file passes the pixel format check'
+		} else {
+			Assert-True ($caseData.checks.pixel_format -eq 'fail') "'$($case.Name)' fails the pixel format check"
+			Assert-True ($caseData.artifact_verdict -eq 'fail') "'$($case.Name)' verdict is fail, not pass"
+			Assert-True (@(Get-FailureCategories $caseData) -contains 'pixel_format_mismatch') "'$($case.Name)' report names pixel_format_mismatch"
+		}
+		$pixelReceipts[$case.Name] = ('{0}|{1}' -f $caseData.observed.pix_fmt, $caseData.observed.profile)
+	}
+	Assert-True ($pixelReceipts['pix-420'] -ne $pixelReceipts['pix-444'] -and $pixelReceipts['pix-420'] -ne $pixelReceipts['pix-10bit'] -and $pixelReceipts['pix-444'] -ne $pixelReceipts['pix-10bit']) '420, 444 and 10 bit give three different receipts (they were identical before pix_fmt and profile were measured)'
+	Assert-True ($pixelReceipts['pix-flag-dropped'] -eq $pixelReceipts['pix-444'] -and $pixelReceipts['pix-rgb24-fallback'] -eq $pixelReceipts['pix-444']) 'a dropped flag and an rgb24 request both leave a yuv444p receipt that the inspector rejects'
+
+	# '+' makes the request strict: an unusable format ends the encode with an error instead of a fallback.
+	$strictOk = Invoke-External -FilePath $script:FfmpegPath -ArgumentList @('-hide_banner', '-loglevel', 'error', '-n', '-framerate', '30', '-start_number', '0', '-i', (Join-Path (Join-Path $sourceRoot 'pix-420') '%06d.png'), '-frames:v', '5', '-c:v', 'libx264', '-pix_fmt', '+yuv420p', (Join-Path $videoRoot 'pix-strict-ok.mp4'))
+	Assert-True ($strictOk.ExitCode -eq 0) "-pix_fmt +yuv420p encodes a usable format, got $($strictOk.ExitCode): $($strictOk.Output)"
+	$strictBad = Invoke-External -FilePath $script:FfmpegPath -ArgumentList @('-hide_banner', '-loglevel', 'error', '-n', '-framerate', '30', '-start_number', '0', '-i', (Join-Path (Join-Path $sourceRoot 'pix-420') '%06d.png'), '-frames:v', '5', '-c:v', 'libx264', '-pix_fmt', '+rgb24', (Join-Path $videoRoot 'pix-strict-bad.mp4'))
+	Assert-True ($strictBad.ExitCode -ne 0) "-pix_fmt +rgb24 ends the encode with an error instead of falling back, got exit $($strictBad.ExitCode)"
+
+	# The expectation is the preset's, not a literal in the inspector: a preset that declares yuv444p accepts 444 and rejects 420.
+	$pixPresetFile = Join-Path $fixtureRoot 'presets-pix-444.json'
+	$pixPresetData = Read-Utf8Json $presetFile
+	foreach ($presetEntry in @($pixPresetData.presets)) { if ([string]$presetEntry.name -eq 'vertical') { $presetEntry.pix_fmt = 'yuv444p' } }
+	[System.IO.File]::WriteAllText($pixPresetFile, ($pixPresetData | ConvertTo-Json -Depth 8), [System.Text.UTF8Encoding]::new($false))
+	$pix444Video = Join-Path $videoRoot 'pix-444.mp4'
+	$pix444Dir = Join-Path $sourceRoot 'pix-444'
+	$pix444Pass = Invoke-Tool -Script $measureScript -Bound @{ Preset = 'vertical'; VideoPath = $pix444Video; ReportPath = (New-ReportPath 'pix-preset-444-accepts-444'); PresetFile = $pixPresetFile; RenderStartedUtc = $suiteStartUtc; FramesDirectory = $pix444Dir }
+	Assert-True ($pix444Pass.ExitCode -eq 0) "a preset declaring yuv444p accepts a yuv444p file, got $($pix444Pass.ExitCode): $($pix444Pass.Output)"
+	$pix420Fail = Invoke-Tool -Script $measureScript -Bound @{ Preset = 'vertical'; VideoPath = (Join-Path $videoRoot 'pix-420.mp4'); ReportPath = (New-ReportPath 'pix-preset-444-rejects-420'); PresetFile = $pixPresetFile; RenderStartedUtc = $suiteStartUtc; FramesDirectory = (Join-Path $sourceRoot 'pix-420') }
+	Assert-True ($pix420Fail.ExitCode -eq 1) "a preset declaring yuv444p rejects a yuv420p file, got $($pix420Fail.ExitCode): $($pix420Fail.Output)"
+	Write-Output 'PASS: 420, 444, 10 bit, a dropped flag and an rgb24 fallback give different receipts, and every one that is not the preset pixel format fails'
+
+	# The documents list the entries that make the receipt. A document that stops listing pix_fmt or
+	# profile must fail here, so the check is exercised against a broken copy as well.
+	$qaText = [System.IO.File]::ReadAllText((Join-Path $repoRoot 'docs\05-qa.md'), (New-Object System.Text.UTF8Encoding($false, $true)))
+	$qaTemplateText = [System.IO.File]::ReadAllText((Join-Path $repoRoot 'templates\QA.md'), (New-Object System.Text.UTF8Encoding($false, $true)))
+	$qaEntries = @(Get-ReceiptEntryNames $qaText 'ffprobe -v error -count_frames')
+	Assert-True ($qaEntries.Count -gt 0) 'docs/05-qa.md has an ffprobe receipt line that lists stream entries'
+	foreach ($required in $receiptRequired) {
+		Assert-True ($qaEntries -contains $required) "the docs/05-qa.md receipt line measures $required"
+		Assert-True ($qaTemplateText.Contains($required)) "templates/QA.md names $required in its evidence column"
+	}
+	$brokenQa = $qaText -replace 'pix_fmt,', ''
+	$brokenEntries = @(Get-ReceiptEntryNames $brokenQa 'ffprobe -v error -count_frames')
+	Assert-True (-not ($brokenEntries -contains 'pix_fmt')) 'negative: a document with pix_fmt removed from the receipt line is detected as not measuring it'
+	foreach ($planData in @($verticalPlanData, $landscapePlanData)) {
+		$planEntries = @(Get-ReceiptEntryNames $planData.commands.ffprobe 'ffprobe -v error -count_frames')
+		foreach ($required in $receiptRequired) {
+			Assert-True ($planEntries -contains $required) "the printed ffprobe command measures $required"
+		}
+	}
+	$ruleCount = ([regex]::Matches($qaText, '\*\*RECEIPT-PIXFMT-RULE')).Count
+	Assert-True ($ruleCount -eq 1) "the declared-versus-measured pixel format rule is defined once in docs/05-qa.md, found $ruleCount"
+	Write-Output 'PASS: the docs, the QA template and the printed ffprobe command all measure pix_fmt and profile, and a copy without pix_fmt is detected'
+
+	# ============================================================ group 13: reports are exclusive and the inputs are untouched
 	$reportFiles = @(Get-ChildItem -LiteralPath $reportRoot -Force)
 	$expectedReports = $script:reportCounter
 	Assert-True (@($reportFiles | Where-Object { $_.PSIsContainer }).Count -eq 0) 'no directories were created in reports/'
