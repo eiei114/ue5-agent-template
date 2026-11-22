@@ -82,6 +82,15 @@
 - 実測: Windows、`pwsh`（PowerShell 7）と Windows PowerShell 5.1 で `scripts/Test-UETemplateScripts.ps1` を実行しどちらも exit 0。`scripts/Test-UETemplateScaffold.ps1` は exit 0。同 suite の lock 識別子 assertion のオペランドを `$false` に固定した使い捨て変更は `ASSERT FAILED: different project names produce different lock identifiers` で落ちる（Claude catch-up subagent 実行）。
 - Unverified Scope: UE 5.8.4 の compile / Editor / PIE / MRQ / render は実行していない（UE を起動しない PowerShell harness 層）。`.ps1` の走査対象は `scripts/` 直下のみで、他の path に増えた `.ps1` は対象外。別 file の helper に対する位置引数の検査はしない（同じ file で定義された helper のみ）。GitHub Actions 上での新 job の挙動は PR の check で確認する。
 
+## Unreleased — DOT-3403 — 2026-11-22
+
+- `scripts/Measure-UERenderArtifacts.ps1` は入力一覧と各frameのSHA-256をdecode前に取り、decode後に再確認しなかった。decoder実行中に別writerが有効画像を置換・追加・削除しても、`frames[].sha256`は旧bytes・decode結果は新bytesの混在reportが `pass` になりえた。decode後にdirを再列挙し、範囲内frameのSHA-256を取り直して、名前集合・digestの変化を `checks.input_stability` と `input_stability`（`changed` / `added` / `removed` / `unverifiable`、置換は前後digest）に記録する。変化は `input_changed_during_check` として `fail`（exit 1）、再確認が不完全なら `unverified`。stdoutの `CHECKS:` 行に `input_stability=` を追加した。
+- 検出のみで、snapshot・排他lock・コピーはしない。再確認までの間に戻された変更や再確認後の変更は見えない旨をreportの `input_stability.not_detected` と `docs/05-qa.md` に明記した。入力の修復・削除・改名・書込みはしない。
+- `scripts/Test-UERenderArtifacts.ps1` に group 11c を追加した。decoderのstubが `000001.png` を判定する時点で、hash済みの `000000.png` を置換／範囲外 `000099.png` を追加／`000000.png` を削除する3負例が `fail`・exit 1 になり対象fileが名指しされること、置換時に `frames[].sha256` が旧bytesのdigestのまま前後digestが残ること、変化のない入力は `pass`・全frame再hashで helper が入力を変更しないこと。変更前helperでは新group先頭のassertで落ちる。変更用fixtureは宣言済みの `unstable-inputs/` に隔離し、入力不変gateの対象外にした。
+- 非目標: 由来検査（DOT-3101）、decode予算（DOT-3251）、report書込pathのsymlink境界（DOT-3395）、RunId必須化（DOT-3401）、lease/process ownership、UE/plugin/runtime変更。
+
+未検証: UE 5.8.4 の compile / PIE / MRQ / render / ffprobe 実機 / 目視 / 音。fixtureの結果をUE実行成功へ読み替えない。
+
 ## Unreleased — DOT-3251 — 2026-11-22
 
 - `scripts/Measure-UERenderArtifacts.ps1` の decode 判定が timeout を本物の失敗より先に評価していたため、`decode_failed` と `decode_timeout` が同居すると ground truth が `fail` でも `unverified`（exit 2）と報告し、report 本文（`failures[]` に `decode_failed`）と `artifact_verdict` が矛盾した。優先順を反転し、decode 失敗・codec 不一致が1件でもあれば `fail` を先に確定する。timeout は失敗が無いときだけ `unverified` にする。
