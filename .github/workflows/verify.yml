@@ -138,6 +138,24 @@ jobs:
           ./scripts/Test-UETemplateDocs.ps1
           if ($LASTEXITCODE -ne 0) { throw "Test-UETemplateDocs.ps1 exited $LASTEXITCODE" }
 
+  effective-effort:
+    name: effective effort observation
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 1
+
+      # Read-only helper and its docs contract. The suite builds its own fixture catalog and needs
+      # only node: no model call, no auth, no pi install.
+      - name: Test-PiEffectiveEffort.mjs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          node ./scripts/Test-PiEffectiveEffort.mjs
+          if ($LASTEXITCODE -ne 0) { throw "Test-PiEffectiveEffort.mjs exited $LASTEXITCODE" }
+
   render-artifacts:
     name: render artifact inspection
     runs-on: windows-latest
