@@ -6,6 +6,18 @@
 - 新規ライセンスの付与・選定、法的判断、C++/API/config/recipeの変更はない。
 - 検証は文書の静的照合と `git diff --check`、既存の `Test-UETemplateDocs.ps1` のみ。UE 5.8.4 の compile/PIE/MRQ は実行していない。
 
+## Unreleased — DOT-3240 — 2026-11-22
+
+- `docs/02-runtime.md` は題名で「保存値と実効値を分ける」と言いながら、実効effortを観測する手順を持たず、要求levelがmodelの対応外のとき別levelへ置換される（上方向にも飛ぶ）ことも書いていなかった。そのため `templates/QA.md` に `max / max` と書いて納品できた。pi-ai 1.5.0 の同梱catalogを読む限り、reasoning対応modelの約半数で、要求より高いlevelへ置換されるlevelが1つ以上ある（issue本文の host 実測。別version・別catalogでは保証しない）。
+- `docs/02-runtime.md` に「実効値の観測」節を追加した。Pi sessionのshellで `node scripts/Get-PiEffectiveEffort.mjs --observe` を1回実行して `PI_PROVIDER` / `PI_MODEL` / `PI_REASONING_LEVEL` を読む手順、保存値と実効値が違えば実効値を正本にする規則、上方clampを含む置換の説明と `max`→`high` の例を書いた。「過去案件限定の確定記録」節は変えていない。
+- `templates/QA.md` のpreflight欄「指定model/effort / 保存値 / 実session / 応答 / quota観測範囲」を、指定model・指定effort・保存effort・実効effort・一致（yes / no / 不明）・実session/応答/quota観測範囲に分け、`no` のときは実効effortを正本とする規則を足した。受入項目の行（`[QA-...]`）は増減していない。
+- `docs/01-start.md` のPreflight完了条件に、effortを不明と書く前に「実効値の観測」を1回実行する参照を足した。
+- `scripts/Get-PiEffectiveEffort.mjs`（読み取り専用）と `scripts/Test-PiEffectiveEffort.mjs`（nodeのみ、fixture catalogで実行）を追加し、`.github/workflows/verify.yml` に `effective effort` jobを足した。helperは要求levelがどのlevelへ置換されるかをcatalogだけから事前判定する（一致=exit 0、置換=exit 1、catalog・model・Pi sessionが無い場合は `UNVERIFIED`=exit 2で、合格にしない）。モデル呼出し・認証・課金・`settings.json`の読取りはしない。
+
+未検証: harnessが実際にproviderへ送るthinking値、providerがその値を受け入れたか、他version・将来のcatalogでの置換結果、`templates/QA.md` の新欄が納品品質を上げるか。判定規則はpi-ai 1.5.0の写しで、版が変わったら `--observe` の実効値を優先する。
+
+移行: 既存のpreflight記録の書き換えは強制しない。次のrunから新しい欄を使う。モデル割当の許可（`AGENTS.md`）、`defaultThinkingLevel`、`docs/05-qa.md`の書き出し契約、受入項目の行は変えていない。
+
 ## Unreleased — DOT-3239 — 2026-11-22
 
 - 性能検品の「観測方法」は自由記述の1語で、`templates/QA.md` の `QA-PERF-01` にも計測器・build config を書く場所が無かった。しかも `docs/04-package.md` は性能をShipping ZIPで測ると定めるのに、UE 5.8.4 のEngineソースを読むと、Shippingの既定では engine 内の計測がすべて使えない。`stat unit` は入力経路（`ALLOW_CONSOLE`、`ALLOW_CONSOLE_IN_SHIPPING` 既定0）、FPS chart は `startfpschart` が `!UE_BUILD_SHIPPING` 配下・出力が `ALLOW_DEBUG_FILES`（Shippingでは `WITH_EDITOR`=0）配下、`stat startfile` は `STATS`（既定0）配下。文書どおりに進むと「Editor Playの数字をShippingの性能として書く」「空欄で納品」「数値の捏造」のどれかに落ちた。これは**UEを起動していない静的な読取**であり、実Shipping buildでの実行確認ではない。
