@@ -1,6 +1,6 @@
 # 変更履歴
 
-## Unreleased — UE-QA-REPORT-REUSE-001 (DOT-3443) — 2026-11-23
+## Unreleased — UE-QA-REPORT-REUSE-001 (DOT-3443) — 2026-11-22
 
 - 理由: 画像列検査の report は `evidence/frames-check.json` という固定の1 path で、helper は既存 report を上書きせず拒否する。同じ `Out/run_<runid>/` で「黒frameなら再render」（`docs/05-qa.md`）に従って再検査すると、2回目は何も書かず、QA の証拠欄は現在の `frames/` と対応しない古い pass を指したままになった。さらに引数拒否が artifact の `fail` と同じ exit 1 で終わり、exit code から区別できなかった。
 - 変更: (1) report path を attempt ごとに分けた（`evidence/frames-check-<attempt>.json`、`<attempt>` は同じ run 内の検査回数で1から）。「既存 report を現在の frames の証拠として引用しない」規則の正本は `docs/05-qa.md` の「画像列検査の再実行」節の1箇所だけで、`README.md` と `templates/QA.md` はその節を指し、`Get-UECaptureEncodePlan.ps1` の `FRAMES-CHECK` 行は `<attempt>` 入りの path を出す。(2) `Measure-UERenderArtifacts.ps1` の引数拒否（既存 report path、report が画像列 dir の内側、範囲不正、解像度の片側指定、`FramesDirectory` が無い、reparse point）を、report を書かず exit 3 に統一した（非整数の `-RenderExitCode` は従来から exit 3）。exit 1 は report が書かれ `artifact_verdict` が `fail` のときだけ。判定ロジックは変えていない。(3) `scripts/Test-UERenderArtifacts.ps1` に group `same-run-reinspection-numbered-report-rule` を追加し（正例: 同一 run の2回検査が両方書かれ最新 attempt が現在の frames を反映、旧 report は履歴として不変。負例: 旧 path への再書込は exit 3 で旧 pass を更新しない、規則文の破壊・重複・固定 path への逆戻りを検出）、group 2 などの拒否の期待値を「exit 3 + 拒否文言」に更新した（削除した group は無い）。
