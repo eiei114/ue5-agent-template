@@ -447,10 +447,15 @@ $codecMismatches = New-Object System.Collections.Generic.List[object]
 $resolutionMismatches = New-Object System.Collections.Generic.List[object]
 $decodeTimeouts = New-Object System.Collections.Generic.List[object]
 $decodeNotEvaluated = New-Object System.Collections.Generic.List[object]
-$expectedCodec = 'png'
 $decodeBudgetExhausted = $false
 $retriedFrameCount = 0
 $budgetClock = [System.Diagnostics.Stopwatch]::StartNew()
+# The extension implies the codec ffprobe must report. An extension outside this table has no verified
+# codec contract: it is reported as unverified and never passes (the same rule as an unset resolution),
+# but it is not rejected, because MRQ writes more than PNG. The helper never guesses or renames.
+$codecByExtension = @{ '.png' = 'png'; '.jpg' = 'mjpeg'; '.jpeg' = 'mjpeg'; '.bmp' = 'bmp'; '.exr' = 'exr' }
+$expectedCodec = $codecByExtension[$Extension.ToLowerInvariant()]
+$codecConfigured = -not [string]::IsNullOrEmpty($expectedCodec)
 
 foreach ($frame in $inRangeFrames) {
 	$fileInfo = $frame.file
@@ -610,9 +615,9 @@ foreach ($frame in $inRangeFrames) {
 		continue
 	}
 
-	if ($Extension -ieq '.png' -and $entry.codec -ne $expectedCodec) {
+	if ($codecConfigured -and $entry.codec -ne $expectedCodec) {
 		$entry.decode = 'failed'
-		$entry.detail = "decoded codec '$($entry.codec)' does not match the $Extension name contract"
+		$entry.detail = "decoded codec '$($entry.codec)' does not match the expected '$expectedCodec' for the $Extension name contract"
 		$codecMismatches.Add([ordered]@{ file = $frame.name; index = [int]$frame.index; codec = $entry.codec })
 	}
 
@@ -661,6 +666,8 @@ if ($inRangeFrames.Count -eq 0) {
 	$decodeState = 'unverified'
 } else {
 	$decodeState = Get-WorstState -States @($decodeStates | Select-Object -Unique)
+	# Decoding worked but nothing checked the codec, so the decode check cannot claim a pass.
+	if ($decodeState -eq 'pass' -and -not $codecConfigured) { $decodeState = 'unverified' }
 }
 
 if (-not $resolutionConfigured) {
@@ -749,7 +756,7 @@ if ($decodeFailures.Count -gt 0) {
 if ($codecMismatches.Count -gt 0) {
 	$failures.Add([ordered]@{
 		category = 'codec_mismatch'
-		detail = "$($codecMismatches.Count) frame(s) decode to a codec other than the name contract implies"
+		detail = "$($codecMismatches.Count) frame(s) decode to a codec other than the expected '$expectedCodec' for $Extension"
 		sample = (Format-SampleList -Items $codecMismatches)
 	})
 }
@@ -774,6 +781,13 @@ if ($decodeNotEvaluated.Count -gt 0) {
 		sample = (Format-SampleList -Items $decodeNotEvaluated)
 	})
 }
+if (-not $codecConfigured) {
+	$failures.Add([ordered]@{
+		category = 'codec_not_configured'
+		detail = "no codec contract is defined for extension $Extension (known: .png .jpg .jpeg .bmp .exr), so codec stays unverified instead of passing"
+		sample = ''
+	})
+}
 if (-not $resolutionConfigured) {
 	$failures.Add([ordered]@{
 		category = 'resolution_not_configured'
@@ -795,6 +809,7 @@ $report = [ordered]@{
 		name_prefix = $NamePrefix
 		digits = $Digits
 		extension = $Extension
+		expected_codec = $(if ($codecConfigured) { $expectedCodec } else { 'not_configured' })
 		start_number = $StartNumber
 		end_number_exclusive = $EndNumberExclusive
 		end_is_exclusive = $true
@@ -813,6 +828,7 @@ $report = [ordered]@{
 		frame_number_offset = $FrameNumberOffset
 		index_lattice = $(if ($FrameStep -eq 1) { 'contiguous' } else { "every $FrameStep frame(s)" })
 		resolution = $(if ($resolutionConfigured) { "${ExpectedWidth}x${ExpectedHeight}" } else { 'not_configured' })
+		codec = $(if ($codecConfigured) { $expectedCodec } else { 'not_configured' })
 	}
 	observed = [ordered]@{
 		directory_entry_count = $entries.Count
