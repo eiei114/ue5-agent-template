@@ -1,5 +1,16 @@
 # 変更履歴
 
+## Unreleased — DOT-3442 — 2026-11-22
+
+- 理由: 回帰 suite は group ごとに `PASS:` 行を出すだけで、宣言した group が全部走ったかを検査する箇所が無く、group を丸ごと削除しても PASS / exit 0 で通った（scaffold の path traversal group、render の report exclusivity group の削除は、旧 suite で exit 0 だった）。fixture 件数の assert が偶然に効く group を除き、被覆の欠落は CI にも出なかった。
+- 変更: `scripts/Test-UETemplateScaffold.ps1` と `scripts/Test-UERenderArtifacts.ps1` の先頭に group 台帳 `$expectedGroups`（識別子は語で、位置番号ではない）を 1 箇所だけ置き、各 group 終端の `Write-Output 'PASS: …'` を `Register-Group '<識別子>' '…'`（同じ `PASS:` 行を出す）に置き換えた。try 末尾で「登録数 = 宣言数・欠落 0・未宣言 0・二重登録 0」を assert し、失敗メッセージは欠落した識別子を名指しする。run の最後に `GROUPS: n/n registered`（登録数/宣言数）を出す。
+- 台帳自体の負例: 各 suite 内で、宣言された group が登録されない場合・未宣言の group が登録された場合・二重登録・空の宣言を、この run の登録結果の複製に注入し、`Assert-GroupLedger` が識別子つきで throw することを assert する group（`group-ledger-drift-fails`）を足した。
+- 被覆件数の正本: 現在値はこの項（下の実測）だけに書く。`docs/08-online-foundations.md` の 4 / 5 / 7 assertion groups は当時の記録として残し、最新はこの項と suite の `GROUPS: n/n registered` を参照する。
+- 移行: 既存の生成物・`template-lock.json`・generator / helper の判定ロジックは変えていない。既存 group の assertion は 1 件も削っていない。suite に group を足す側は、`$expectedGroups` に識別子を足し、group 終端で同じ識別子を `Register-Group` する（片方だけだと suite が落ちる）。
+- 実測（Windows、`pwsh` 7 と Windows PowerShell 5.1 の両方、Claude catch-up subagent 実行）: `scripts/Test-UETemplateScaffold.ps1` は `GROUPS: 63/63 registered` / exit 0、`scripts/Test-UERenderArtifacts.ps1`（ffprobe が PATH にある host）は `GROUPS: 21/21 registered` / exit 0、`scripts/Test-UETemplateScripts.ps1` は exit 0（63 と 21 には台帳の負例 group 1 件ずつを含む）。
+- 落ちる側（使い捨てコピー上のみ、branch には入れていない）: 変更前 HEAD（`1d8f629`）の suite から scaffold の `path traversal rejected` と render の `report creation is exclusive` の PASS 行を除くと、どちらも exit 0（PASS 61 行 / 19 行）で素通りした。新 suite から対応する `Register-Group` 行を除くと、どちらも exit 1 で `ASSERT FAILED: every declared assertion group ran: expected 63, got 62; missing groups: …`（render は 21 / 20）となり、欠落した識別子を名指しする。
+- Unverified Scope: UE 5.8.4 の compile / Editor / PIE / MRQ / render は実行していない（UE を起動しない PowerShell harness 層）。GitHub Actions 上で新 assert が落ちることは PR の check で確認する範囲であり、本変更の実測は本 host のみ。`git diff --check` は repo の CRLF 規約のため `core.whitespace=cr-at-eol` を付けて確認した。
+
 ## Unreleased — DOT-3460 — 2026-11-22
 
 - `scripts/Test-UETemplateScaffold.ps1` の「異なる project 名は異なる lock の識別子を作る」assertion は、かつて 1 行にタブで結合されていた。PowerShell は途中に現れた 2 つ目の `Assert-True` を構文エラーにせず文字列引数として取り込むため、その assertion は一度も評価されず、suite は PASS / exit 0 のままだった。DOT-3460 の着手時点で、その行は `origin/main` 上すでに 2 行に分かれていた（本変更では分割していない）。実在する結合を落とす gate が無いことが残っていた欠陥である。

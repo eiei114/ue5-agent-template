@@ -44,6 +44,8 @@ UE docs describe capability and configuration, not this project's connection suc
 
 ## 検証履歴
 
+以下の表の「4 / 5 / 7 assertion groups」は、その日付時点の記録であり、履歴として残す。現在の被覆件数の正本は `CHANGELOG.md` の「Unreleased — DOT-3442」に 1 箇所だけ置き、この文書では数えない。最新は suite 自身が出力する `GROUPS: n/n registered` を読む。
+
 | 実施日 (JST) | 対象 | 結果 | 制約 |
 |---|---|---|---|
 | 2026-11-01 | Windows host preflight / installed UE / plugins | UE 5.8.4とNull/EOS/Steam OSS plugin filesを確認。認証済みEOS/Steam accountやinternet sessionを試していない | インストール存在はcompile/PIE/NAT成功を示さない。今回の正確なbuild/PIE結果は最終Issue commentとQA記録を参照 |
