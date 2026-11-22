@@ -1211,21 +1211,42 @@ $report = [ordered]@{
 	)
 }
 
+# The report is published atomically: the complete JSON is written to a run-owned temporary file in
+# the same directory, flushed to disk, and only then moved to the final name. File.Move does not
+# overwrite, so an existing or racing report at the final name is never replaced, and a failed write
+# cannot leave a partial JSON under the report name.
+# UE_RENDER_QA_TEST_FAULT is a test-only fault-injection hook; it is unset in normal use.
+$testFault = [Environment]::GetEnvironmentVariable('UE_RENDER_QA_TEST_FAULT')
+$reportDir = if ([string]::IsNullOrWhiteSpace($reportParent)) { (Get-Location).Path } else { $reportParent }
+$tempReport = Join-Path $reportDir ('.' + [System.IO.Path]::GetFileName($reportFull) + '.' + [Guid]::NewGuid().ToString('N') + '.tmp')
+$tempCreated = $false
 try {
-	$fileStream = [System.IO.FileStream]::new($reportFull, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+	$reportBytes = $utf8NoBom.GetBytes((ConvertTo-Json -InputObject $report -Depth 12) + [Environment]::NewLine)
+	$fileStream = [System.IO.FileStream]::new($tempReport, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+	$tempCreated = $true
 	try {
-		$writer = New-Object System.IO.StreamWriter($fileStream, $utf8NoBom)
-		try {
-			$writer.Write((ConvertTo-Json -InputObject $report -Depth 12))
-			$writer.Write([Environment]::NewLine)
-		} finally {
-			$writer.Dispose()
+		$half = [int]($reportBytes.Length / 2)
+		$fileStream.Write($reportBytes, 0, $half)
+		if ($testFault -ceq 'write-midway') {
+			$fileStream.Flush()
+			throw 'Injected report write failure after a partial write.'
 		}
+		$fileStream.Write($reportBytes, $half, $reportBytes.Length - $half)
+		$fileStream.Flush($true)
 	} finally {
 		$fileStream.Dispose()
 	}
+	if ($testFault -ceq 'publish-conflict') {
+		[System.IO.File]::WriteAllText($reportFull, 'competing report', $utf8NoBom)
+	}
+	[System.IO.File]::Move($tempReport, $reportFull)
+	$tempCreated = $false
 } catch {
-	throw "Could not exclusively create the report file: $reportFull. $($_.Exception.Message)"
+	$writeError = $_.Exception.Message
+	if ($tempCreated) {
+		try { [System.IO.File]::Delete($tempReport) } catch { $null = $_ }
+	}
+	throw "Could not publish the report file: $reportFull. $writeError"
 }
 
 Write-Output "VERDICT: $verdict"
