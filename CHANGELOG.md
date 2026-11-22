@@ -15,6 +15,7 @@
 - 変更: (1) report path を attempt ごとに分けた（`evidence/frames-check-<attempt>.json`、`<attempt>` は同じ run 内の検査回数で1から）。「既存 report を現在の frames の証拠として引用しない」規則の正本は `docs/05-qa.md` の「画像列検査の再実行」節の1箇所だけで、`README.md` と `templates/QA.md` はその節を指し、`Get-UECaptureEncodePlan.ps1` の `FRAMES-CHECK` 行は `<attempt>` 入りの path を出す。(2) `Measure-UERenderArtifacts.ps1` の引数拒否（既存 report path、report が画像列 dir の内側、範囲不正、解像度の片側指定、`FramesDirectory` が無い、reparse point）を、report を書かず exit 3 に統一した（非整数の `-RenderExitCode` は従来から exit 3）。exit 1 は report が書かれ `artifact_verdict` が `fail` のときだけ。判定ロジックは変えていない。(3) `scripts/Test-UERenderArtifacts.ps1` に group `same-run-reinspection-numbered-report-rule` を追加し（正例: 同一 run の2回検査が両方書かれ最新 attempt が現在の frames を反映、旧 report は履歴として不変。負例: 旧 path への再書込は exit 3 で旧 pass を更新しない、規則文の破壊・重複・固定 path への逆戻りを検出）、group 2 などの拒否の期待値を「exit 3 + 拒否文言」に更新した（削除した group は無い）。
 - 移行: 拒否を exit 1 で判定していた呼び出しは exit 3 に読み替える。QA の証拠欄（`QA-IMG-01`）には実際に使った `frames-check-<attempt>.json` の file 名を書く。既に固定名 `frames-check.json` で書いた過去 run の report は読み替え不要で、そのまま履歴として残る。
 - Unverified Scope: UE の compile / Editor / PIE / MRQ / render / ffprobe（MP4）/ 目視 / 音 / Shipping は実行していない。実 MRQ の画像列に対する再検査、実際の run で何 attempt 発生するか、agent が最新 attempt を取り違えないかは未観測。DOT-3401（`run_id` / `source_revision` の必須化）、DOT-3430（report の atomic 書込）は別 Issue で、ここでは扱っていない。
+
 ## Unreleased — UE-RENDER-EXIT-EVIDENCE-001 (DOT-3458) — 2026-11-22
 
 - 理由: `scripts/Measure-UERenderArtifacts.ps1` は `-RenderExitCode` / `-RenderNotification` を受け取って `render_evidence` に書くだけで、どの判定にも使っていなかった。`conclusion` は常に定数 `unevaluated_by_this_tool` で、`-RenderExitCode 1`（render は exit 1 で落ちた）と明示しても `VERDICT: pass` / process exit 0 / `failures` 0 を返し、「exit 0 なら緑」の機械 gate をそのまま通った。`-RenderExitCode unknown` のような非数値も検証されずに `exit_code: "unknown"` として report へ書かれた。`docs/05-qa.md` が要求する render 通知/exit の独立判定の欄が実装に無かった。
@@ -71,6 +72,13 @@
 - 移行: generator、recipe の構成、既存の生成済み project、既存の `template-lock.json` は変えていない。
 - 実測: Windows で `scripts/Test-UETemplateScaffold.ps1` を `pwsh`（PowerShell 7）と Windows PowerShell 5.1 の両方で実行し exit 0（双方 `GROUPS: 64/64 registered`）。新 group は DOT-3442 の group ledger に `editor-target-route-table-matches-generated` として宣言した。`scripts/Test-UETemplateScripts.ps1` も exit 0（Claude catch-up subagent 実行）。
 - Unverified Scope: UE 5.8.4 の build / UBT 実行 / Editor 起動 / PIE は実行していない。`Build.bat` の例は未実行で、合成 target の挙動は静的読取の推論に留まる。生成物の target 名は合成 Engine fixture からの実測で、実 install から生成した実測ではない。
+
+## Unreleased — DOT-3430 — 2026-11-22
+
+- 画像列QA helper `scripts/Measure-UERenderArtifacts.ps1` のreport書込を原子的にした。reportは同じ親directoryの実行固有の一時fileへ全bytesを書いてflushし、成功後だけ最終ReportPathへ上書きなしでmoveする。書込途中に失敗しても最終ReportPathに不完全JSONを公開せず、この実行の一時fileを削除し、既存reportはbyte単位で保持する。
+- 変更前は最終ReportPathを直接`CreateNew`で開いて書いていたため、write途中の失敗で部分JSONが残り、同じReportPathでの再実行が既存fileとして拒否されていた。正常時のJSON schema・verdict・終了codeは変わらない。
+- `scripts/Test-UERenderArtifacts.ps1`: テスト専用の環境変数`UE_RENDER_QA_TEST_FAULT`（`write-midway` / `publish-conflict`、未設定なら無効）で書込途中の失敗と公開時の競合を注入するgroup 2bを追加した。
+- 境界: 強制process kill時の一時file削除は保証しない。frames入力snapshot（DOT-3403）、reparse-point境界（DOT-3395）、RunId必須化（DOT-3401）、decoder予算、scaffold atomicity（DOT-3076）は変更しない。UE 5.8.4 compile/PIE/MRQ/render/ffprobe実映像検査は未検証（Unverified Scope）。
 
 ## Unreleased — DOT-3460 — 2026-11-22
 
