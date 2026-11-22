@@ -74,6 +74,17 @@ generatorはrecipe名を一切見ない。`-Recipe` は `templates/recipes/<Reci
 
 `recipe.json` / `Capture.md` / `Play.md` は生成物の `Recipe/` へ逐語コピーされる。`SET.md` は `templates/recipes/common/SET.md` の1つだけが全recipeに共通で入る。このため `templates/recipes/common/` のような `recipe.json` を持たないディレクトリは recipe ではなく、`-Recipe` に指定しても選択肢として案内されない（未知recipeとして停止する）。
 
+### 生成物の参照閉包契約（正本はここ1箇所）
+
+生成物だけを受け取ったagentはsource checkout（このrepoのroot）を持たない。生成物へ複製する文書（`Recipe/*.md`、`docs/*.md`、`Plugins/**/*.md`）が案内するrepo path（`docs/`・`scripts/`・`templates/`・`Plugins/`・`Config/`・`Source/`を指すbacktickと相対リンク）は、次のどちらかを満たす。
+
+1. 生成物内で解決する（その文書を生成物へ同梱している）。
+2. 解決しない場合、**同じ行**、またはその文書の冒頭に置いた通知1行で「source checkout相対で、生成物には同梱されない」と明記する。通知は `source checkout` と `同梱されない`（英文書は `not bundled`）を含む。
+
+同梱するのは文書だけで、`scripts/` と `templates/CAPTURE-PRESETS.json` などの実行物は同梱しない（生成物が古い写しを実行し、repo側の更新を見失うのを避ける）。生成物から実行物へ進むときは、`template-lock.json` の `template_repository` と `template_commit`（上記の公開契約）で source checkout を特定し、そのrootを作業directoryにして実行する。`docs/05-qa.md` は、composition がrecipe名ではなくファイル構成で決まる原則のまま、`Recipe/Capture.md` を持つ全recipeに逐語コピーされる（生成物の写しは生成時点の版であり、repoで更新されても生成物は自動では変わらない）。
+
+`scripts/Test-UETemplateScaffold.ps1` の参照閉包groupが、生成した3 recipeすべてで上記を検査し、参照を1件壊した負例で壊れた path を名指して落ちることを固定する。対象外は `/Game/...`（UE package path）、`<ProjectName>` などの placeholder、`http(s)` のURLで、repo pathではない。
+
 ### `purpose` の契約（合成を変えない、lockとコピーだけが変わる）
 
 `purpose` は**合成判断に使わない**。合成（どのtemplateをコピーするか、plugin一式を入れるか、`docs/08`を同梱するか、`Recipe/Play.md`を出すか）は `engine_template` / `required_plugins` / recipeディレクトリに実在するファイルだけで決まる。同じデータと同じファイル構成を持つ2つのrecipeは、`purpose` が違っても**同じファイル集合・同じplugin構成・同じPlay差分**を出す。

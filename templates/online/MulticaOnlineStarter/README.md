@@ -1,5 +1,7 @@
 # Multica Online Starter (Null/LAN only)
 
+> Paths such as `scripts/` and `LICENSE-NOTICE.md` in this file are relative to the ue5-agent-template source checkout and are not bundled into a generated project. Other paths (`Source/`, `Config/`) are relative to this plugin directory.
+
 Small C++ starting point for a new UE project. It uses the
 installed engine's Online Subsystem Null provider and listen-server replication.
 It includes no map, input asset, account, credential, SDK download, or licensed
