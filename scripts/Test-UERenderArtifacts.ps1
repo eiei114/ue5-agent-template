@@ -44,6 +44,7 @@ $expectedGroups = @(
 	'extension-carries-codec-contract-jpg',
 	'render-exit-code-judged-not-only-recorded',
 	'same-run-reinspection-numbered-report-rule',
+	'frame-variety-declared-identical-frames',
 	'all-fixture-directories-report-directory',
 	'group-ledger-drift-fails'
 )
@@ -1792,15 +1793,150 @@ try {
 		Assert-True (($brokenProblems -join '; ').Contains($brokenCase.Needle)) "the rule check fails when $($brokenCase.Name), got: $($brokenProblems -join '; ')"
 	}
 	Register-Group 'same-run-reinspection-numbered-report-rule' 'a second inspection of the same run is written to its own numbered report and describes the current frames, the first report is kept as history, and the single documented rule fails when it is broken or repeated'
+	# ============================================================ group 15d: identical frames across files (DOT-3453)
+	# docs/05-qa.md says not to produce duplicate frames, yet 240 byte-identical frames used to pass
+	# every check. The helper now counts distinct digests from the frames[].sha256 it already computes.
+	# Whether identical frames are a defect is the caller's declaration, so frame_variety stays
+	# unverified by default and only a declaration produces pass or fail. The decoder is left missing in
+	# the cheap runs because this group is about digests, not pictures; one real-decoder run of a
+	# distinct sequence proves the positive case exits 0.
+	function New-ShadeSequence {
+		# One frame per entry of Shades: the same shade is the same bytes, a different shade is not.
+		param([string]$Directory, [int[]]$Shades)
+		[System.IO.Directory]::CreateDirectory($Directory) | Out-Null
+		$cache = @{}
+		for ($i = 0; $i -lt $Shades.Count; $i++) {
+			$shade = $Shades[$i]
+			if (-not $cache.ContainsKey($shade)) { $cache[$shade] = New-FixturePng -Width 64 -Height 48 -Shade $shade }
+			[System.IO.File]::WriteAllBytes((Join-Path $Directory ('{0:D6}.png' -f $i)), $cache[$shade])
+		}
+	}
+	$noDecoder = Join-Path $fixtureRoot 'no-such-ffprobe.exe'
+	$varietyBase = @{ StartNumber = 0; ExpectedWidth = 64; ExpectedHeight = 48; DecoderPath = $noDecoder; RunId = "fixture-$testId"; SourceRevision = 'fixture' }
+
+	$frozenDir = Join-Path $fixtureRoot 'variety-frozen240'
+	New-ShadeSequence -Directory $frozenDir -Shades @(1..240 | ForEach-Object { 7 })
+	Register-FixtureSnapshot 'variety-frozen240'
+	$mixedDir = Join-Path $fixtureRoot 'variety-mixed240'
+	New-ShadeSequence -Directory $mixedDir -Shades @((1..239 | ForEach-Object { 7 }) + @(200))
+	Register-FixtureSnapshot 'variety-mixed240'
+	$runsDir = Join-Path $fixtureRoot 'variety-runs12'
+	# A A A B B C D D D D E F: 6 distinct, groups of 3, 2 and 4 = 9 duplicate frames, longest run 4.
+	New-ShadeSequence -Directory $runsDir -Shades @(10, 10, 10, 20, 20, 30, 40, 40, 40, 40, 50, 60)
+	Register-FixtureSnapshot 'variety-runs12'
+	$distinctDir = Join-Path $fixtureRoot 'variety-distinct240'
+	New-ShadeSequence -Directory $distinctDir -Shades @(0..239)
+	Register-FixtureSnapshot 'variety-distinct240'
+
+	# Undeclared: the existing clean240 fixture only has 20 distinct frames (shade = index * 11 mod 220),
+	# so it is itself a repetition. It still passes, frame_variety is unverified, and the counts show it.
+	$cleanVariety = Read-Report $cleanReport
+	Assert-True ($cleanVariety.artifact_verdict -eq 'pass') 'an undeclared frame_variety does not change the verdict of the existing clean sequence'
+	Assert-True ($cleanVariety.checks.frame_variety -eq 'unverified') 'frame_variety is unverified by default'
+	Assert-True ($cleanVariety.frame_variety_declaration -eq 'none') 'the report records that no declaration was made'
+	Assert-True ($cleanVariety.observed.distinct_frame_hashes -eq 20 -and $cleanVariety.observed.hashed_frame_count -eq 240) "the clean fixture reports its 20 distinct digests over 240 frames, got $($cleanVariety.observed.distinct_frame_hashes)/$($cleanVariety.observed.hashed_frame_count)"
+	Assert-True (@($cleanVariety.failures | Where-Object { $_.category -like 'frame_variety*' }).Count -eq 0) 'an undeclared frame_variety adds no failure entry'
+
+	# Frozen: all 240 frames identical.
+	$frozenArgs = $varietyBase + @{ FramesDirectory = $frozenDir; EndNumberExclusive = 240 }
+	$frozenUndeclaredPath = New-ReportPath 'variety-frozen-undeclared'
+	$frozenUndeclared = Invoke-Measure ($frozenArgs + @{ ReportPath = $frozenUndeclaredPath })
+	$frozenUndeclaredData = Read-Report $frozenUndeclaredPath
+	Assert-True ($frozenUndeclaredData.checks.frame_variety -eq 'unverified') 'identical frames without a declaration stay unverified, never pass'
+	Assert-True ($frozenUndeclaredData.observed.distinct_frame_hashes -eq 1 -and $frozenUndeclaredData.observed.longest_identical_run -eq 240) 'the undeclared report still says 1 distinct digest and a run of 240'
+	Assert-True ($frozenUndeclaredData.observed.duplicate_frames -eq 240 -and $frozenUndeclaredData.observed.duplicate_groups -eq 1) 'the undeclared report names 240 duplicate frames in 1 group'
+
+	$frozenMinPath = New-ReportPath 'variety-frozen-min'
+	$frozenMin = Invoke-Measure ($frozenArgs + @{ ReportPath = $frozenMinPath; ExpectedMinDistinctFrames = 2 })
+	Assert-True ($frozenMin.ExitCode -eq 1) "240 identical frames with a declared minimum exit 1, got $($frozenMin.ExitCode): $($frozenMin.Output)"
+	$frozenMinData = Read-Report $frozenMinPath
+	Assert-True ($frozenMinData.checks.frame_variety -eq 'fail' -and $frozenMinData.artifact_verdict -eq 'fail') 'the declared minimum fails frame_variety and the verdict'
+	Assert-True ($frozenMinData.observed.distinct_frame_hashes -eq 1) 'the report keeps distinct_frame_hashes = 1'
+	Assert-True ((Get-FailureCategories $frozenMinData) -contains 'frame_variety_below_expected') 'the failure is named frame_variety_below_expected'
+	Assert-True ($frozenMinData.frame_variety_declaration -eq 'min_distinct_frames:2') 'the report records the declared minimum'
+	Assert-True ($frozenMin.Output.Contains('frame_variety=fail') -and $frozenMin.Output.Contains('distinct=1')) 'the CHECKS and IDENTITY lines show the result'
+	foreach ($check in @('composition', 'naming', 'completeness', 'range', 'file_size', 'resolution')) {
+		Assert-True ($frozenMinData.checks.$check -eq $frozenUndeclaredData.checks.$check) "declaring the minimum does not change the existing check '$check'"
+	}
+
+	# Allow: the same frozen frames, explicitly allowed. frame_variety passes, nothing else moves.
+	$frozenAllowPath = New-ReportPath 'variety-frozen-allow'
+	$frozenAllow = Invoke-Measure ($frozenArgs + @{ ReportPath = $frozenAllowPath; AllowIdenticalFrames = $true })
+	$frozenAllowData = Read-Report $frozenAllowPath
+	Assert-True ($frozenAllowData.checks.frame_variety -eq 'pass' -and $frozenAllowData.frame_variety_declaration -eq 'allow_identical_frames') 'an explicit allowance passes frame_variety and records the declaration'
+	Assert-True ($frozenAllowData.observed.distinct_frame_hashes -eq 1) 'the allowance does not hide the counts'
+	foreach ($check in @('composition', 'naming', 'completeness', 'range', 'file_size', 'decode', 'resolution', 'render_exit')) {
+		Assert-True ($frozenAllowData.checks.$check -eq $frozenUndeclaredData.checks.$check) "the allowance leaves the existing check '$check' unchanged ($($frozenUndeclaredData.checks.$check))"
+	}
+	Assert-True ($frozenAllow.ExitCode -eq $frozenUndeclared.ExitCode -and $frozenAllowData.artifact_verdict -eq $frozenUndeclaredData.artifact_verdict) 'the allowance does not change the verdict or exit code of the other checks'
+
+	# Negative control: the same frozen frames without the declaration are not failed on variety and
+	# never become a pass, so the failing call above is failing because of the declaration.
+	Assert-True ($frozenUndeclared.ExitCode -ne 1) 'without the declaration the frozen sequence is not failed on variety'
+	Assert-True ($frozenUndeclaredData.checks.frame_variety -ne 'pass') 'removing the declaration cannot turn the check into a pass'
+
+	# Mixed: 239 identical frames plus one different one.
+	$mixedPath = New-ReportPath 'variety-mixed'
+	$mixed = Invoke-Measure ($varietyBase + @{ FramesDirectory = $mixedDir; EndNumberExclusive = 240; ReportPath = $mixedPath; ExpectedMinDistinctFrames = 3 })
+	$mixedData = Read-Report $mixedPath
+	Assert-True ($mixed.ExitCode -eq 1 -and $mixedData.checks.frame_variety -eq 'fail') 'a minimum of 3 fails the 239 + 1 sequence'
+	Assert-True ($mixedData.observed.distinct_frame_hashes -eq 2 -and $mixedData.observed.duplicate_groups -eq 1 -and $mixedData.observed.duplicate_frames -eq 239) 'the 239 + 1 sequence has 2 distinct digests and 1 duplicate group of 239 frames'
+	$mixedGroup = @($mixedData.observed.duplicate_group_samples)[0]
+	Assert-True ($mixedGroup.frame_count -eq 239 -and $mixedGroup.first_index -eq 0 -and $mixedGroup.last_index -eq 238) 'the duplicate group names indices 0..238'
+	Assert-True (@($mixedGroup.files)[0] -ceq '000000.png' -and @($mixedGroup.indices).Count -le 20 -and $mixedGroup.sample_truncated -eq $true) 'the group lists file names as a bounded sample and says it is truncated'
+	Assert-True ($mixedData.observed.longest_identical_run -eq 239) 'the longest identical run is 239'
+
+	# Runs: several small groups, counted in one pass.
+	$runsPath = New-ReportPath 'variety-runs'
+	$runs = Invoke-Measure ($varietyBase + @{ FramesDirectory = $runsDir; EndNumberExclusive = 12; ReportPath = $runsPath; ExpectedMinDistinctFrames = 6 })
+	$runsData = Read-Report $runsPath
+	Assert-True ($runsData.observed.distinct_frame_hashes -eq 6 -and $runsData.observed.duplicate_groups -eq 3 -and $runsData.observed.duplicate_frames -eq 9 -and $runsData.observed.longest_identical_run -eq 4) 'the runs fixture reports 6 distinct, 3 groups, 9 duplicate frames and a longest run of 4'
+	Assert-True ($runsData.checks.frame_variety -eq 'pass') 'a minimum equal to the distinct count passes'
+	$runsFailPath = New-ReportPath 'variety-runs-fail'
+	$runsFail = Invoke-Measure ($varietyBase + @{ FramesDirectory = $runsDir; EndNumberExclusive = 12; ReportPath = $runsFailPath; ExpectedMinDistinctFrames = 7 })
+	Assert-True ($runsFail.ExitCode -eq 1 -and (Read-Report $runsFailPath).checks.frame_variety -eq 'fail') 'a minimum one above the distinct count fails'
+	$groupSizes = @(@($runsData.observed.duplicate_group_samples) | ForEach-Object { $_.frame_count })
+	Assert-True (($groupSizes -join ',') -eq '4,3,2') "duplicate groups are listed largest first, got $($groupSizes -join ',')"
+
+	# The existing repetition fixture is caught only when the caller declares a minimum.
+	$cleanMinPath = New-ReportPath 'variety-clean-min'
+	$cleanMin = Invoke-Measure ($varietyBase + @{ FramesDirectory = $cleanDir; EndNumberExclusive = 240; ReportPath = $cleanMinPath; ExpectedMinDistinctFrames = 240 })
+	Assert-True ($cleanMin.ExitCode -eq 1 -and (Read-Report $cleanMinPath).observed.distinct_frame_hashes -eq 20) 'the 20-distinct clean fixture fails a declared minimum of 240'
+
+	# Input refusal: contradictions and unreachable minimums are exit 3 with no report.
+	$refusals = @(
+		@{ Name = 'both declarations'; Extra = @{ ExpectedMinDistinctFrames = 2; AllowIdenticalFrames = $true }; Needle = 'contradict' },
+		@{ Name = 'a minimum above the expected frame count'; Extra = @{ ExpectedMinDistinctFrames = 241 }; Needle = 'larger than the 240' },
+		@{ Name = 'a minimum of 0'; Extra = @{ ExpectedMinDistinctFrames = 0 }; Needle = 'must be 1 or greater' }
+	)
+	foreach ($refusal in $refusals) {
+		$refusedPath = New-ReportPath 'variety-refused'
+		$script:refusedReportCounter++
+		$refused = Invoke-Measure ($frozenArgs + @{ ReportPath = $refusedPath } + $refusal.Extra)
+		Assert-True ($refused.ExitCode -eq 3) "$($refusal.Name) is refused with exit 3, got $($refused.ExitCode): $($refused.Output)"
+		Assert-True (-not (Test-Path -LiteralPath $refusedPath)) "$($refusal.Name) writes no report"
+		Assert-True ($refused.Output.Contains($refusal.Needle)) "$($refusal.Name) names the reason, got: $($refused.Output)"
+	}
+
+	# Positive: 240 distinct frames, real decoder, declared minimum 240 -> pass, exit 0.
+	$distinctPath = New-ReportPath 'variety-distinct'
+	$distinct = Invoke-Measure @{ FramesDirectory = $distinctDir; StartNumber = 0; EndNumberExclusive = 240; ReportPath = $distinctPath; ExpectedWidth = 64; ExpectedHeight = 48; ExpectedMinDistinctFrames = 240; RunId = "fixture-$testId"; SourceRevision = 'fixture' }
+	Assert-True ($distinct.ExitCode -eq 0) "240 distinct frames with a declared minimum of 240 exit 0, got $($distinct.ExitCode): $($distinct.Output)"
+	$distinctData = Read-Report $distinctPath
+	Assert-True ($distinctData.checks.frame_variety -eq 'pass' -and $distinctData.artifact_verdict -eq 'pass') 'the distinct sequence passes frame_variety and the verdict'
+	Assert-True ($distinctData.observed.distinct_frame_hashes -eq 240 -and $distinctData.observed.duplicate_groups -eq 0 -and $distinctData.observed.longest_identical_run -eq 1) 'the report shows 240 distinct digests, no duplicate group and a longest run of 1'
+	Assert-True (@(Get-DigestViolations $distinctData $distinctDir).Count -eq 0) 'the distinct sequence digests are the real SHA-256 of each file'
+	Register-Group 'frame-variety-declared-identical-frames' 'identical frames across files are counted from the existing digests, frame_variety is unverified unless declared, a declared minimum fails a frozen or 239 + 1 sequence with exit 1, an allowance passes it without moving the other checks, bad declarations are refused with exit 3, and 240 distinct frames pass with exit 0'
+
 	# ============================================================ group 16: the inspector never changed its input
 	# Every fixture built above registered the snapshot it had when the suite finished building it.
-	# This gate compares all 36 of them again, so a later group that corrupts an earlier fixture is
+	# This gate compares all 40 of them again, so a later group that corrupts an earlier fixture is
 	# caught here by path instead of being reported as a pass by a tautology. reports/ is excluded from
 	# those snapshots because the suite writes it on purpose; its contents are accounted separately
 	# (one non-empty report per allocated path, minus the deliberately refused ones).
 	Assert-FixtureInputsUnchanged
 	$fixtureCount = $script:fixtureBaselines.Count
-	Assert-True ($fixtureCount -eq 36) "every fixture directory built by the suite is covered by the comparison, got $fixtureCount"
+	Assert-True ($fixtureCount -eq 40) "every fixture directory built by the suite is covered by the comparison, got $fixtureCount"
 	Assert-True (@(Get-FixtureInputDrift).Count -eq 0) 'no fixture directory was modified, added to or removed after it was built'
 	Assert-True (@(Get-ReportDrift).Count -eq 0) 'reports/ holds exactly one non-empty report per allocated report path'
 	Register-Group 'all-fixture-directories-report-directory' "all $fixtureCount fixture directories and the report directory are unchanged since they were built"
