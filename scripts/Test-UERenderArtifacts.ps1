@@ -567,6 +567,56 @@ try {
 	}
 	Register-Group 'report-creation-exclusive-cannot-write' 'report creation is exclusive and cannot write inside the inspected sequence'
 
+	# ============================================================ group 2b: atomic report publication
+	# A failure after some bytes were written must not leave a partial JSON under the report name,
+	# must not leave the run's temporary file behind, and must not touch an existing report. The
+	# failure is injected through the test-only UE_RENDER_QA_TEST_FAULT variable, which is unset
+	# (and so has no effect) in every other group.
+	$atomicBound = {
+		param([string]$ReportFile)
+		@{
+			FramesDirectory    = $cleanDir
+			StartNumber        = 0
+			EndNumberExclusive = 240
+			ReportPath         = $ReportFile
+			ExpectedWidth      = 64
+			ExpectedHeight     = 48
+			RunId              = "fixture-$testId"
+			SourceRevision     = 'fixture'
+		}
+	}
+	$atomicFramesBefore = Get-DirectorySnapshot $cleanDir
+	$priorFault = [Environment]::GetEnvironmentVariable('UE_RENDER_QA_TEST_FAULT')
+	try {
+		$midwayReport = New-ReportPath 'atomic-midway'
+		[Environment]::SetEnvironmentVariable('UE_RENDER_QA_TEST_FAULT', 'write-midway')
+		$midwayResult = Invoke-Measure (& $atomicBound $midwayReport)
+		[Environment]::SetEnvironmentVariable('UE_RENDER_QA_TEST_FAULT', $priorFault)
+		Assert-True ($midwayResult.Threw) 'a write failure after a partial write makes the helper fail'
+		Assert-True (-not (Test-Path -LiteralPath $midwayReport)) 'a failed write publishes no file (partial or otherwise) under the report path'
+		Assert-True (@(Get-ChildItem -LiteralPath $reportRoot -Force | Where-Object { $_.Name -like '*.tmp' }).Count -eq 0) 'a failed write leaves no temporary file of this run behind'
+
+		# The same report path stays usable after the failed write, and the retry parses.
+		$retryResult = Invoke-Measure (& $atomicBound $midwayReport)
+		Assert-True ((-not $retryResult.Threw) -and $retryResult.ExitCode -eq 0) "retrying the same report path after a failed write succeeds (exit $($retryResult.ExitCode))"
+		$retryData = Read-Report $midwayReport
+		Assert-True ($retryData.artifact_verdict -eq 'pass' -and $retryData.overall_qa_verdict -eq 'not_assessed') 'the retried report is complete JSON with the existing verdict fields'
+		Assert-True (@(Get-ChildItem -LiteralPath $reportRoot -Force | Where-Object { $_.Name -like '*.tmp' }).Count -eq 0) 'a successful run leaves only the final report, no temporary file'
+
+		# A report that appears at the final name before publication is kept byte for byte.
+		$conflictReport = New-ReportPath 'atomic-conflict'
+		[Environment]::SetEnvironmentVariable('UE_RENDER_QA_TEST_FAULT', 'publish-conflict')
+		$conflictResult = Invoke-Measure (& $atomicBound $conflictReport)
+		[Environment]::SetEnvironmentVariable('UE_RENDER_QA_TEST_FAULT', $priorFault)
+		Assert-True ($conflictResult.Threw) 'a report that appears at the final name before publication makes the helper fail'
+		Assert-True ([System.IO.File]::ReadAllText($conflictReport) -ceq 'competing report') 'the report found at the final name is preserved byte for byte'
+		Assert-True (@(Get-ChildItem -LiteralPath $reportRoot -Force | Where-Object { $_.Name -like '*.tmp' }).Count -eq 0) 'a publication conflict leaves no temporary file of this run behind'
+	} finally {
+		[Environment]::SetEnvironmentVariable('UE_RENDER_QA_TEST_FAULT', $priorFault)
+	}
+	Assert-True ((Get-DirectorySnapshot $cleanDir) -ceq $atomicFramesBefore) 'atomic publication tests left the inspected frames unchanged'
+	Write-Output 'PASS: the report is published atomically; a failed write leaves no partial JSON or temporary file and keeps existing reports'
+
 	# ============================================================ group 3: baseline blind spot
 	# The documented baseline only counts 240 output frames. A sequence that lost frame 120 and
 	# gained frame 240 still holds exactly 240 files, so a count-only check passes while ffmpeg
