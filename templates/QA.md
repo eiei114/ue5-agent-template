@@ -11,7 +11,14 @@ online/LAN行（`QA-NET-01`〜`QA-NET-09`）は`spectator-explore` recipeを使�
 Issue/run/日時/担当：
 source commitまたはsnapshot SHA：
 host/OS/UE/SDK/GPU/RAM/disk：
-指定model/effort / 保存値 / 実session / 応答 / quota観測範囲：
+指定model：
+指定effort：
+保存effort（settings等に保存されている値。実行値とは限らない）：
+実効effort（`node scripts/Get-PiEffectiveEffort.mjs --observe` の `PI_REASONING_LEVEL`。取得手順は`docs/02-runtime.md`の「実効値の観測」）：
+一致（yes / no / 不明）：
+実session / 応答 / quota観測範囲：
+
+一致は指定effortと実効effortの比較。一致が`no`のときは実効effortを正本として扱い、納品物にも実効effortを書く（`max / max`のように保存値を実効値欄へ転記しない）。実効effortを観測していなければ`不明`と書く。
 writer/lease nonce・取得/解放receipt（`scripts/Lease-UETemplateProject.ps1` の Acquire出力 / Releaseが残す `LEASE_RELEASED.<runid>.json`）：
 
 ## 撮影preset（期待値の出所）
