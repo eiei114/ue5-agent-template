@@ -51,6 +51,9 @@ function Invoke-Tool {
 
 function Invoke-External {
 	param([string]$FilePath, [string[]]$ArgumentList)
+	# Windows PowerShell 5.1 turns native stderr into an error record, which 'Stop' would throw. The
+	# exit code is what is asserted, so stderr is only captured here.
+	$ErrorActionPreference = 'Continue'
 	$captured = New-Object System.Collections.Generic.List[string]
 	& $FilePath @ArgumentList 2>&1 | ForEach-Object { $captured.Add([string]$_) }
 	$exitCode = $LASTEXITCODE
@@ -218,6 +221,8 @@ try {
 	Assert-True ($landscapePlanData.commands.ffmpeg -notmatch "-frames:v $($vertical.FrameCount) ") 'the landscape command never carries the vertical preset frame count, which is how the documented command truncated a 300-frame render'
 	Assert-True ($verticalPlanData.commands.frames_check.Contains("-EndNumberExclusive $($vertical.FrameCount)")) 'the image-sequence check uses the same end-exclusive range'
 	Assert-True ($verticalPlanData.commands.inspect.Contains('Measure-UECaptureEncode.ps1')) 'the plan points at the encode inspector'
+	Assert-True ($verticalPlanData.commands.inspect.Contains('-RenderStartedUtc $renderStartedUtc') -and $verticalPlanData.commands.inspect.Contains('-FramesDirectory')) 'the inspect command carries the render marker and the frame directory'
+	Assert-True ($verticalPlanData.commands.render_marker.Contains('$renderStartedUtc =')) 'the plan prints the command that takes the render marker'
 
 	$landscapePlan = Invoke-Tool -Script $planScript -Bound @{ Preset = 'landscape'; Format = 'json' }
 	Assert-True (-not $landscapePlan.Threw) "the landscape plan did not throw: $($landscapePlan.Error)"

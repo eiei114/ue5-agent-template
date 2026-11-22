@@ -104,7 +104,8 @@ $ffmpegCommand = 'ffmpeg -n -framerate {0} -start_number {1} -i "{2}" -frames:v 
 $ffprobeCommand = 'ffprobe -v error -count_frames -show_entries stream=index,codec_type,codec_name,width,height,r_frame_rate,nb_read_frames,sample_rate,channels -show_entries format=duration,size -of json "{0}"' -f $VideoPath
 $framesCheckPath = 'Out/run_<runid>/evidence/frames-check.json'
 $framesCheckCommand = '.\scripts\Measure-UERenderArtifacts.ps1 -FramesDirectory "{0}" -StartNumber {1} -EndNumberExclusive {2} -ExpectedWidth {3} -ExpectedHeight {4} -ReportPath "{5}"' -f $FramesDirectory, $startValue, $endExclusive, $widthValue, $heightValue, $framesCheckPath
-$inspectCommand = '.\scripts\Measure-UECaptureEncode.ps1 -Preset {0} -VideoPath "{1}" -ReportPath "{2}"' -f $Preset, $VideoPath, $ReportPath
+$markerCommand = '$renderStartedUtc = (Get-Date).ToUniversalTime().ToString(''o'')'
+$inspectCommand = '.\scripts\Measure-UECaptureEncode.ps1 -Preset {0} -VideoPath "{1}" -ReportPath "{2}" -RenderStartedUtc $renderStartedUtc -FramesDirectory "{3}"' -f $Preset, $VideoPath, $ReportPath, $FramesDirectory
 
 $plan = [ordered]@{
 	preset = [string]$entry.name
@@ -122,12 +123,14 @@ $plan = [ordered]@{
 		extension = $extension
 	}
 	commands = [ordered]@{
+		render_marker = $markerCommand
 		frames_check = $framesCheckCommand
 		ffmpeg = $ffmpegCommand
 		ffprobe = $ffprobeCommand
 		inspect = $inspectCommand
 	}
 	warnings = @(
+		'ffmpeg -n exits 0 without writing when the output file already exists. Use an output path that is new for every attempt (for example clean_<attempt>.mp4) and take RENDER-MARKER immediately before the render; the inspector fails an MP4 older than the marker and any source frame older than it.',
 		'ffmpeg -frames:v is an output upper bound, not a length check. A source sequence with fewer images is encoded short and ffmpeg still exits 0.',
 		'Length is verified by Measure-UECaptureEncode.ps1, which compares the encoded frame count and duration with the same preset definition.'
 	)
@@ -150,6 +153,7 @@ if (-not [string]::IsNullOrWhiteSpace($FfprobePath)) {
 Write-Output ("PRESET: {0} - {1}" -f $plan.preset, $plan.use)
 Write-Output ("DEFINITION: {0}" -f $plan.definition_file)
 Write-Output ("EXPECT: frames={0} duration={1}s resolution={2}x{3} fps={4} range={5}..{6} ({7} frame)" -f $frameCount, $durationValue, $widthValue, $heightValue, $fpsValue, $startValue, ($endExclusive - 1), $frameCount)
+Write-Output ("RENDER-MARKER: {0}" -f $markerCommand)
 Write-Output ("FRAMES-CHECK: {0}" -f $framesCheckCommand)
 Write-Output ("FFMPEG: {0}" -f $ffmpegCommand)
 Write-Output ("FFPROBE: {0}" -f $ffprobeCommand)
