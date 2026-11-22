@@ -518,8 +518,8 @@ try {
 		EndNumberExclusive = 240
 		ReportPath         = $cleanReport
 	}
-	Assert-True ($reuseResult.Threw) 'an existing report path is refused instead of overwritten'
-	Assert-True ($reuseResult.Error.Contains('already exists')) 'the refusal names the existing report path'
+	Assert-True ($reuseResult.ExitCode -eq 3 -and -not $reuseResult.Threw) 'an existing report path is refused instead of overwritten'
+	Assert-True ($reuseResult.Output.Contains('already exists')) 'the refusal names the existing report path'
 	Assert-True ((Get-FileHash -LiteralPath $cleanReport -Algorithm SHA256).Hash -ceq $beforeHash) 'the existing report content is preserved byte for byte'
 
 	$insideResult = Invoke-Measure @{
@@ -528,8 +528,8 @@ try {
 		EndNumberExclusive = 240
 		ReportPath         = (Join-Path $cleanDir 'report.json')
 	}
-	Assert-True ($insideResult.Threw) 'a report inside the inspected directory is refused'
-	Assert-True ($insideResult.Error.Contains('outside the inspected frame directory')) 'the refusal names the write-boundary rule'
+	Assert-True ($insideResult.ExitCode -eq 3 -and -not $insideResult.Threw) 'a report inside the inspected directory is refused'
+	Assert-True ($insideResult.Output.Contains('outside the inspected frame directory')) 'the refusal names the write-boundary rule'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $cleanDir 'report.json'))) 'the refused report wrote nothing into the inspected directory'
 	Assert-True ((Get-DirectorySnapshot $cleanDir) -ceq $cleanBefore) 'refused report attempts left the frame directory unchanged'
 
@@ -544,8 +544,8 @@ try {
 			EndNumberExclusive = 240
 			ReportPath         = $junctionReport
 		}
-		Assert-True ($junctionResult.Threw) 'a report parent junction into the inspected directory is refused'
-		Assert-True ($junctionResult.Error.Contains('reparse point')) 'the junction refusal identifies the unsafe path component'
+		Assert-True ($junctionResult.ExitCode -eq 3 -and -not $junctionResult.Threw) 'a report parent junction into the inspected directory is refused'
+		Assert-True ($junctionResult.Output.Contains('reparse point')) 'the junction refusal identifies the unsafe path component'
 		Assert-True (-not (Test-Path -LiteralPath $junctionReport)) 'the refused junction report was not created through the alias'
 		Assert-True (-not (Test-Path -LiteralPath (Join-Path $cleanDir 'junction-report.json'))) 'the refused junction report did not appear in the inspected directory'
 		Assert-True ((Get-DirectorySnapshot $cleanDir) -ceq $junctionBefore) 'the junction refusal left every inspected frame name and hash unchanged'
@@ -822,9 +822,9 @@ try {
 		ReportPath         = (New-ReportPath 'half-resolution')
 		ExpectedWidth      = 64
 	}
-	Assert-True ($halfResult.Threw) 'a half-configured resolution is refused instead of guessed'
+	Assert-True ($halfResult.ExitCode -eq 3 -and -not $halfResult.Threw) 'a half-configured resolution is refused instead of guessed'
 	$script:refusedReportCounter++
-	Assert-True ($halfResult.Error.Contains('must be given together')) 'the refusal explains the paired requirement'
+	Assert-True ($halfResult.Output.Contains('must be given together')) 'the refusal explains the paired requirement'
 	Register-Group 'resolution-mismatches-fail-unconfigured-half' 'resolution mismatches fail and unconfigured or half-configured resolution stays unverified'
 
 	# ============================================================ group 10: range inputs
@@ -865,9 +865,9 @@ try {
 		EndNumberExclusive = 4
 		ReportPath         = (New-ReportPath 'equal-range')
 	}
-	Assert-True ($equalRangeResult.Threw) 'an empty end-exclusive range is refused instead of passing trivially'
+	Assert-True ($equalRangeResult.ExitCode -eq 3 -and -not $equalRangeResult.Threw) 'an empty end-exclusive range is refused instead of passing trivially'
 	$script:refusedReportCounter++
-	Assert-True ($equalRangeResult.Error.Contains('greater than StartNumber')) 'the refusal explains the end-exclusive range rule'
+	Assert-True ($equalRangeResult.Output.Contains('greater than StartNumber')) 'the refusal explains the end-exclusive range rule'
 	Register-Group 'non-zero-starts-need-explicit' 'non-zero starts need an explicit declaration and an empty range cannot pass'
 
 	# ============================================================ group 11: decoder absence, failure, timeout
@@ -1187,8 +1187,8 @@ try {
 			ExpectedWidth      = 64
 			ExpectedHeight     = 48
 		}
-		Assert-True ($aliasResult.Threw) 'a junction alias as FramesDirectory is refused before the sequence is inspected'
-		Assert-True ($aliasResult.Error.Contains('FramesDirectory path contains a reparse point')) "the refusal comes from the FramesDirectory guard, not the report-parent guard, got: $($aliasResult.Error)"
+		Assert-True ($aliasResult.ExitCode -eq 3 -and -not $aliasResult.Threw) 'a junction alias as FramesDirectory is refused before the sequence is inspected'
+		Assert-True ($aliasResult.Output.Contains('FramesDirectory path contains a reparse point')) "the refusal comes from the FramesDirectory guard, not the report-parent guard, got: $($aliasResult.Output)"
 		Assert-True (-not (Test-Path -LiteralPath $escapedReport)) 'the refused alias wrote no report through the junction into the inspected directory'
 		Assert-True ((Get-DirectorySnapshot $guardRealFrames) -ceq $guardFramesBefore) 'the refused alias left every inspected frame name and hash unchanged'
 	} finally {
