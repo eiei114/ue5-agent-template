@@ -449,9 +449,7 @@ function Get-EntryFileName($Entry) {
 
 function Format-SampleList($Items) {
 	if ($null -eq $Items) { return '' }
-	# `if (...) { $Items }` would unroll a one-element list into a bare scalar, and `$list[0]` of a
-	# string or an ordered dictionary is not the element. Always materialise an array.
-	$list = @($Items)
+	$list = if ($Items -is [System.Collections.IList]) { $Items } else { @($Items) }
 	if ($list.Count -eq 0) { return '' }
 	$limit = [Math]::Min(20, $list.Count)
 	$shown = New-Object System.Collections.Generic.List[string]
@@ -1049,16 +1047,18 @@ if ($stabilityAdded.Count -gt 0 -or $stabilityRemoved.Count -gt 0 -or $stability
 	foreach ($item in $stabilityChanged) { $stabilitySample.Add("changed:$($item['file'])") }
 	foreach ($item in $stabilityAdded) { $stabilitySample.Add("added:$item") }
 	foreach ($item in $stabilityRemoved) { $stabilitySample.Add("removed:$item") }
+	$stabilitySampleText = (@($stabilitySample | Select-Object -First 20) -join ',')
+	if ($stabilitySample.Count -gt 20) { $stabilitySampleText += ",...(+$($stabilitySample.Count - 20) more)" }
 	$failures.Add([ordered]@{
 		category = 'input_changed_during_check'
 		detail = "the directory changed while it was being inspected: $($stabilityChanged.Count) frame(s) changed, $($stabilityAdded.Count) entry(ies) added, $($stabilityRemoved.Count) removed after they were listed. frames[] mixes bytes from different moments, so this report cannot be treated as one consistent snapshot. Stop whatever writes into this directory and run the check again"
-		sample = (Format-SampleList -Items $stabilitySample.ToArray())
+		sample = $stabilitySampleText
 	})
 } elseif ($inputStabilityState -eq 'unverified') {
 	$failures.Add([ordered]@{
 		category = 'input_stability_unverified'
 		detail = "input stability could not be confirmed for $($stabilityUnverifiable.Count) item(s); no change was observed, but the re-check was incomplete"
-		sample = (Format-SampleList -Items $stabilityUnverifiable.ToArray())
+		sample = (@($stabilityUnverifiable | Select-Object -First 20 | ForEach-Object { [string]$_['file'] }) -join ',')
 	})
 }
 if (-not $resolutionConfigured) {
