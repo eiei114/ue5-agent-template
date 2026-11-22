@@ -1470,6 +1470,7 @@ try {
 	$measureSource = [System.IO.File]::ReadAllText($measureScript)
 	$realHashExpression = '(Get-FileHash -LiteralPath $fileInfo.FullName -Algorithm SHA256).Hash.ToLowerInvariant()'
 	Assert-True ($measureSource.IndexOf($realHashExpression, [System.StringComparison]::Ordinal) -ge 0) 'the helper computes the per-frame digest with the expression the mutations replace'
+	$recheckHashExpression = '(Get-FileHash -LiteralPath (Join-Path $framesFull $checkedName) -Algorithm SHA256).Hash.ToLowerInvariant()'
 	$mutantRoot = Join-Path $fixtureRoot 'mutants'
 	Register-FixtureRootFile 'mutants'
 	[System.IO.Directory]::CreateDirectory($mutantRoot) | Out-Null
@@ -1478,6 +1479,12 @@ try {
 		@{ Name = 'empty'; Replacement = "''"; Expected = '' }
 	)) {
 		$mutantSource = $measureSource.Replace($realHashExpression, $mutation.Replacement)
+		# The input-stability re-check hashes each frame a second time (DOT-3403). A mutant that only
+		# corrupts the first read would now be caught by that re-check, which is not what this group
+		# measures, so the same corruption is applied to the second read and only the digest assertion
+		# can catch it.
+		Assert-True ($mutantSource.IndexOf($recheckHashExpression, [System.StringComparison]::Ordinal) -ge 0) 'the helper hashes frames again with the expression the mutations replace'
+		$mutantSource = $mutantSource.Replace($recheckHashExpression, $mutation.Replacement)
 		Assert-True ($mutantSource -cne $measureSource) "the '$($mutation.Name)' digest mutation changes the helper source"
 		$mutantScript = Join-Path $mutantRoot ("measure-$($mutation.Name).ps1")
 		[System.IO.File]::WriteAllText($mutantScript, $mutantSource, [System.Text.UTF8Encoding]::new($false))
