@@ -199,6 +199,22 @@ function Get-WorstState([string[]]$States) {
 
 # ---------------------------------------------------------------- input validation
 
+# The render exit code is the caller's declaration of how the render process ended. It is validated
+# before anything else so a value that is not an integer never reaches the report as if it were an
+# observed exit code. A rejected value writes no report and ends with exit 3, which is distinct from
+# the artifact verdicts (pass=0, fail=1, unverified=2).
+$renderExitProvided = (-not [string]::IsNullOrWhiteSpace($RenderExitCode))
+$renderExitValue = [long]0
+$renderExitText = 'not_provided'
+if ($renderExitProvided) {
+	$renderExitTrimmed = $RenderExitCode.Trim()
+	if ($renderExitTrimmed -notmatch '^[+-]?[0-9]{1,10}$' -or -not [long]::TryParse($renderExitTrimmed, [System.Globalization.NumberStyles]::AllowLeadingSign, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$renderExitValue)) {
+		Write-Error -ErrorAction Continue -Message "Invalid input: RenderExitCode must be an integer process exit code (for example 0 or 1); got '$RenderExitCode'. No report was written."
+		exit 3
+	}
+	$renderExitText = $renderExitValue.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+}
+
 if ($StartNumber -lt 0) {
 	throw 'Invalid input: StartNumber must be 0 or greater. A non-zero start is supported but must be set explicitly from the render range.'
 }
@@ -680,8 +696,22 @@ if (-not $resolutionConfigured) {
 	$resolutionState = 'pass'
 }
 
+# render_exit judges only the exit code the caller declared: 0 passes, any other integer fails, and
+# no declaration stays unverified. The notification text is recorded and never interpreted, and the
+# artifact checks above are never used to infer that the render succeeded.
+if (-not $renderExitProvided) {
+	$renderExitState = 'unverified'
+	$renderConclusion = 'not_provided'
+} elseif ($renderExitValue -eq 0) {
+	$renderExitState = 'pass'
+	$renderConclusion = 'evaluated_from_exit_code'
+} else {
+	$renderExitState = 'fail'
+	$renderConclusion = 'evaluated_from_exit_code'
+}
+
 $verdict = Get-WorstState -States @(
-	$namingState, $compositionState, $completenessState, $rangeState, $sizeState, $decodeState, $resolutionState
+	$namingState, $compositionState, $completenessState, $rangeState, $sizeState, $decodeState, $resolutionState, $renderExitState
 )
 
 $failures = New-Object System.Collections.Generic.List[object]
@@ -781,6 +811,20 @@ if ($decodeNotEvaluated.Count -gt 0) {
 		sample = (Format-SampleList -Items $decodeNotEvaluated)
 	})
 }
+if ($renderExitState -eq 'fail') {
+	$failures.Add([ordered]@{
+		category = 'render_exit_nonzero'
+		detail = "the caller declared render exit code $renderExitText (not 0), so the render itself is reported as failed; the image sequence checks cannot override that"
+		sample = ''
+	})
+}
+if ($renderExitState -eq 'unverified') {
+	$failures.Add([ordered]@{
+		category = 'render_exit_not_provided'
+		detail = 'no -RenderExitCode was given, so render_exit stays unverified instead of passing; pass the real MRQ exit code when one exists'
+		sample = ''
+	})
+}
 if (-not $codecConfigured) {
 	$failures.Add([ordered]@{
 		category = 'codec_not_configured'
@@ -857,6 +901,7 @@ $report = [ordered]@{
 		file_size = $sizeState
 		decode = $decodeState
 		resolution = $resolutionState
+		render_exit = $renderExitState
 	}
 	decoder = $decoder
 	decode_summary = [ordered]@{
@@ -890,11 +935,11 @@ $report = [ordered]@{
 	artifact_verdict = $verdict
 	render_evidence = [ordered]@{
 		render_artifacts_cannot_prove_render_success = $true
-		exit_code_provided = (-not [string]::IsNullOrWhiteSpace($RenderExitCode))
-		exit_code = $(if ([string]::IsNullOrWhiteSpace($RenderExitCode)) { 'not_provided' } else { $RenderExitCode })
+		exit_code_provided = $renderExitProvided
+		exit_code = $renderExitText
 		notification_provided = (-not [string]::IsNullOrWhiteSpace($RenderNotification))
 		notification = $(if ([string]::IsNullOrWhiteSpace($RenderNotification)) { 'not_provided' } else { $RenderNotification })
-		conclusion = 'unevaluated_by_this_tool'
+		conclusion = $renderConclusion
 	}
 	unverified_scope = @(
 		'UE5.8.4 real MRQ render',
@@ -931,7 +976,7 @@ try {
 }
 
 Write-Output "VERDICT: $verdict"
-Write-Output ("CHECKS: composition={0} naming={1} completeness={2} range={3} file_size={4} decode={5} resolution={6}" -f $compositionState, $namingState, $completenessState, $rangeState, $sizeState, $decodeState, $resolutionState)
+Write-Output ("CHECKS: composition={0} naming={1} completeness={2} range={3} file_size={4} decode={5} resolution={6} render_exit={7}" -f $compositionState, $namingState, $completenessState, $rangeState, $sizeState, $decodeState, $resolutionState, $renderExitState)
 Write-Output ("DECODER: {0} {1}" -f $decoder.resolution, $decoder.version)
 Write-Output ("FRAMES: expected={0} observed={1}" -f $expectedCount, $inRangeFrames.Count)
 foreach ($failure in $failures) {
