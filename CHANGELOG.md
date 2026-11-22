@@ -1,5 +1,11 @@
 # 変更履歴
 
+## Unreleased — DOT-3300 — 2026-11-22
+
+- `templates/online/MulticaOnlineStarter/README.md` の冒頭が "Small redistributable C++ starting point" と書き、`LICENSE-NOTICE.md`（配布ライセンス未指定・public配置は改変/再配布許諾ではない）と矛盾していた。agentがpublic visibilityを再配布許諾と誤読しうるため、"redistributable" を削除し、ライセンス未指定・別途ライセンス/許諾の確認が必要な旨と `LICENSE-NOTICE.md` へのリンクを冒頭に追加した。UE・第三者の利用条件は別に適用されると保った。
+- 新規ライセンスの付与・選定、法的判断、C++/API/config/recipeの変更はない。
+- 検証は文書の静的照合と `git diff --check`、既存の `Test-UETemplateDocs.ps1` のみ。UE 5.8.4 の compile/PIE/MRQ は実行していない。
+
 ## Unreleased — DOT-3239 — 2026-11-22
 
 - 性能検品の「観測方法」は自由記述の1語で、`templates/QA.md` の `QA-PERF-01` にも計測器・build config を書く場所が無かった。しかも `docs/04-package.md` は性能をShipping ZIPで測ると定めるのに、UE 5.8.4 のEngineソースを読むと、Shippingの既定では engine 内の計測がすべて使えない。`stat unit` は入力経路（`ALLOW_CONSOLE`、`ALLOW_CONSOLE_IN_SHIPPING` 既定0）、FPS chart は `startfpschart` が `!UE_BUILD_SHIPPING` 配下・出力が `ALLOW_DEBUG_FILES`（Shippingでは `WITH_EDITOR`=0）配下、`stat startfile` は `STATS`（既定0）配下。文書どおりに進むと「Editor Playの数字をShippingの性能として書く」「空欄で納品」「数値の捏造」のどれかに落ちた。これは**UEを起動していない静的な読取**であり、実Shipping buildでの実行確認ではない。
