@@ -44,6 +44,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# The one definition of what a project_differences value may be (shared with
+# scripts/Update-UETemplateProjectDifference.ps1). It runs before anything is created, so a value that
+# breaks the contract stops the run with no staging directory and no output directory.
+. (Join-Path $PSScriptRoot 'UETemplateProjectDifference.ps1')
+[string[]]$projectDifferences = @(ConvertTo-UETemplateProjectDifferences -Values $ProjectDiff)
 $projectSettingsSection = '/Script/EngineSettings.GeneralProjectSettings'
 
 # The only recipe.json contract this generator implements. A file declaring another version is rejected
@@ -1443,13 +1448,6 @@ try {
 		throw 'Plugin identity check stopped: the written project descriptor carries a plugin set the pre-copy check did not verify, so the lock was not written.'
 	}
 
-	$differenceSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
-	foreach ($difference in $ProjectDiff) {
-		$normalizedDifference = $difference.Trim()
-		if (-not [string]::IsNullOrWhiteSpace($normalizedDifference)) { $null = $differenceSet.Add($normalizedDifference) }
-	}
-	[string[]]$projectDifferences = @($differenceSet)
-	[Array]::Sort($projectDifferences, [System.StringComparer]::Ordinal)
 	$packDetailLevels = [ordered]@{}
 	foreach ($pack in @($copyReport.SharedContentPacks)) { $packDetailLevels[$pack.Mount] = $pack.DetailLevel }
 	$lock = [ordered]@{
