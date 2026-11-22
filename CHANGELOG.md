@@ -32,7 +32,7 @@
 
 ## Unreleased — DOT-3101 — 2026-11-22
 
-- **再renderのあとに古いMP4を検品する経路を塞いだ。** `ffmpeg -n` は出力が既存だと何も書かずに exit 0 で終わる（公式 docs は「exit immediately」とだけ述べ、終了 status の値は規定していない。本 host の ffmpeg 8.1.2 では exit 0、stderr に `already exists. Exiting.`）。`docs/05-qa.md` が黒 frame 時に指示する「再render」のあとに同じ encode 行を流すと前回の MP4 が残り、その ffprobe は前回の 240 frame / 8.0 s を正しく報告するため、期待値照合は PASS を返していた。
+- **再renderのあとに古いMP4を検品する経路を塞いだ。** `ffmpeg -n` は出力が既存だと何も書かずに exit 0 で終わる（公式 docs は「exit immediately」とだけ述べ、終了 status の値は規定していない。本 host の ffmpeg 8.1.2 gyan.dev build では exit 0、stderr に `already exists. Exiting.`。GitHub Actions runner の build は -17 を返すため、exit code の値には依存せず更新時刻で判定する）。`docs/05-qa.md` が黒 frame 時に指示する「再render」のあとに同じ encode 行を流すと前回の MP4 が残り、その ffprobe は前回の 240 frame / 8.0 s を正しく報告するため、期待値照合は PASS を返していた。
 - `scripts/Measure-UECaptureEncode.ps1` に `-RenderStartedUtc`（render 直前に採る UTC marker）と `-FramesDirectory` を追加した。MP4 の更新時刻が marker より古ければ `video_stale`、marker より古い画像が残っていれば `stale_source_frames` で `fail` にする（`render_attempt` / `source_frames_fresh` の2項目、更新時刻の比較のみで画像内容の正しさは保証しない）。どちらかを渡さない・marker が不正または未来の場合は `unverified` で、`pass` にしない。report には `provenance` を記録する。
 - `scripts/Test-UECaptureEncode.ps1` に負例を固定した: 既存 MP4 へ `-n` で再 encode（exit 0・未更新・frame 数と秒数は一致）、旧 render 残骸 + 少数の新 frame（枚数は合う）、途中欠番、読めない MP4（ffprobe 非0）、marker なし・未来の marker・frame directory なし。`Get-UECaptureEncodePlan.ps1` は `RENDER-MARKER` 行を出し、`INSPECT` 行に marker と frame directory を含める。
 - `docs/05-qa.md` の encode 例を `clean_<attempt>.mp4`（attempt ごとに新しい出力先）へ改め、`-n` の挙動と marker の取り方を明記した。根拠なく `-y` を既定にしない（採用版を潰すため）。`templates/QA.md` の `QA-MRQ-02` 行を、encode 実行の成否・mp4 の由来・ffprobe の exit code・期待値比較の別欄に分けた（行 ID は不変）。
