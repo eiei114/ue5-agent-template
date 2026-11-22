@@ -453,7 +453,10 @@ try {
 	Remove-Item -LiteralPath $v1.SourceDirectory -Recurse -Force
 	New-TestFrames -Directory $v1.SourceDirectory -Count 60 -Preset $vertical -Source 'smptebars'
 	$reencode = Invoke-TestEncode -Directory $v1.SourceDirectory -FrameLimit $vertical.FrameCount -VideoPath $v1.VideoPath -Preset $vertical
-	Assert-True ($reencode.ExitCode -eq 0) "the second encode with -n exits 0 even though it wrote nothing (the reported defect), got $($reencode.ExitCode)"
+	# The exit status of a refused -n write is not specified by FFmpeg: 0 on the 8.1.2 gyan.dev build
+	# the defect was measured on, -17 (EEXIST) on the CI runner's build. Only the unchanged file is
+	# asserted, so the suite holds whichever way the installed build reports it.
+	Write-Output ("NOTE: ffmpeg -n over an existing output exited {0} on this build" -f $reencode.ExitCode)
 	Assert-True ($reencode.Output -match 'already exists') "ffmpeg says on stderr that the output already exists: $($reencode.Output)"
 	Assert-True ((Get-VideoHash $v1.VideoPath) -ceq $v1Hash) 'the second encode left the first attempt MP4 byte-identical'
 	$staleReport = New-ReportPath 'p-stale-mp4'
@@ -465,7 +468,7 @@ try {
 	Assert-True ($staleData.checks.render_attempt -eq 'fail') 'the render_attempt check fails'
 	Assert-True (@(Get-FailureCategories $staleData) -contains 'video_stale') 'the report names video_stale'
 	Assert-True ($staleData.checks.source_frames_fresh -eq 'pass') 'the 60 frames of the second attempt are fresh, so only the MP4 is stale'
-	Write-Output 'PASS: re-running the encode line over an existing MP4 exits 0 and keeps the old file, and the inspector fails it as video_stale although the frame count and duration match'
+	Write-Output 'PASS: re-running the encode line over an existing MP4 keeps the old file (ffmpeg may still exit 0), and the inspector fails it as video_stale although the frame count and duration match'
 
 	# (c) v1 leftovers under a few v2 frames: the count is right, the content is a mix of two renders.
 	$mixDir = Join-Path $sourceRoot 'p-mixed'
