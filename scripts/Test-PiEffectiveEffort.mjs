@@ -21,10 +21,10 @@ const mod = await import(new URL('./Get-PiEffectiveEffort.mjs', import.meta.url)
 // The shape mirrors @earendil-works/pi-ai dist/providers/data/<provider>.json: { <api>: { "<type>:<id>": model } }.
 const fixtureCatalog = {
   'openai-completions': {
-    // supported = [low, high, max]: no medium, so medium is clamped UP to high.
+    // supported = [low, high, max] (the real opendesign/deepseek-v4.1-flash shape): no off, no medium, so medium is clamped UP to high.
     'chat:gap-model': {
       id: 'gap-model', provider: 'fixture', reasoning: true,
-      thinkingLevelMap: { minimal: null, low: 'low', medium: null, high: 'high', max: 'max' },
+      thinkingLevelMap: { off: null, minimal: null, low: 'low', medium: null, high: 'high', max: 'max' },
     },
     // supported = [off, minimal, low, medium, high]: no max, so max is clamped to high.
     'chat:no-max-model': {
@@ -150,11 +150,11 @@ test('CLI (d): a missing catalog is UNVERIFIED (exit 2), never a pass', () => wi
   assert.doesNotMatch(r.out, /\bMATCH\b/);
 }));
 
-test('CLI (d): no catalog location at all is UNVERIFIED (exit 2)', () => {
-  const r = runCli(['--model', 'fixture/full-model', '--level', 'max']);
+test('CLI (d): PI_AI_CATALOG_DIR pointing nowhere is UNVERIFIED and does not fall back (exit 2)', () => withTempDir((dir) => {
+  const r = runCli(['--model', 'fixture/full-model', '--level', 'max'], { PI_AI_CATALOG_DIR: path.join(dir, 'nope') });
   assert.equal(r.status, 2, r.out);
   assert.match(r.out, /UNVERIFIED/);
-});
+}));
 
 test('CLI (d): a model absent from the catalog is UNVERIFIED (exit 2)', () => withTempDir((dir) => {
   writeCatalog(dir);
@@ -216,9 +216,12 @@ test('docs/02-runtime.md keeps the historical Opus record untouched', () => {
 
 test('templates/QA.md splits model/effort into 指定 / 保存 / 実効 / 一致 and defines no', () => {
   const qa = read('templates/QA.md');
-  for (const label of ['指定effort：', '保存effort：', '実効effort：', '一致（yes / no / 不明）：']) {
-    assert.ok(qa.includes(label), `QA.md must contain a line for ${label}`);
+  for (const label of ['指定effort', '保存effort', '実効effort', '一致']) {
+    assert.match(qa, new RegExp(`^${label}[（：]`, 'm'), `QA.md must contain a line starting with ${label}`);
   }
+  assert.match(qa, /^一致（yes \/ no \/ 不明）：/m);
+  // The old single free-text line must not come back.
+  assert.doesNotMatch(qa, /指定model\/effort \/ 保存値/);
   assert.match(qa, /一致が`no`[^\n]*実効[^\n]*正本/);
 });
 
