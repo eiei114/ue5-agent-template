@@ -117,6 +117,7 @@ $expectedGroups = @(
 	'capture-only-vertical-loop-recipe',
 	'lock-records-every-enabled-plugin',
 	'third-person-recipe-materializes-official',
+	'editor-target-route-table-matches-generated',
 	'repo-paths-generated-markdown-resolve',
 	'filenamereplacements-renames-file-names-while',
 	'from-matches-nothing-replaces-nothing',
@@ -959,6 +960,11 @@ try {
 	Write-FixtureJson (Join-Path $firstPersonTemplate 'Media\TP_FirstPerson.png') 'thumbnail fixture'
 	Write-FixtureJson (Join-Path $firstPersonTemplate 'Media\TP_FirstPerson_Preview.png') 'thumbnail fixture'
 	Write-FixtureJson (Join-Path $firstPersonTemplate 'Config\config.ini') 'GameName=TP_FirstPerson'
+	# The installed TP_FirstPerson ships two target files directly under Source/ (game + Editor). The
+	# generic fixture above only writes a file name that is not a *.Target.cs, so the build-route group
+	# could not measure the Editor target name from a generated project without these.
+	Write-FixtureJson (Join-Path $firstPersonTemplate 'Source\TP_FirstPerson.Target.cs') 'ExtraModuleNames.Add("TP_FirstPerson");'
+	Write-FixtureJson (Join-Path $firstPersonTemplate 'Source\TP_FirstPersonEditor.Target.cs') 'ExtraModuleNames.Add("TP_FirstPerson");'
 	Write-FixtureJson (Join-Path $fixtureEngine 'Templates\TemplateResources\High\Characters\Content\Mannequins\Meshes\SK_Mannequin.uasset') 'pack Characters'
 	Write-FixtureJson (Join-Path $fixtureEngine 'Templates\TemplateResources\High\Characters\Content\Mannequins\Anims\Unarmed\ABP_Unarmed.uasset') 'pack Characters'
 	Write-FixtureJson (Join-Path $fixtureEngine 'Templates\TemplateResources\High\LevelPrototyping\Content\Meshes\SM_Cube.uasset') 'pack LevelPrototyping'
@@ -1037,6 +1043,7 @@ try {
 	) -join "`r`n")
 	Write-FixtureJson (Join-Path $thirdPersonTemplate 'Source\TP_ThirdPerson\Variant_Combat\CombatEnemy.cpp') '#include "CombatEnemy.h"'
 	Write-FixtureJson (Join-Path $thirdPersonTemplate 'Source\TP_ThirdPerson.Target.cs') 'ExtraModuleNames.Add("TP_ThirdPerson");'
+	Write-FixtureJson (Join-Path $thirdPersonTemplate 'Source\TP_ThirdPersonEditor.Target.cs') 'ExtraModuleNames.Add("TP_ThirdPerson");'
 	Write-FixtureJson (Join-Path $thirdPersonTemplate 'Content\ThirdPerson\Lvl_ThirdPerson.umap') 'binary TP_ThirdPerson'
 	Write-FixtureJson (Join-Path $thirdPersonTemplate 'Content\ThirdPerson\Animations\Ignored.uasset') 'ignored'
 	Write-FixtureJson (Join-Path $thirdPersonTemplate 'Media\Ignored.png') 'ignored'
@@ -1502,6 +1509,82 @@ try {
 	Assert-GeneratorFails { Invoke-Generator 'third-person-game' 'Bad-Name' "$testId-bad" @() } 'materialized recipe rejects non-identifier project names'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $productionRoot "Bad-Name_$testId-bad"))) 'invalid materialized project name creates no output'
 	Register-Group 'third-person-recipe-materializes-official' 'third-person recipe materializes the official template with the implemented TemplateDefs.ini keys'
+
+	# --- Editor target route table (DOT-3440) -------------------------------------------------------
+	# docs/01-start.md tells an agent which Editor target to build for each recipe. The name is not
+	# derived from -ProjectName: it is the basename of a *.Target.cs directly under Source/, and a
+	# recipe without Source/ has no Editor target at all. The table's third column is checked against
+	# what the generator actually wrote, so the document cannot drift from the generated project.
+	# The "none" cell is built from code points so the check reads the same under Windows PowerShell 5.1.
+	$noEditorTargetCell = [string]([char]0x5B58) + [char]0x5728 + [char]0x3057 + [char]0x306A + [char]0x3044
+	$noTargetColumnPrefix = [string]([char]0x306A) + [char]0x3057
+	function Get-EditorTargetRouteProblems([string]$DocText, [object[]]$Cases) {
+		$problems = [System.Collections.Generic.List[string]]::new()
+		$begin = $DocText.IndexOf('editor-target-route:begin', [System.StringComparison]::Ordinal)
+		$end = $DocText.IndexOf('editor-target-route:end', [System.StringComparison]::Ordinal)
+		if ($begin -lt 0 -or $end -le $begin) {
+			$problems.Add('the route table markers are missing from docs/01-start.md')
+			return @($problems)
+		}
+		$rows = @{}
+		foreach ($line in ($DocText.Substring($begin, $end - $begin) -split "\r?\n")) {
+			$trimmed = $line.Trim()
+			if (-not $trimmed.StartsWith('| `')) { continue }
+			$cells = @($trimmed.Trim('|') -split '\|' | ForEach-Object { $_.Trim() })
+			if ($cells.Count -lt 4) { continue }
+			$rows[$cells[0].Trim('`')] = [pscustomobject]@{ HasTargets = (-not $cells[1].Contains($noTargetColumnPrefix)); EditorTarget = $cells[2].Trim('`') }
+		}
+		foreach ($case in $Cases) {
+			if (-not $rows.ContainsKey($case.Recipe)) { $problems.Add("the route table has no row for recipe $($case.Recipe)"); continue }
+			$sourceDirectory = Join-Path $case.Output 'Source'
+			$targetFiles = @()
+			if (Test-Path -LiteralPath $sourceDirectory -PathType Container) {
+				$targetFiles = @(Get-ChildItem -LiteralPath $sourceDirectory -File -Filter '*.Target.cs' | ForEach-Object { $_.Name.Substring(0, $_.Name.Length - '.Target.cs'.Length) })
+			}
+			$editorTargets = @($targetFiles | Where-Object { $_.EndsWith('Editor', [System.StringComparison]::Ordinal) })
+			$measured = if ($editorTargets.Count -eq 0) { $noEditorTargetCell } else { $editorTargets -join ',' }
+			$documented = $rows[$case.Recipe].EditorTarget.Replace('<ProjectName>', $case.ProjectName)
+			if ($measured -cne $documented) {
+				$problems.Add("recipe $($case.Recipe): the route table says '$($rows[$case.Recipe].EditorTarget)' but the generated project has '$measured'")
+			}
+			if ($rows[$case.Recipe].HasTargets -ne ($targetFiles.Count -gt 0)) {
+				$problems.Add("recipe $($case.Recipe): the route table disagrees with the generated project about whether Source/ has a *.Target.cs")
+			}
+		}
+		return @($problems)
+	}
+	$startDocPath = Join-Path $repoRoot 'docs\01-start.md'
+	$startDocText = [System.IO.File]::ReadAllText($startDocPath)
+	$routeCases = @(
+		@{ Recipe = 'third-person-game'; Output = $tpOutput; ProjectName = $tpName },
+		@{ Recipe = 'spectator-explore'; Output = $firstOutput; ProjectName = $projectName },
+		@{ Recipe = 'vertical-loop'; Output = $loopOutput; ProjectName = $loopProjectName }
+	)
+	# The measurement must see the three shapes before the document is compared with it.
+	Assert-True (Test-Path -LiteralPath (Join-Path $tpOutput "Source\${tpName}Editor.Target.cs") -PathType Leaf) 'the materialized recipe renames the Editor target file to <ProjectName>Editor'
+	Assert-True (Test-Path -LiteralPath (Join-Path $firstOutput 'Source\TP_FirstPersonEditor.Target.cs') -PathType Leaf) 'the raw-copy game recipe keeps the template Editor target name'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $firstOutput "Source\${projectName}Editor.Target.cs"))) 'the raw-copy game recipe has no <ProjectName>Editor target'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $loopOutput 'Source\TP_BlankBPEditor.Target.cs'))) 'the capture-only recipe has no TP_BlankBPEditor target file'
+	$routeProblems = @(Get-EditorTargetRouteProblems $startDocText $routeCases)
+	Assert-True ($routeProblems.Count -eq 0) ('docs/01-start.md route table matches the Editor target of each generated recipe: ' + ($routeProblems -join ' | '))
+	# Failing side: a table that tells an agent to build <ProjectName>Editor for the BP-only recipe, or
+	# for the raw-copy recipe, must be reported with the recipe named. The mutation lives in memory only.
+	$loopMutatedDoc = [regex]::Replace($startDocText, '(?m)^(\| `vertical-loop` \|[^|]*\| )' + '`?' + [regex]::Escape($noEditorTargetCell) + '`? \|', '$1`<ProjectName>Editor` |')
+	Assert-True ($loopMutatedDoc -cne $startDocText) 'the vertical-loop mutation changed the route table'
+	$loopMutationProblems = @(Get-EditorTargetRouteProblems $loopMutatedDoc $routeCases)
+	Assert-True (@($loopMutationProblems | Where-Object { $_ -match 'recipe vertical-loop' }).Count -ge 1) "a route table that builds <ProjectName>Editor for vertical-loop fails and names the recipe (got: $($loopMutationProblems -join ' | '))"
+	$spectatorMutatedDoc = $startDocText.Replace('`TP_FirstPersonEditor`', '`<ProjectName>Editor`')
+	Assert-True ($spectatorMutatedDoc -cne $startDocText) 'the spectator-explore mutation changed the route table'
+	$spectatorMutationProblems = @(Get-EditorTargetRouteProblems $spectatorMutatedDoc $routeCases)
+	Assert-True (@($spectatorMutationProblems | Where-Object { $_ -match 'recipe spectator-explore' }).Count -ge 1) 'a route table that builds <ProjectName>Editor for spectator-explore fails and names the recipe'
+	$unmarkedProblems = @(Get-EditorTargetRouteProblems ($startDocText.Replace('editor-target-route:begin', 'removed')) $routeCases)
+	Assert-True ($unmarkedProblems.Count -ge 1) 'a document without the route table markers fails instead of checking nothing'
+	# The QA row and the recipe line point an agent at the same table.
+	$buildQaRow = @(Get-QaTemplateRows (Join-Path $repoRoot 'templates\QA.md') | Where-Object { $_.Id -eq 'QA-BUILD-01' })
+	Assert-True ($buildQaRow.Count -eq 1 -and $buildQaRow[0].Evidence.Contains('Intermediate/Source/') -and $buildQaRow[0].Evidence.Contains('Target')) 'QA-BUILD-01 asks for the Editor target name and whether a synthesized target was created under Intermediate/Source/'
+	$tpPlayText = [System.IO.File]::ReadAllText((Join-Path $repoRoot 'templates\recipes\third-person-game\Play.md'))
+	Assert-True ($tpPlayText.Contains('<ProjectName>Editor') -and $tpPlayText.Contains('docs/01-start.md')) 'the third-person Play.md names its Editor target and points at the route table'
+	Register-Group 'editor-target-route-table-matches-generated' 'the Editor target route table matches the target each recipe generates, and a wrong row fails the suite'
 
 	# --- Reference closure of generated documents (DOT-3441) ------------------------------------
 	# A generated project is handed to an agent without the source checkout, so every repo path a
