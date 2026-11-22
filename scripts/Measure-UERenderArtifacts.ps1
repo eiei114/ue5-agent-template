@@ -69,6 +69,19 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# An input the helper refuses (a missing or reversed range, a half-configured resolution, a frames
+# directory that is not one, a report path that already exists or sits inside the frames, a reparse
+# point) writes no report and ends with exit 3. Exit 3 is the code a non-integer RenderExitCode
+# already uses, and it is distinct from the artifact verdicts (pass=0, fail=1, unverified=2), so a
+# reader of the exit code alone can tell "the artifact failed" from "the call was refused".
+trap {
+	if ($_.Exception.Message -like 'Invalid input:*') {
+		Write-Error -ErrorAction Continue -Message $_.Exception.Message
+		exit 3
+	}
+	throw $_
+}
+
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 $ordinalIgnoreCase = [System.StringComparison]::OrdinalIgnoreCase
 
