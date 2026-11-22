@@ -156,6 +156,13 @@
 - `scripts/Test-UERenderArtifacts.ps1` に、欠落・空・空白の7ケースがreportを作らず拒否されること、明示値が逐語で記録され正常判定が変わらないことを確かめるgroupを追加した。他のケースへは固定のfixture値を与える。
 - 検証はWindows PowerShell 5.1での `Test-UERenderArtifacts.ps1`（UE不使用のfixture）のみ。UE 5.8.4 compile/PIE/実MRQ/render/MP4/ffprobeは実行しておらず未検証（Unverified）。
 
+## Unreleased — DOT-3415 — 2026-11-22
+
+- `scripts/Measure-UERenderArtifacts.ps1` は期待rangeを`EndNumberExclusive - StartNumber`件のHashSetへ展開し、さらに欠番を全件Listへ入れていたため、`-EndNumberExclusive 2147483647`のような誤入力で実directoryを読む前にrange幅に比例したCPU/メモリを使い、reportに到達しないおそれがあった。期待index格子の枚数・末尾・所属を64bit算術で求める方式に変え、欠番総数は観測済みindexとの差で算出し、列挙は先頭から最大200件に制限した。短いrange・end-exclusive・`-FrameStep`/`-FrameNumberOffset`の判定は変えていない。
+- reportの`violations`に`missing_count`（総数）と`missing_indices_truncated`を追加した。`missing_indices`は最大200件の標本になる（通常の240/300 frame範囲では従来どおり全件）。
+- `scripts/Test-UERenderArtifacts.ps1`にInt32.MaxValue範囲・offset+step付きの巨大範囲・200件cap・短いrangeの全件列挙のassertionを追加した。`docs/05-qa.md`に挙動を追記した。
+- 検証はPowerShellの回帰のみ。UE 5.8.4 の compile/PIE/MRQ/render/MP4/ffprobe は実行しておらず Unverified のまま。
+
 ## Unreleased — DOT-3300 — 2026-11-22
 
 - `templates/online/MulticaOnlineStarter/README.md` の冒頭が "Small redistributable C++ starting point" と書き、`LICENSE-NOTICE.md`（配布ライセンス未指定・public配置は改変/再配布許諾ではない）と矛盾していた。agentがpublic visibilityを再配布許諾と誤読しうるため、"redistributable" を削除し、ライセンス未指定・別途ライセンス/許諾の確認が必要な旨と `LICENSE-NOTICE.md` へのリンクを冒頭に追加した。UE・第三者の利用条件は別に適用されると保った。
