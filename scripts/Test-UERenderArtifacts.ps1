@@ -156,12 +156,16 @@ function New-FrameSequence {
 		[int]$EndExclusive,
 		[int]$Width = 64,
 		[int]$Height = 48,
-		[int[]]$Skip = @()
+		[int[]]$Skip = @(),
+		# MRQ writes `<File Name Format>` with `Zero Pad Frame Numbers` digits, for example
+		# `Shot0001.0000.png`. The defaults keep the bare six-digit fixture the older groups use.
+		[string]$Prefix = '',
+		[int]$DigitCount = 6
 	)
 	[System.IO.Directory]::CreateDirectory($Directory) | Out-Null
 	for ($index = $Start; $index -lt $EndExclusive; $index++) {
 		if ($Skip -contains $index) { continue }
-		$name = '{0:D6}.png' -f $index
+		$name = $Prefix + $index.ToString('D' + $DigitCount) + '.png'
 		[System.IO.File]::WriteAllBytes((Join-Path $Directory $name), (New-FixturePng -Width $Width -Height $Height -Shade (($index * 11) % 220)))
 	}
 }
@@ -963,10 +967,6 @@ try {
 	}
 	Write-Output 'PASS: a junction alias as FramesDirectory is refused by that guard alone, and the plain guarded case stays silent'
 
-	# ============================================================ group 14: the inspector never changed its input
-	# Every fixture built above registered the snapshot it had when the suite finished building it.
-	# This gate compares all 18 of them again, so a later group that corrupts an earlier fixture is
-
 	# ============================================================ group 13: declared index lattice
 	# MRQ's `Output Frame Step` writes every N-th frame, so a legitimate step render has a gap after
 	# every frame. The helper has to be able to declare that lattice and pass it, and it has to name a
@@ -1158,15 +1158,175 @@ try {
 	}
 	Write-Output 'PASS: per-frame digests equal the real SHA-256 with digest_state computed, a 0-byte frame follows the same rule, and a constant or empty digest fails by file and index'
 
-	# ============================================================ group 15: the inspector never changed its input
+	# ============================================================ group 15: MRQ's real file names
+	# MRQ never writes a bare index. Its default is `<sequence_name>.<frame_number>` with a 4-digit pad
+	# (legacy Output Setting) or `<sequence_name>.<layer_name>.<frame_number>` (Movie Graph). The helper
+	# used to accept only `<digits>.png`, so a correct 240-frame MRQ sequence failed with 240 "missing"
+	# frames. The prefix and width are now declared, and an undeclared prefixed sequence is named as a
+	# naming-contract mismatch instead of as lost frames.
+	$mrqDir = Join-Path $fixtureRoot 'mrq-legacy'
+	New-FrameSequence -Directory $mrqDir -Start 0 -EndExclusive 240 -Prefix 'Shot0001.' -DigitCount 4
+	Register-FixtureSnapshot 'mrq-legacy'
+	$mrqBefore = Get-DirectorySnapshot $mrqDir
+	Assert-True (@(Get-ChildItem -LiteralPath $mrqDir -File | Where-Object { $_.Name -match '^Shot0001\.[0-9]{4}\.png$' }).Count -eq 240) 'the legacy MRQ fixture holds 240 Shot0001.NNNN.png files'
+
+	$mrqDeclaredReport = New-ReportPath 'mrq-legacy-declared'
+	$mrqDeclaredResult = Invoke-Measure @{
+		FramesDirectory    = $mrqDir
+		StartNumber        = 0
+		EndNumberExclusive = 240
+		NamePrefix         = 'Shot0001.'
+		Digits             = 4
+		ReportPath         = $mrqDeclaredReport
+		ExpectedWidth      = 64
+		ExpectedHeight     = 48
+	}
+	Assert-True (-not $mrqDeclaredResult.Threw) "declared MRQ sequence did not throw: $($mrqDeclaredResult.Error)"
+	Assert-True ($mrqDeclaredResult.ExitCode -eq 0) "a declared Shot0001.NNNN sequence exits 0, got $($mrqDeclaredResult.ExitCode): $($mrqDeclaredResult.Output)"
+	$mrqDeclaredData = Read-Report $mrqDeclaredReport
+	Assert-True ($mrqDeclaredData.artifact_verdict -eq 'pass') 'a declared MRQ legacy sequence passes the artifact verdict'
+	foreach ($check in @('composition', 'naming', 'completeness', 'range', 'file_size', 'decode', 'resolution')) {
+		Assert-True ($mrqDeclaredData.checks.$check -eq 'pass') "declared MRQ sequence check '$check' is pass, got '$($mrqDeclaredData.checks.$check)'"
+	}
+	Assert-True ($mrqDeclaredData.observed.contract_file_count -eq 240) 'the declared MRQ sequence counts all 240 frames'
+	Assert-True ($mrqDeclaredData.input.name_prefix -eq 'Shot0001.' -and $mrqDeclaredData.input.digits -eq 4) 'the report records the declared prefix and width'
+	Assert-True ($mrqDeclaredData.input.naming_contract -eq 'Shot0001.[4 digit zero-padded index].png') "the report names the real contract, got '$($mrqDeclaredData.input.naming_contract)'"
+	Assert-True (@($mrqDeclaredData.failures).Count -eq 0) 'a declared MRQ sequence records no failure'
+
+	# The falling side: the same 240 correct frames without the declaration. This used to read as
+	# "240 missing frames" and send the reader to re-render.
+	$mrqUndeclaredReport = New-ReportPath 'mrq-legacy-undeclared'
+	$mrqUndeclaredResult = Invoke-Measure @{
+		FramesDirectory    = $mrqDir
+		StartNumber        = 0
+		EndNumberExclusive = 240
+		ReportPath         = $mrqUndeclaredReport
+		ExpectedWidth      = 64
+		ExpectedHeight     = 48
+	}
+	Assert-True ($mrqUndeclaredResult.ExitCode -eq 1) "an undeclared Shot0001.NNNN sequence exits 1, got $($mrqUndeclaredResult.ExitCode): $($mrqUndeclaredResult.Output)"
+	$mrqUndeclaredData = Read-Report $mrqUndeclaredReport
+	Assert-True ($mrqUndeclaredData.artifact_verdict -eq 'fail') 'an undeclared MRQ sequence fails'
+	$mrqUndeclaredCategories = Get-FailureCategories $mrqUndeclaredData
+	Assert-True ($mrqUndeclaredCategories -contains 'naming_contract_mismatch') 'the undeclared MRQ sequence is named as a naming-contract mismatch'
+	Assert-True (-not ($mrqUndeclaredCategories -contains 'missing_frames')) 'the undeclared MRQ sequence is not reported as missing frames'
+	Assert-True (-not ($mrqUndeclaredCategories -contains 'unexpected_name')) 'the 240 frames of the mismatched sequence are not also reported as unexpected names'
+	$mrqMismatch = @($mrqUndeclaredData.failures | Where-Object { $_.category -eq 'naming_contract_mismatch' })[0]
+	Assert-True ($mrqMismatch.detail.Contains("-NamePrefix 'Shot0001.' -Digits 4")) 'the mismatch names the declaration that would match'
+	Assert-True ($mrqMismatch.detail.Contains('do not re-render')) 'the mismatch tells the reader this is not a render failure'
+	Assert-True ($mrqUndeclaredData.naming_contract_mismatch.observed_count -eq 240) 'the report counts the 240 mismatched entries'
+	Assert-True ($mrqUndeclaredData.naming_contract_mismatch.observed_prefix -eq 'Shot0001.' -and $mrqUndeclaredData.naming_contract_mismatch.observed_digits -eq 4) 'the report records the observed prefix and width'
+	Assert-True ($mrqUndeclaredData.checks.naming -eq 'fail' -and $mrqUndeclaredData.checks.completeness -eq 'fail') 'the undeclared sequence still fails naming and completeness'
+	Assert-True ($mrqUndeclaredData.checks.decode -ne 'fail') 'zero matched frames is not a decode failure; nothing was decoded'
+	Assert-True ($mrqUndeclaredData.checks.resolution -ne 'fail') 'zero matched frames is not a resolution failure'
+	Assert-True (@($mrqUndeclaredData.violations.decode_failures).Count -eq 0) 'no decode failure is recorded for an undeclared sequence'
+
+	# A declaration that is only partly right must still fail, and must name what is actually there.
+	$mrqWrongWidthReport = New-ReportPath 'mrq-legacy-wrong-width'
+	$mrqWrongWidthResult = Invoke-Measure @{
+		FramesDirectory    = $mrqDir
+		StartNumber        = 0
+		EndNumberExclusive = 240
+		NamePrefix         = 'Shot0001.'
+		Digits             = 6
+		ReportPath         = $mrqWrongWidthReport
+		ExpectedWidth      = 64
+		ExpectedHeight     = 48
+	}
+	Assert-True ($mrqWrongWidthResult.ExitCode -eq 1) "a right prefix with the wrong width exits 1, got $($mrqWrongWidthResult.ExitCode): $($mrqWrongWidthResult.Output)"
+	$mrqWrongWidthData = Read-Report $mrqWrongWidthReport
+	Assert-True ((Get-FailureCategories $mrqWrongWidthData) -contains 'ambiguous_name') 'a right prefix with the wrong width is an ambiguous name, not a pass'
+	Assert-True ($mrqWrongWidthData.artifact_verdict -eq 'fail') 'a wrong width does not pass'
+
+	$mrqWrongPrefixReport = New-ReportPath 'mrq-legacy-wrong-prefix'
+	$mrqWrongPrefixResult = Invoke-Measure @{
+		FramesDirectory    = $mrqDir
+		StartNumber        = 0
+		EndNumberExclusive = 240
+		NamePrefix         = 'Shot0002.'
+		Digits             = 4
+		ReportPath         = $mrqWrongPrefixReport
+	}
+	Assert-True ($mrqWrongPrefixResult.ExitCode -eq 1) "a wrong declared prefix exits 1, got $($mrqWrongPrefixResult.ExitCode): $($mrqWrongPrefixResult.Output)"
+	$mrqWrongPrefixData = Read-Report $mrqWrongPrefixReport
+	Assert-True ((Get-FailureCategories $mrqWrongPrefixData) -contains 'naming_contract_mismatch') 'a wrong declared prefix is a naming-contract mismatch'
+	Assert-True ((@($mrqWrongPrefixData.failures | Where-Object { $_.category -eq 'naming_contract_mismatch' })[0].detail).Contains("prefix 'Shot0002.'")) 'the mismatch quotes the wrongly declared prefix'
+	Assert-True ((Get-DirectorySnapshot $mrqDir) -ceq $mrqBefore) 'no MRQ-named file was renamed, repaired or added by any of these runs'
+
+	# Movie Graph: `<sequence_name>.<layer_name>.<frame_number>`.
+	$graphDir = Join-Path $fixtureRoot 'mrq-moviegraph'
+	New-FrameSequence -Directory $graphDir -Start 0 -EndExclusive 240 -Prefix 'Shot0001.Deferred.' -DigitCount 4
+	Register-FixtureSnapshot 'mrq-moviegraph'
+	$graphDeclaredReport = New-ReportPath 'mrq-moviegraph-declared'
+	$graphDeclaredResult = Invoke-Measure @{
+		FramesDirectory    = $graphDir
+		StartNumber        = 0
+		EndNumberExclusive = 240
+		NamePrefix         = 'Shot0001.Deferred.'
+		Digits             = 4
+		ReportPath         = $graphDeclaredReport
+		ExpectedWidth      = 64
+		ExpectedHeight     = 48
+	}
+	Assert-True ($graphDeclaredResult.ExitCode -eq 0) "a declared Movie Graph sequence exits 0, got $($graphDeclaredResult.ExitCode): $($graphDeclaredResult.Output)"
+	Assert-True ((Read-Report $graphDeclaredReport).artifact_verdict -eq 'pass') 'a declared Movie Graph sequence passes the artifact verdict'
+	$graphUndeclaredReport = New-ReportPath 'mrq-moviegraph-undeclared'
+	$graphUndeclaredResult = Invoke-Measure @{
+		FramesDirectory    = $graphDir
+		StartNumber        = 0
+		EndNumberExclusive = 240
+		ReportPath         = $graphUndeclaredReport
+		ExpectedWidth      = 64
+		ExpectedHeight     = 48
+	}
+	Assert-True ($graphUndeclaredResult.ExitCode -eq 1) "an undeclared Movie Graph sequence exits 1, got $($graphUndeclaredResult.ExitCode): $($graphUndeclaredResult.Output)"
+	$graphUndeclaredData = Read-Report $graphUndeclaredReport
+	Assert-True ((Get-FailureCategories $graphUndeclaredData) -contains 'naming_contract_mismatch') 'an undeclared Movie Graph sequence is a naming-contract mismatch'
+	Assert-True ($graphUndeclaredData.naming_contract_mismatch.observed_prefix -eq 'Shot0001.Deferred.') 'the report names the layer in the observed prefix'
+	Assert-True (-not ((Get-FailureCategories $graphUndeclaredData) -contains 'missing_frames')) 'the undeclared Movie Graph sequence is not reported as missing frames'
+
+	# The mismatch is not a catch-all: a prefix declaration against bare six-digit names has no
+	# observed prefix to name, so it stays an unexpected-name failure, and a stray file beside a
+	# prefixed sequence is still reported on its own.
+	$barePrefixReport = New-ReportPath 'bare-with-prefix'
+	$barePrefixResult = Invoke-Measure @{
+		FramesDirectory    = $cleanDir
+		StartNumber        = 0
+		EndNumberExclusive = 240
+		NamePrefix         = 'Shot0001.'
+		ReportPath         = $barePrefixReport
+	}
+	Assert-True ($barePrefixResult.ExitCode -eq 1) "bare six-digit names against a declared prefix exit 1, got $($barePrefixResult.ExitCode): $($barePrefixResult.Output)"
+	$barePrefixData = Read-Report $barePrefixReport
+	Assert-True ((Get-FailureCategories $barePrefixData) -contains 'unexpected_name') 'bare names against a declared prefix are unexpected names'
+	Assert-True (-not ((Get-FailureCategories $barePrefixData) -contains 'naming_contract_mismatch')) 'bare names have no prefix to name, so no mismatch is claimed'
+
+	$strayPrefixDir = Join-Path $fixtureRoot 'mrq-legacy-stray'
+	New-FrameSequence -Directory $strayPrefixDir -Start 0 -EndExclusive 6 -Prefix 'Shot0001.' -DigitCount 4
+	[System.IO.File]::WriteAllText((Join-Path $strayPrefixDir 'notes.txt'), 'fixture note', [System.Text.UTF8Encoding]::new($false))
+	Register-FixtureSnapshot 'mrq-legacy-stray'
+	$strayPrefixReport = New-ReportPath 'mrq-legacy-stray'
+	$strayPrefixResult = Invoke-Measure @{
+		FramesDirectory    = $strayPrefixDir
+		StartNumber        = 0
+		EndNumberExclusive = 6
+		ReportPath         = $strayPrefixReport
+	}
+	Assert-True ($strayPrefixResult.ExitCode -eq 1) "a stray file beside an undeclared prefixed sequence exits 1, got $($strayPrefixResult.ExitCode)"
+	$strayPrefixCategories = Get-FailureCategories (Read-Report $strayPrefixReport)
+	Assert-True ($strayPrefixCategories -contains 'naming_contract_mismatch') 'the prefixed sequence is still named as a mismatch beside a stray file'
+	Assert-True ($strayPrefixCategories -contains 'unexpected_name') 'the stray file is still reported as an unexpected name'
+	Write-Output 'PASS: MRQ legacy and Movie Graph names pass when declared, an undeclared prefix is a naming-contract mismatch rather than missing frames, and no input was renamed'
+
+	# ============================================================ group 16: the inspector never changed its input
 	# Every fixture built above registered the snapshot it had when the suite finished building it.
-	# This gate compares all 23 of them again, so a later group that corrupts an earlier fixture is
+	# This gate compares all 26 of them again, so a later group that corrupts an earlier fixture is
 	# caught here by path instead of being reported as a pass by a tautology. reports/ is excluded from
 	# those snapshots because the suite writes it on purpose; its contents are accounted separately
 	# (one non-empty report per allocated path, minus the deliberately refused ones).
 	Assert-FixtureInputsUnchanged
 	$fixtureCount = $script:fixtureBaselines.Count
-	Assert-True ($fixtureCount -eq 23) "every fixture directory built by the suite is covered by the comparison, got $fixtureCount"
+	Assert-True ($fixtureCount -eq 26) "every fixture directory built by the suite is covered by the comparison, got $fixtureCount"
 	Assert-True (@(Get-FixtureInputDrift).Count -eq 0) 'no fixture directory was modified, added to or removed after it was built'
 	Assert-True (@(Get-ReportDrift).Count -eq 0) 'reports/ holds exactly one non-empty report per allocated report path'
 	Write-Output "PASS: all $fixtureCount fixture directories and the report directory are unchanged since they were built"
