@@ -930,6 +930,81 @@ try {
 	Assert-True ($equalRangeResult.Output.Contains('greater than StartNumber')) 'the refusal explains the end-exclusive range rule'
 	Register-Group 'non-zero-starts-need-explicit' 'non-zero starts need an explicit declaration and an empty range cannot pass'
 
+	# ============================================================ group 10b: huge expected range stays bounded
+	# A mistaken EndNumberExclusive such as Int32.MaxValue used to build a set as wide as the range and
+	# then a list of every missing index before the report could be written. The totals are now computed
+	# arithmetically and only a capped sample is listed.
+	$boundedDir = Join-Path $fixtureRoot 'bounded-range'
+	New-FrameSequence -Directory $boundedDir -Start 0 -EndExclusive 3
+	Register-FixtureSnapshot 'bounded-range'
+	$boundedBudgetSeconds = 60
+	$intMax = [int]::MaxValue
+
+	$hugeReport = New-ReportPath 'huge-range'
+	$hugeResult = Invoke-Measure @{
+		FramesDirectory    = $boundedDir
+		StartNumber        = 0
+		EndNumberExclusive = $intMax
+		ReportPath         = $hugeReport
+		ExpectedWidth      = 64
+		ExpectedHeight     = 48
+	}
+	Assert-True ($hugeResult.ElapsedSeconds -lt $boundedBudgetSeconds) "an Int32.MaxValue range finishes within ${boundedBudgetSeconds}s, took $($hugeResult.ElapsedSeconds)s"
+	Assert-True ($hugeResult.ExitCode -eq 1) "a huge range over a short sequence fails with exit 1, got $($hugeResult.ExitCode): $($hugeResult.Output)"
+	$hugeData = Read-Report $hugeReport
+	Assert-True ([long]$hugeData.expectations.frame_count -eq [long]$intMax) 'the report keeps the exact expected frame count for a huge range'
+	Assert-True ([long]$hugeData.violations.missing_count -eq ([long]$intMax - 3)) 'the exact missing total is reported for a huge range'
+	Assert-True (@($hugeData.violations.missing_indices).Count -eq 200) 'the listed missing indices are capped at 200'
+	Assert-True ($hugeData.violations.missing_indices_truncated -eq $true) 'the report says the missing list was truncated'
+	Assert-True ([long]$hugeData.violations.missing_indices[0] -eq 3) 'the missing sample starts at the first absent index'
+	Assert-True ((Get-FailureCategories $hugeData) -contains 'missing_frames') 'a huge range is still reported as missing frames'
+	Assert-True ($hugeResult.Output.Length -lt 20000) 'the console output stays small for a huge range'
+
+	$hugeLatticeReport = New-ReportPath 'huge-range-offset'
+	$hugeLatticeResult = Invoke-Measure @{
+		FramesDirectory    = $boundedDir
+		StartNumber        = 0
+		EndNumberExclusive = $intMax
+		FrameNumberOffset  = 1000000000
+		FrameStep          = 7
+		ReportPath         = $hugeLatticeReport
+	}
+	Assert-True ($hugeLatticeResult.ElapsedSeconds -lt $boundedBudgetSeconds) 'a huge range with offset and step finishes within the budget'
+	Assert-True ($hugeLatticeResult.ExitCode -eq 1) "a huge offset range fails closed with exit 1, got $($hugeLatticeResult.ExitCode): $($hugeLatticeResult.Output)"
+	$hugeLatticeData = Read-Report $hugeLatticeReport
+	$expectedHugeCount = [long][Math]::Ceiling([double]([long]$intMax) / 7)
+	Assert-True ([long]$hugeLatticeData.violations.missing_count -eq $expectedHugeCount) 'no frame lies on the shifted lattice, so every lattice index is missing'
+	Assert-True ([long]$hugeLatticeData.violations.missing_indices[1] -eq 1000000007) 'the sample follows the declared step and offset'
+	Assert-True ((Get-FailureCategories $hugeLatticeData) -contains 'out_of_range_frames') 'the frames below the shifted range are reported out of range'
+
+	$cappedReport = New-ReportPath 'capped-sample'
+	$cappedResult = Invoke-Measure @{
+		FramesDirectory    = $boundedDir
+		StartNumber        = 0
+		EndNumberExclusive = 1000
+		ReportPath         = $cappedReport
+	}
+	Assert-True ($cappedResult.ExitCode -eq 1) 'a 1000-frame range over 3 frames fails'
+	$cappedData = Read-Report $cappedReport
+	Assert-True ([long]$cappedData.violations.missing_count -eq 997) 'the missing total is exact when the list is capped'
+	Assert-True (@($cappedData.violations.missing_indices).Count -eq 200) 'a mid-size range is capped at the same limit'
+	$cappedMissingFailure = @($cappedData.failures | Where-Object { $_.category -eq 'missing_frames' })[0]
+	Assert-True ($cappedMissingFailure.detail.Contains('997 expected')) 'the failure detail carries the exact total'
+	Assert-True ($cappedMissingFailure.sample.Contains('more)')) 'the failure sample says how many were left out'
+
+	$smallMissingReport = New-ReportPath 'small-missing'
+	$smallMissingResult = Invoke-Measure @{
+		FramesDirectory    = $boundedDir
+		StartNumber        = 0
+		EndNumberExclusive = 5
+		ReportPath         = $smallMissingReport
+	}
+	$smallMissingData = Read-Report $smallMissingReport
+	Assert-True ((@($smallMissingData.violations.missing_indices) -join ',') -eq '3,4') 'a short range still lists every missing index'
+	Assert-True ($smallMissingData.violations.missing_indices_truncated -eq $false) 'a short range is not marked truncated'
+	Assert-True ([long]$smallMissingData.violations.missing_count -eq 2) 'a short range reports the exact missing count'
+	Write-Output 'PASS: a huge expected range is computed arithmetically with an exact total and a capped sample'
+
 	# ============================================================ group 11: decoder absence, failure, timeout
 	$decoderDir = Join-Path $fixtureRoot 'decoder'
 	New-FrameSequence -Directory $decoderDir -Start 0 -EndExclusive 6
@@ -2149,13 +2224,13 @@ try {
 	Register-Group 'run-source-revision-provenance-required' 'a missing, empty or blank RunId / SourceRevision is refused before any report exists, and explicit values are recorded verbatim'
 	# ============================================================ group 16: the inspector never changed its input
 	# Every fixture built above registered the snapshot it had when the suite finished building it.
-	# This gate compares all 40 of them again, so a later group that corrupts an earlier fixture is
+	# This gate compares all 41 of them again, so a later group that corrupts an earlier fixture is
 	# caught here by path instead of being reported as a pass by a tautology. reports/ is excluded from
 	# those snapshots because the suite writes it on purpose; its contents are accounted separately
 	# (one non-empty report per allocated path, minus the deliberately refused ones).
 	Assert-FixtureInputsUnchanged
 	$fixtureCount = $script:fixtureBaselines.Count
-	Assert-True ($fixtureCount -eq 40) "every fixture directory built by the suite is covered by the comparison, got $fixtureCount"
+	Assert-True ($fixtureCount -eq 41) "every fixture directory built by the suite is covered by the comparison, got $fixtureCount"
 	Assert-True (@(Get-FixtureInputDrift).Count -eq 0) 'no fixture directory was modified, added to or removed after it was built'
 	Assert-True (@(Get-ReportDrift).Count -eq 0) 'reports/ holds exactly one non-empty report per allocated report path'
 	Register-Group 'all-fixture-directories-report-directory' "all $fixtureCount fixture directories and the report directory are unchanged since they were built"
