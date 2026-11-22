@@ -407,7 +407,7 @@ function New-FixtureEngineRoot([string]$Path, [string]$BuildVersionJson, [switch
 	# one plugin the vertical-loop recipe requires.
 	[System.IO.Directory]::CreateDirectory($Path) | Out-Null
 	Write-FixtureJson (Join-Path $Path 'Engine\Build\Build.version') $BuildVersionJson
-	Write-FixtureTemplate (Join-Path $Path 'Templates\TP_BlankBP') 'TP_BlankBP' 'TP_BlankBP'
+	Write-FixtureTemplate (Join-Path $Path 'Templates\TP_BlankBP') 'TP_BlankBP' 'TP_BlankBP' -BlueprintOnly
 	# The raw-copy recipes apply the template's own Config/TemplateDefs.ini, so the minimal engine
 	# fixture has to carry a real one like an installed template does.
 	Write-FixtureTemplateDefs (Join-Path $Path 'Templates\TP_BlankBP') @(
@@ -481,16 +481,23 @@ function Write-FixtureRulesTemplate([string]$TemplateRoot, [string]$TemplateName
 	Write-FixtureJson (Join-Path $TemplateRoot 'Config\DefaultGame.ini') "[/Script/EngineSettings.GeneralProjectSettings]`r`nProjectID=(A=1,B=2,C=3,D=4)`r`nProjectName=Rules Template`r`n"
 }
 
-function Write-FixtureTemplate([string]$TemplateRoot, [string]$TemplateName, [string]$ModuleName, [string]$DefaultEngineText) {
+function Write-FixtureTemplate([string]$TemplateRoot, [string]$TemplateName, [string]$ModuleName, [string]$DefaultEngineText, [switch]$BlueprintOnly) {
 	# Builds an installed-engine template fixture with real Modules/Source shape so the previous
-	# `Modules: []` shortcut cannot hide an unresolved project identity.
+	# `Modules: []` shortcut cannot hide an unresolved project identity. -BlueprintOnly writes the
+	# real shape of an official Blueprint-only template (TP_BlankBP): Modules is empty and there is
+	# no Source/ directory, so there is nothing for the project identity to match.
 	[System.IO.Directory]::CreateDirectory($TemplateRoot) | Out-Null
+	if ($BlueprintOnly) {
+		Write-FixtureJson (Join-Path $TemplateRoot ($TemplateName + '.uproject')) '{"FileVersion":3,"EngineAssociation":"","Modules":[]}'
+	}
+	else {
 	$descriptor = '{"FileVersion":3,"EngineAssociation":"","Modules":[{"Name":"' + $ModuleName + '","Type":"Runtime","LoadingPhase":"Default"}]}'
 	Write-FixtureJson (Join-Path $TemplateRoot ($TemplateName + '.uproject')) $descriptor
 	$sourceModule = Join-Path $TemplateRoot ('Source\' + $TemplateName)
 	Write-FixtureJson (Join-Path $sourceModule ($TemplateName + '.Build.cs')) ("using UnrealBuildTool;`n`npublic class {0} : ModuleRules`n{{`n}}`n" -f $TemplateName)
 	Write-FixtureJson (Join-Path $sourceModule ('Private\' + $TemplateName + 'Module.cpp')) ("#include `"CoreMinimal.h`"`n#include `"Modules/ModuleManager.h`"`n`nIMPLEMENT_PRIMARY_GAME_MODULE(FDefaultGameModuleImpl, {0}, `"{0}`");`n" -f $TemplateName)
 	Write-FixtureJson (Join-Path $TemplateRoot ('Source\' + $TemplateName + 'Target.cs')) ("using UnrealBuildTool;`n`npublic class {0}Target : TargetRules`n{{`n}}`n" -f $TemplateName)
+	}
 	# The installed New Project templates ship Config/DefaultEngine.ini; the online recipe appends
 	# its provider/session section to that copied project file.
 	if ([string]::IsNullOrWhiteSpace($DefaultEngineText)) {
@@ -993,7 +1000,7 @@ try {
 
 	# TP_BlankBP declares no SharedContentPacks and its default map is engine content, so the raw-copy
 	# path is checked here for the ignore rules alone.
-	Write-FixtureTemplate $blankTemplate 'TP_BlankBP' 'TP_BlankBP'
+	Write-FixtureTemplate $blankTemplate 'TP_BlankBP' 'TP_BlankBP' -BlueprintOnly
 	Write-FixtureTemplateDefs $blankTemplate @(
 		'[/Script/GameProjectGeneration.TemplateProjectDefs]',
 		'FoldersToIgnore=Media',
@@ -1434,11 +1441,13 @@ try {
 	$loopOutput = $outputPaths[2]
 	Assert-True (Test-Path -LiteralPath (Join-Path $loopOutput 'TP_BlankBP.uproject')) 'video-only recipe copies the blank engine template'
 	$loopDescriptor = [System.IO.File]::ReadAllText((Join-Path $loopOutput 'TP_BlankBP.uproject')) | ConvertFrom-Json
-	Assert-True (@($loopDescriptor.Modules).Count -eq 1 -and $loopDescriptor.Modules[0].Name -eq 'TP_BlankBP') 'video-only recipe keeps the template module identity'
+	Assert-True (@($loopDescriptor.Modules).Count -eq 0) 'video-only recipe keeps the Blueprint-only template shape: Modules stays empty and no module is invented'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $loopOutput 'Source'))) 'video-only recipe has no Source/ directory for a Blueprint-only template'
 	Assert-True ([string]$loopDescriptor.EngineAssociation -eq '5.8') 'video-only recipe writes a derived EngineAssociation'
 	$loopLock = [System.IO.File]::ReadAllText((Join-Path $loopOutput 'template-lock.json')) | ConvertFrom-Json
 	Assert-True ($loopLock.engine_changelist -eq 55116800) 'video-only lock records the effective engine changelist'
 	Assert-True ($loopLock.identity.project_file -eq 'TP_BlankBP.uproject') 'video-only lock records the generated project file name'
+	Assert-True (($loopLock.identity.PSObject.Properties.Name -contains 'project_modules') -and @($loopLock.identity.project_modules).Count -eq 0) 'video-only lock records an empty project_modules array, which is the normal Blueprint-only identity'
 	Assert-True ($loopLock.identity.engine_association -eq '5.8') 'video-only lock records the engine association'
 	$movieRenderPlugins = @($loopDescriptor.Plugins | Where-Object { $_.Name -eq 'MovieRenderPipeline' })
 	Assert-True ($movieRenderPlugins.Count -eq 1 -and $movieRenderPlugins[0].Enabled -eq $true) 'video-only recipe enables MovieRenderPipeline in the project descriptor'
