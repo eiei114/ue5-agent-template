@@ -5,6 +5,8 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $productionRoot = Join-Path $repoRoot 'Production'
 $generator = Join-Path $PSScriptRoot 'New-UETemplateScaffold.ps1'
+$differenceHelper = Join-Path $PSScriptRoot 'UETemplateProjectDifference.ps1'
+$differenceUpdater = Join-Path $PSScriptRoot 'Update-UETemplateProjectDifference.ps1'
 $initialCheckoutStatus = @(& git -C $repoRoot status --porcelain --untracked-files=all)
 if ($LASTEXITCODE -ne 0) { throw 'Could not record the developer checkout status before testing.' }
 $testId = [Guid]::NewGuid().ToString('N')
@@ -48,6 +50,7 @@ $changelistOnlyProjectName = "Clo_$testId"
 $installAProjectName = "Ida_$testId"
 $installBProjectName = "Idb_$testId"
 $noChangelistProjectName = "Ncl_$testId"
+$pdProjectName = "Pd_$testId"
 
 $ledgerRunId = "$testId-ledger"
 $ledgerProjectName = "Ld_$testId"
@@ -80,6 +83,10 @@ $outputNames = @(
 	"${existingProjectName}_$emptyRunId",
 	"${existingProjectName}_$leaseRunId",
 	"${existingProjectName}_$outRunId"
+
+	"${pdProjectName}_$testId-exact",
+	"${pdProjectName}_$testId-append",
+	"${pdProjectName}_$testId-ident",
 
 	("PthB_ok1_$testId"),
 	("PthB_eq1_$testId"),
@@ -168,6 +175,12 @@ $expectedGroups = @(
 	'missing-plugin-descriptor-leaves-published',
 	'failure-recipe-copy-stage-leaves',
 	'stopped-run-block-regeneration-same',
+	'project-differences-lock-equals-normalized-input',
+	'project-differences-contract-rejects-forbidden-forms',
+	'normalizer-mutation-fails-exactness-assertion',
+	'append-path-changes-only-project-differences',
+	'append-path-refuses-tampered-lock-and',
+	'recording-instructions-name-append-command',
 	'group-ledger-drift-fails'
 )
 $registeredGroups = New-Object 'System.Collections.Generic.List[string]'
@@ -515,7 +528,7 @@ function Assert-GeneratorFails([scriptblock]$Action, [string]$Message) {
 # therefore machine-checked here instead of trusted to reviewer discipline.
 $qaTemplateRelativePath = 'templates/QA.md'
 $qaRequiredRowIds = @(
-	'QA-BUILD-01', 'QA-MAP-01',
+	'QA-BUILD-01', 'QA-LOCK-01', 'QA-MAP-01',
 	'QA-PLAY-01', 'QA-PLAY-02', 'QA-PLAY-03',
 	'QA-PERF-01', 'QA-AUDIO-01',
 	'QA-IMG-01', 'QA-MRQ-01', 'QA-MRQ-02',
@@ -641,6 +654,7 @@ function New-RecipeFixtureRepository([string]$Name, [string]$Revision) {
 	if ($LASTEXITCODE -ne 0) { throw "Could not check out revision $Revision in the isolated repository fixture $Name." }
 	[System.IO.Directory]::CreateDirectory((Join-Path $path 'Production')) | Out-Null
 	Copy-Item -LiteralPath $generator -Destination (Join-Path $path 'scripts\New-UETemplateScaffold.ps1') -Force
+	Copy-Item -LiteralPath $differenceHelper -Destination (Join-Path $path 'scripts\UETemplateProjectDifference.ps1') -Force
 	return $path
 }
 
@@ -2937,6 +2951,156 @@ try {
 	$retryLock = [System.IO.File]::ReadAllText((Join-Path $midFailOutput 'template-lock.json')) | ConvertFrom-Json
 	Assert-True ($retryLock.identity.project_file -eq 'TP_FirstPerson.uproject') 'the retried run records the same project identity as a first run'
 	Register-Group 'stopped-run-block-regeneration-same' 'a stopped run does not block regeneration of the same Name/RunId'
+
+	# ============================================================ project_differences (DOT-3452)
+	# The lock's `project_differences` is a delivered, reproducible record. The old suite only counted
+	# it (`Count -eq 2`), so a generator that wrote fixed strings still passed. These groups compare the
+	# values themselves, fix the contract's refusals, and cover the one post-generation recording path.
+	. $differenceHelper
+	$pdUtf8 = [System.Text.UTF8Encoding]::new($false)
+
+	function Assert-LockDifferencesExact([string]$LockPath, [string[]]$Expected) {
+		$lockObject = [System.IO.File]::ReadAllText($LockPath) | ConvertFrom-Json
+		$actualValues = @($lockObject.project_differences | ForEach-Object { [string]$_ })
+		$actualJoined = $actualValues -join ' | '
+		$expectedJoined = @($Expected) -join ' | '
+		Assert-True ($actualJoined -ceq $expectedJoined) ('project_differences is [{0}] but the input normalizes to [{1}]' -f $actualJoined, $expectedJoined)
+	}
+
+	function Get-LockTextWithoutDifferences([string]$Text) {
+		return [regex]::Replace($Text, '"project_differences"\s*:\s*\[(?:[^"\]]|"(?:[^"\\]|\\.)*")*\]', '')
+	}
+
+	# Group 1: the lock records exactly the normalized input (Trim, empty dropped, duplicates removed,
+	# Ordinal sort), compared value by value.
+	$pdExactRun = "$testId-exact"
+	$pdExactOutput = Join-Path $productionRoot "${pdProjectName}_$pdExactRun"
+	$pdExactInput = @('  Map: /Game/Pd/Maps/L_B  ', 'Exposure: preset A', 'Map: /Game/Pd/Maps/L_B', '   ', 'Variant: Variant_Combat')
+	$pdExactExpected = @('Exposure: preset A', 'Map: /Game/Pd/Maps/L_B', 'Variant: Variant_Combat')
+	Invoke-Generator 'spectator-explore' $pdProjectName $pdExactRun $pdExactInput
+	Assert-LockDifferencesExact (Join-Path $pdExactOutput 'template-lock.json') $pdExactExpected
+	$pdAccepted = @('Map: /Game/Ex81/Maps/L_Hero', 'Sequence: /Game/Ex81/Cine/LS_Loop', 'Shared map: /Game/EmberWatch/Maps/L_Environment', 'GameMode: BP_TPGameMode_C', 'Note: wait.. what', ('Long: ' + ('x' * 194)))
+	foreach ($pdValue in $pdAccepted) {
+		Assert-True ($null -eq (Get-UETemplateProjectDifferenceProblem $pdValue)) ("the contract accepts '$pdValue'")
+	}
+	Register-Group 'project-differences-lock-equals-normalized-input' 'the lock records exactly the normalized -ProjectDiff input, value by value'
+
+	# Group 2: every forbidden form stops generation, names the value, and leaves no output and no staging.
+	$pdRejected = @(
+		@{ Value = 'C:\Users\someone\private-note.txt'; Needle = 'host-absolute path' },
+		@{ Value = 'Path: C:\Users\someone\x'; Needle = 'host-absolute path' },
+		@{ Value = 'Path: D:/work/x'; Needle = 'host-absolute path' },
+		@{ Value = '/etc/passwd'; Needle = 'host-absolute path' },
+		@{ Value = '\\server\share\x'; Needle = 'host-absolute path' },
+		@{ Value = 'Map: ../../Outside/Thing'; Needle = 'parent-directory segment' },
+		@{ Value = 'Map: /Game/../Outside'; Needle = 'parent-directory segment' },
+		@{ Value = "Newline: first`nsecond"; Needle = 'control character' },
+		@{ Value = "Tab: first`tsecond"; Needle = 'control character' },
+		@{ Value = ('Long: ' + ('x' * 195)); Needle = 'the limit is 200' },
+		@{ Value = 'free text without a label'; Needle = '<label>: <value>' },
+		@{ Value = 'Map:/Game/NoSpace'; Needle = '<label>: <value>' }
+	)
+	$pdRejectIndex = 0
+	foreach ($pdCase in $pdRejected) {
+		$pdRejectIndex++
+		$pdRejectRun = "$testId-rej$pdRejectIndex"
+		$pdRejectFailure = Get-GeneratorFailure { Invoke-Generator 'spectator-explore' $pdProjectName $pdRejectRun @('Map: /Game/Pd/Maps/L_Ok', $pdCase.Value) }
+		Assert-True ($pdRejectFailure.Contains('Project difference check stopped')) ("a forbidden project difference stops generation: $($pdCase.Value)")
+		Assert-True ($pdRejectFailure.Contains($pdCase.Needle)) ("the refusal of '$($pdCase.Value)' names the broken rule '$($pdCase.Needle)'; got: $pdRejectFailure")
+		Assert-True (-not (Test-Path -LiteralPath (Join-Path $productionRoot "${pdProjectName}_$pdRejectRun"))) ("a refused project difference creates no output directory: $($pdCase.Value)")
+		Assert-NoStagingResidue $productionRoot $pdRejectRun
+	}
+	Register-Group 'project-differences-contract-rejects-forbidden-forms' 'absolute paths, parent segments, control characters, over-long and unlabeled values stop generation with no output'
+
+	# Group 3: the old suite passed when the normalizer was replaced by fixed strings. Apply that exact
+	# mutation to an isolated clone and require the exactness assertion to fail by value, then to go
+	# silent again once the real normalizer is restored.
+	$pdMutantExpected = @('Exposure: preset M', 'Map: /Game/Pd/Maps/L_M')
+	$pdMutantRepo = New-RecipeFixtureRepository 'PdMutant' $templateRevision
+	$pdMutantHelper = Join-Path $pdMutantRepo 'scripts\UETemplateProjectDifference.ps1'
+	$pdHelperText = [System.IO.File]::ReadAllText($differenceHelper)
+	$pdMutantText = $pdHelperText.Replace('param([AllowNull()][AllowEmptyCollection()][string[]]$Values)', ('param([AllowNull()][AllowEmptyCollection()][string[]]$Values)' + "`n`treturn [string[]]@('LOCKED-A', 'LOCKED-B')"))
+	Assert-True ($pdMutantText -cne $pdHelperText) 'the mutation changed the normalizer in the clone'
+	[System.IO.File]::WriteAllText($pdMutantHelper, $pdMutantText, $pdUtf8)
+	Invoke-RepositoryGenerator $pdMutantRepo 'spectator-explore' $pdProjectName 'mutant' @("Map: /Game/Pd/Maps/L_M", "Exposure: preset M")
+	$pdMutantLock = Join-Path $pdMutantRepo "Production\${pdProjectName}_mutant\template-lock.json"
+	Assert-True (@(([System.IO.File]::ReadAllText($pdMutantLock) | ConvertFrom-Json).project_differences).Count -eq 2) 'the mutant still passes the old Count-only assertion'
+	$pdMutantFailure = Get-GeneratorFailure { Assert-LockDifferencesExact $pdMutantLock $pdMutantExpected }
+	Assert-True ($pdMutantFailure.Contains('LOCKED-A')) ("the exactness assertion fails on the mutant and names the wrong value; got: $pdMutantFailure")
+	Copy-Item -LiteralPath $differenceHelper -Destination $pdMutantHelper -Force
+	Invoke-RepositoryGenerator $pdMutantRepo 'spectator-explore' $pdProjectName 'restored' @("Map: /Game/Pd/Maps/L_M", "Exposure: preset M")
+	Assert-LockDifferencesExact (Join-Path $pdMutantRepo "Production\${pdProjectName}_restored\template-lock.json") $pdMutantExpected
+	Register-Group 'normalizer-mutation-fails-exactness-assertion' 'replacing the normalizer with fixed strings fails the exactness assertion, restoring it passes'
+
+	# Group 4: the post-generation path adds values and changes nothing else.
+	$pdAppendRun = "$testId-append"
+	$pdAppendOutput = Join-Path $productionRoot "${pdProjectName}_$pdAppendRun"
+	$pdAppendLock = Join-Path $pdAppendOutput 'template-lock.json'
+	Invoke-Generator 'third-person-game' $pdProjectName $pdAppendRun @('Map: /Game/Pd/Maps/L_A')
+	$pdBeforeText = [System.IO.File]::ReadAllText($pdAppendLock)
+	$pdBeforeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $pdAppendLock).Hash
+	$pdUpdateOutput = @(& $differenceUpdater -LockPath $pdAppendLock -Difference @('Variant: Variant_Combat', 'GameMode: BP_Game_C', 'Map: /Game/Pd/Maps/L_A'))
+	$pdAfterText = [System.IO.File]::ReadAllText($pdAppendLock)
+	$pdAfterHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $pdAppendLock).Hash
+	Assert-True ($pdBeforeHash -cne $pdAfterHash) 'recording a new difference changes the lock hash'
+	Assert-True (($pdUpdateOutput -join "`n").Contains($pdBeforeHash) -and ($pdUpdateOutput -join "`n").Contains($pdAfterHash)) 'the update reports the before and after SHA256 of the lock'
+	Assert-LockDifferencesExact $pdAppendLock @('GameMode: BP_Game_C', 'Map: /Game/Pd/Maps/L_A', 'Variant: Variant_Combat')
+	Assert-True ((Get-LockTextWithoutDifferences $pdBeforeText) -ceq (Get-LockTextWithoutDifferences $pdAfterText)) 'every byte of the lock outside the project_differences array is unchanged'
+	$pdBeforeLock = $pdBeforeText | ConvertFrom-Json
+	$pdAfterLock = $pdAfterText | ConvertFrom-Json
+	Assert-True ((ConvertTo-Json -InputObject $pdBeforeLock.identity -Compress) -ceq (ConvertTo-Json -InputObject $pdAfterLock.identity -Compress)) 'identity is unchanged by the update'
+	Assert-True ($pdBeforeLock.template_commit -ceq $pdAfterLock.template_commit) 'template_commit is unchanged by the update'
+	Assert-True ($pdBeforeLock.schema_version -eq $pdAfterLock.schema_version) 'schema_version is unchanged by the update'
+	Assert-True ((ConvertTo-Json -InputObject $pdBeforeLock.plugins -Depth 12 -Compress) -ceq (ConvertTo-Json -InputObject $pdAfterLock.plugins -Depth 12 -Compress)) 'plugins are unchanged by the update'
+	Assert-True (@(Get-ChildItem -LiteralPath $pdAppendOutput -Force -Filter '.template-lock.json.*').Count -eq 0) 'the update leaves no temporary file beside the lock'
+	$pdRepeatOutput = (@(& $differenceUpdater -LockPath $pdAppendLock -Difference @('Map: /Game/Pd/Maps/L_A')) -join "`n")
+	Assert-True ($pdRepeatOutput.StartsWith('No change')) 'recording an already recorded difference is a reported no-op'
+	Assert-True ((Get-FileHash -Algorithm SHA256 -LiteralPath $pdAppendLock).Hash -ceq $pdAfterHash) 'a no-op update leaves the lock byte for byte unchanged'
+	Register-Group 'append-path-changes-only-project-differences' 'the append path adds values to project_differences and changes no other byte of the lock'
+
+	# Group 5: every refusal leaves the lock byte for byte unchanged.
+	$pdIdentRun = "$testId-ident"
+	$pdIdentOutput = Join-Path $productionRoot "${pdProjectName}_$pdIdentRun"
+	$pdIdentLock = Join-Path $pdIdentOutput 'template-lock.json'
+	Invoke-Generator 'spectator-explore' $pdProjectName $pdIdentRun @('Map: /Game/Pd/Maps/L_A')
+	$pdIdentOriginal = [System.IO.File]::ReadAllText($pdIdentLock)
+	$pdRefusals = @(
+		@{ Name = 'a tampered engine_association'; Text = [regex]::Replace($pdIdentOriginal, '("engine_association"\s*:\s*)"[^"]*"', '${1}"9.9"'); Values = @('Map: /Game/Pd/Maps/L_New'); Needle = 'engine_association' },
+		@{ Name = 'a tampered project_file'; Text = [regex]::Replace($pdIdentOriginal, '("project_file"\s*:\s*)"[^"]*"', '${1}"Other.uproject"'); Values = @('Map: /Game/Pd/Maps/L_New'); Needle = 'does not exist beside the lock' },
+		@{ Name = 'a tampered project_modules'; Text = [regex]::Replace($pdIdentOriginal, '("project_modules"\s*:\s*)\[[^\]]*\]', '${1}["Fabricated"]'); Values = @('Map: /Game/Pd/Maps/L_New'); Needle = 'project_modules' },
+		@{ Name = 'an old schema_version'; Text = [regex]::Replace($pdIdentOriginal, '("schema_version"\s*:\s*)5', '${1}4'); Values = @('Map: /Game/Pd/Maps/L_New'); Needle = 'older than 5' },
+		@{ Name = 'a lock that is not JSON'; Text = '{ not json'; Values = @('Map: /Game/Pd/Maps/L_New'); Needle = 'not valid JSON' },
+		@{ Name = 'a lock already holding a host path'; Text = $pdIdentOriginal.Replace('Map: /Game/Pd/Maps/L_A', 'Map: C:\\Users\\someone\\x'); Values = @('Map: /Game/Pd/Maps/L_New'); Needle = 'host-absolute path' },
+		@{ Name = 'an absolute path value'; Text = $pdIdentOriginal; Values = @('Path: C:\Users\someone\x'); Needle = 'host-absolute path' },
+		@{ Name = 'a parent-directory value'; Text = $pdIdentOriginal; Values = @('Map: ../../Outside/Thing'); Needle = 'parent-directory segment' },
+		@{ Name = 'a newline value'; Text = $pdIdentOriginal; Values = @("Note: first`nsecond"); Needle = 'control character' },
+		@{ Name = 'an over-long value'; Text = $pdIdentOriginal; Values = @(('Long: ' + ('x' * 200))); Needle = 'the limit is 200' }
+	)
+	foreach ($pdRefusal in $pdRefusals) {
+		Assert-True ($pdRefusal.Text -cne $pdIdentOriginal -or $pdRefusal.Values[0] -cne 'Map: /Game/Pd/Maps/L_New') ("the refusal fixture for $($pdRefusal.Name) differs from a valid request")
+		[System.IO.File]::WriteAllText($pdIdentLock, $pdRefusal.Text, $pdUtf8)
+		$pdRefusalHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $pdIdentLock).Hash
+		$pdRefusalFailure = Get-GeneratorFailure { & $differenceUpdater -LockPath $pdIdentLock -Difference $pdRefusal.Values }
+		Assert-True ($pdRefusalFailure.Contains('Project difference')) ("the update stops for $($pdRefusal.Name); got: $pdRefusalFailure")
+		Assert-True ($pdRefusalFailure.Contains($pdRefusal.Needle)) ("the refusal for $($pdRefusal.Name) names '$($pdRefusal.Needle)'; got: $pdRefusalFailure")
+		Assert-True ((Get-FileHash -Algorithm SHA256 -LiteralPath $pdIdentLock).Hash -ceq $pdRefusalHash) ("the lock is byte for byte unchanged after refusing $($pdRefusal.Name)")
+		Assert-True (@(Get-ChildItem -LiteralPath $pdIdentOutput -Force -Filter '.template-lock.json.*').Count -eq 0) ("a refusal for $($pdRefusal.Name) leaves no temporary file")
+	}
+	$pdMissingFailure = Get-GeneratorFailure { & $differenceUpdater -LockPath (Join-Path $pdIdentOutput 'absent\template-lock.json') -Difference @('Map: /Game/Pd/Maps/L_New') }
+	Assert-True ($pdMissingFailure.Contains('no lock file')) 'a missing lock stops the update instead of creating one'
+	Assert-True (-not (Test-Path -LiteralPath (Join-Path $pdIdentOutput 'absent'))) 'a missing lock creates nothing'
+	[System.IO.File]::WriteAllText($pdIdentLock, $pdIdentOriginal, $pdUtf8)
+	Register-Group 'append-path-refuses-tampered-lock-and' 'the append path refuses a tampered identity, a broken or old lock and forbidden values, leaving the lock unchanged'
+
+	# Group 6: the instructions that tell an agent to record a difference name the one command.
+	$pdSetText = [System.IO.File]::ReadAllText((Join-Path $pdIdentOutput 'Recipe\SET.md'))
+	Assert-True ($pdSetText.Contains('scripts/Update-UETemplateProjectDifference.ps1')) 'the generated Recipe/SET.md names the one recording command'
+	Assert-True (-not $pdSetText.Contains('-ProjectDiff')) 'the generated Recipe/SET.md does not send an existing project back to generation'
+	$pdPlayText = [System.IO.File]::ReadAllText((Join-Path $repoRoot 'templates\recipes\third-person-game\Play.md'))
+	Assert-True ($pdPlayText.Contains('scripts/Update-UETemplateProjectDifference.ps1')) 'the third-person Play.md names the one recording command'
+	$pdArchitectureText = [System.IO.File]::ReadAllText((Join-Path $repoRoot 'docs\07-architecture.md'))
+	Assert-True ($pdArchitectureText.Contains('### `project_differences` ')) 'docs/07-architecture.md carries the single project_differences contract'
+	Register-Group 'recording-instructions-name-append-command' 'SET.md and Play.md name the one recording command and the contract is documented once'
 
 	# ============================================================ the declared groups all ran
 	# The ledger gate must fail for a dropped, undeclared, duplicated or empty ledger, or it is a
