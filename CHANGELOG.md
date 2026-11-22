@@ -1,5 +1,14 @@
 # 変更履歴
 
+## Unreleased — UE-FRAME-VARIETY-001 (DOT-3453) — 2026-11-23
+
+- 理由: `docs/05-qa.md` は frame 範囲の契約に「重複frameを作らない」と書くが、`scripts/Measure-UERenderArtifacts.ps1` は全 frame の SHA-256 を計算して `frames[]` に出すだけで、frame 同士が同一かを一度も見なかった。240 枚すべて byte 同一の列でも `artifact_verdict` = `pass`・`failures` 空・exit 0 だった（変更前の helper で 10 枚同一の列に実 ffprobe で実測: `VERDICT: pass`、exit 0）。
+- 変更: (1) `observed` に `distinct_frame_hashes` / `hashed_frame_count` / `duplicate_frames` / `duplicate_groups` / `duplicate_group_samples`（最大10 group・各20件の抜粋、件数は全数）/ `longest_identical_run` を追加した。既存の per-frame digest の出現回数を1回数えるだけで、追加の hash 計算も全 pair 比較もない（O(n)）。(2) `checks.frame_variety` を追加した。**既定は `unverified`**（止め絵・タイトルカードは正当な成果物で、repo は閾値を持たない）。`-ExpectedMinDistinctFrames <n>` を宣言すると、distinct が n 未満で `fail`（exit 1、`frame_variety_below_expected`）、n 以上で `pass`。`-AllowIdenticalFrames` を宣言すると `pass` で、宣言は `frame_variety_declaration` に残り、他の check は変わらない。(3) 両方の宣言・0 以下・期待枚数を超える n は入力拒否（exit 3、report なし）。(4) `CHECKS:` 行に `frame_variety=` を、`IDENTITY:` 行に件数を足した。文書は `docs/05-qa.md`（「同一frameの検出」節）・`templates/QA.md`・`README.md` を合わせた。
+- 移行: **宣言しない既存の呼び出しは、`artifact_verdict` も exit code も `failures` も変わらない**（未宣言の `frame_variety` は総合 verdict に参加しない。宣言した呼び出しだけ、その `fail` / `unverified` が最悪状態に入る）。`render_exit`（DOT-3458）のように未宣言で exit 2 へ変わることはない。report に `observed` の6項目、`checks.frame_variety`、トップレベルの `frame_variety_declaration` が増える。frozen / 止まりを機械的に落としたい呼び出しは、案件ごとに `-ExpectedMinDistinctFrames` を決めて渡す。
+- 回帰: `scripts/Test-UERenderArtifacts.ps1` に group `frame-variety-declared-identical-frames` を 1 つ追加した（既存の group は 1 件も削っていない。ledger は 23 件から 24 件）。fixture は 240 枚同一・239+1・12 枚の連続列・240 枚 distinct の4つ追加で、fixture 総数の assert は 36 から 40 へ更新した。`clean240` fixture の shade 式（`(index * 11) % 220`）は変えていない。この fixture は distinct 20 種しかなく、宣言なしでは `pass` のまま、`-ExpectedMinDistinctFrames 240` を宣言すると `fail` になる。
+- 落ちる側: 変更前の helper は `-ExpectedMinDistinctFrames` を受け付けず（パラメーター名不一致で exit 1）、宣言なしで同一 frame の列を渡すと `pass`（exit 0）だった（実測、2026-11-23）。
+- Unverified Scope: UE の compile / Editor / PIE / MRQ / render は実行していない。実 MRQ が同一 frame を並べた列を出すか、案件ごとに適切な最小 distinct 数は未観測・未決定（既定値は与えていない）。byte digest の同一性だけを見るので、見た目が近いだけの別 frame、黒 frame、SSIM/PSNR 等の画質は判定しない。Windows PowerShell 5.1 は未検証（pwsh 7 を主証拠にした）。
+
 ## Unreleased — UE-QA-REPORT-REUSE-001 (DOT-3443) — 2026-11-22
 
 - 理由: 画像列検査の report は `evidence/frames-check.json` という固定の1 path で、helper は既存 report を上書きせず拒否する。同じ `Out/run_<runid>/` で「黒frameなら再render」（`docs/05-qa.md`）に従って再検査すると、2回目は何も書かず、QA の証拠欄は現在の `frames/` と対応しない古い pass を指したままになった。さらに引数拒否が artifact の `fail` と同じ exit 1 で終わり、exit code から区別できなかった。
