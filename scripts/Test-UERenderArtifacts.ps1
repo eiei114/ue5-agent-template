@@ -1067,6 +1067,103 @@ try {
 	Assert-True ($timeoutData.artifact_verdict -eq 'unverified') 'a decode timeout cannot produce a pass'
 	Register-Group 'missing-failing-slow-decoders-stay' 'missing, failing and slow decoders stay unverified or fail, and the timeout is bounded'
 
+	# ============================================================ group 11a: decoder output flood is bounded
+	# A decoder that writes without end must not make the helper hold unbounded text. The stubs below
+	# are self-made .cmd files; they flood stdout, stderr or both, and the helper must stop retaining
+	# at its fixed byte budget, kill only the process it started, and report a non-pass without parsing
+	# the truncated output. The deadline is set far above what an overflow kill needs, so finishing
+	# quickly shows the budget (not the timeout) stopped the decoder.
+	$floodLine = ('x' * 200)
+	$floodDir = Join-Path $fixtureRoot 'flood-sequence'
+	New-FrameSequence -Directory $floodDir -Start 0 -EndExclusive 2
+	Register-FixtureSnapshot 'flood-sequence'
+	$floodModes = @(
+		@{ Name = 'stdout'; Body = @(':loop', "echo $floodLine", 'goto loop'); Streams = 'stdout' },
+		@{ Name = 'stderr'; Body = @(':loop', "echo $floodLine 1>&2", 'goto loop'); Streams = 'stderr' },
+		@{ Name = 'both'; Body = @(':loop', "echo $floodLine", "echo $floodLine 1>&2", 'goto loop'); Streams = 'stdout and stderr' }
+	)
+	foreach ($mode in $floodModes) {
+		$floodDecoder = Join-Path $fixtureRoot ("flood-$($mode.Name)-decoder.cmd")
+		$floodLines = @('@echo off', 'if "%~1"=="-version" goto version') + $mode.Body + @(':version', 'echo flood-decoder 1.0', 'exit /b 0')
+		[System.IO.File]::WriteAllText($floodDecoder, (($floodLines -join "`r`n") + "`r`n"), [System.Text.UTF8Encoding]::new($false))
+		Register-FixtureRootFile ("flood-$($mode.Name)-decoder.cmd")
+		$floodReport = New-ReportPath ("decoder-flood-$($mode.Name)")
+		$floodResult = Invoke-Measure @{
+			FramesDirectory             = $floodDir
+			StartNumber                 = 0
+			EndNumberExclusive          = 2
+			ReportPath                  = $floodReport
+			ExpectedWidth               = 64
+			ExpectedHeight              = 48
+			DecoderPath                 = $floodDecoder
+			DecoderTimeoutMilliseconds  = 60000
+		}
+		Assert-True ($floodResult.ExitCode -eq 1) "a decoder flooding $($mode.Name) exits 1 (fail), got $($floodResult.ExitCode): $($floodResult.Output)"
+		Assert-True ($floodResult.ElapsedSeconds -lt 40) "the $($mode.Name) flood is stopped by the byte budget, not the 60 s deadline, took $([Math]::Round($floodResult.ElapsedSeconds, 1))s"
+		$floodData = Read-Report $floodReport
+		Assert-True ($floodData.checks.decode -eq 'fail') "a $($mode.Name) flood fails the decode check"
+		Assert-True ($floodData.artifact_verdict -eq 'fail') "a $($mode.Name) flood cannot produce a pass"
+		Assert-True ((Get-FailureCategories $floodData) -contains 'decode_output_limit') "the $($mode.Name) flood is reported as decode_output_limit"
+		Assert-True (@($floodData.violations.decode_timeouts).Count -eq 0) "the $($mode.Name) flood is not mistaken for a timeout"
+		$floodFrames = @($floodData.frames)
+		Assert-True ($floodFrames[0].decode -eq 'failed' -and $floodFrames[0].attempts -eq 1) "the $($mode.Name) flood frame is failed and was not retried"
+		Assert-True ($floodFrames[0].detail.Contains($mode.Streams + ' exceeded')) "the report names the flooding stream ($($mode.Streams))"
+		Assert-True ($floodData.decode_summary.output_limit_bytes -eq 1048576) 'the report records the fixed capture limit'
+		Assert-True ($floodData.decode_summary.frames_output_limit_exceeded -eq 2) 'every flooded frame is counted'
+		Assert-True ((Get-Item -LiteralPath $floodReport).Length -lt 200000) "the report does not carry the flooded $($mode.Name) text"
+	}
+
+	# The version probe is bounded by the same budget: a decoder that floods `-version` is not trusted.
+	$versionFloodDecoder = Join-Path $fixtureRoot 'flood-version-decoder.cmd'
+	$versionFloodLines = @('@echo off', ':loop', "echo $floodLine", 'goto loop')
+	[System.IO.File]::WriteAllText($versionFloodDecoder, (($versionFloodLines -join "`r`n") + "`r`n"), [System.Text.UTF8Encoding]::new($false))
+	Register-FixtureRootFile 'flood-version-decoder.cmd'
+	$versionFloodReport = New-ReportPath 'decoder-flood-version'
+	$versionFloodResult = Invoke-Measure @{
+		FramesDirectory             = $floodDir
+		StartNumber                 = 0
+		EndNumberExclusive          = 2
+		ReportPath                  = $versionFloodReport
+		ExpectedWidth               = 64
+		ExpectedHeight              = 48
+		DecoderPath                 = $versionFloodDecoder
+		DecoderTimeoutMilliseconds  = 60000
+	}
+	Assert-True ($versionFloodResult.ExitCode -eq 1) "a flooding decoder exits 1, got $($versionFloodResult.ExitCode): $($versionFloodResult.Output)"
+	$versionFloodData = Read-Report $versionFloodReport
+	Assert-True ($versionFloodData.decoder.version.Contains('exceeded the capture limit')) 'a flooded version probe is not recorded as a version'
+
+	# Large output under the budget is still a normal decode: 60 KiB of stderr noise before valid JSON.
+	$noisyDecoder = Join-Path $fixtureRoot 'noisy-decoder.cmd'
+	$noisyLines = @(
+		'@echo off',
+		'if "%~1"=="-version" goto version',
+		("for /l %%i in (1,1,300) do echo $floodLine 1>&2"),
+		'echo {"streams":[{"codec_name":"png"}],"frames":[{"width":64,"height":48,"pix_fmt":"rgb24"}]}',
+		'exit /b 0',
+		':version',
+		'echo noisy-decoder 1.0',
+		'exit /b 0'
+	)
+	[System.IO.File]::WriteAllText($noisyDecoder, (($noisyLines -join "`r`n") + "`r`n"), [System.Text.UTF8Encoding]::new($false))
+	Register-FixtureRootFile 'noisy-decoder.cmd'
+	$noisyReport = New-ReportPath 'decoder-noisy-under-limit'
+	$noisyResult = Invoke-Measure @{
+		FramesDirectory             = $floodDir
+		StartNumber                 = 0
+		EndNumberExclusive          = 2
+		ReportPath                  = $noisyReport
+		ExpectedWidth               = 64
+		ExpectedHeight              = 48
+		DecoderPath                 = $noisyDecoder
+		DecoderTimeoutMilliseconds  = 30000
+	}
+	Assert-True ($noisyResult.ExitCode -eq 0) "output under the budget still decodes and passes, got $($noisyResult.ExitCode): $($noisyResult.Output)"
+	$noisyData = Read-Report $noisyReport
+	Assert-True ($noisyData.checks.decode -eq 'pass') 'a noisy but valid decoder keeps decode pass'
+	Assert-True ($noisyData.decode_summary.frames_output_limit_exceeded -eq 0) 'no frame is counted as over the capture limit'
+	Write-Output 'PASS: decoder stdout/stderr floods are bounded, killed, reported as non-pass and never parsed'
+
 	# ============================================================ group 11b: fail outranks timeout, retry, total budget
 	# One stub decoder stands in for ffprobe. It answers by the file name it is given, so a single
 	# sequence can hold frames that decode, frames that exit 0 without a decoded picture (a real decode
@@ -2230,7 +2327,7 @@ try {
 	# (one non-empty report per allocated path, minus the deliberately refused ones).
 	Assert-FixtureInputsUnchanged
 	$fixtureCount = $script:fixtureBaselines.Count
-	Assert-True ($fixtureCount -eq 41) "every fixture directory built by the suite is covered by the comparison, got $fixtureCount"
+	Assert-True ($fixtureCount -eq 42) "every fixture directory built by the suite is covered by the comparison, got $fixtureCount"
 	Assert-True (@(Get-FixtureInputDrift).Count -eq 0) 'no fixture directory was modified, added to or removed after it was built'
 	Assert-True (@(Get-ReportDrift).Count -eq 0) 'reports/ holds exactly one non-empty report per allocated report path'
 	Register-Group 'all-fixture-directories-report-directory' "all $fixtureCount fixture directories and the report directory are unchanged since they were built"
