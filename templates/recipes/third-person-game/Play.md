@@ -6,5 +6,5 @@
 - 生成時のstdoutに `Class redirects: <旧> -> <新>, ...` の行が出る。0件なら `Class redirects: none (...)`。何を書いたかはここで確認する（lockへは追記しない）。
 - この2種類のredirectは置き換えではなく併用。`+PackageRedirects` は `/Script` package だけを付け替え、改名済みクラス名は直さないため、片方だけでは既定 map / GameMode が親クラスを失ったBluePrintを指す。
 - ジャンル起点はvariantで選ぶ。例: アクション/ハンティング＝`Variant_Combat`、探索/アスレチック＝`Variant_Platforming`、街/生活＝基本 `ThirdPerson`（車両は ChaosVehicles を作品差分として追加）。選んだvariant・既定map・GameModeは `-ProjectDiff` と作品側に記録する。
-- 生成直後は未build。Editor targetをbuildし、Playで歩行・カメラ・入力を確認するまでは Unverified。redirect は静的出力であり、Editor での解決は本recipeの検証範囲外。
+- 生成直後は未build。Editor targetは`<ProjectName>Editor`（materializeするこのrecipe専用の名前で、他recipeの規則ではない。根拠は`docs/01-start.md`のrecipe別の表で、source checkout側の文書のため生成projectには同梱されない）。これをbuildし、Playで歩行・カメラ・入力を確認するまでは Unverified。redirect は静的出力であり、Editor での解決は本recipeの検証範囲外。
 - 実際のマップ、Pawn、入力、UI、ゲームルールは作品側で作成して検証する。

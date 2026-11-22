@@ -73,9 +73,29 @@ scaffold scriptが使えない場合に限り、recipe表のEngine templateを�
 
 Project BrowserはUE側のtemplate materialize規則でprojectを作るため、特に`vertical-loop`/`spectator-explore`では、scaffoldの`materialize_project: false`（template名を維持）と同じ出力にならない。手動生成物をscaffold生成物と同等と見なしたり、`.uproject`だけをrenameしたりしない。`.uproject`・`Modules[].Name`・`Source/**/[Module].Build.cs`が一致すること、`EngineAssociation`が非空であることを確認する。generatorが付与するrecipe文書・plugin payload・`template-lock.json`はProject Browserでは生成されないため、手動でlockを捏造・編集せず、選択recipe/template・UE版・確認したidentityを`QA.md`に記録する。**Project Browserは「このinstallにpluginが在るか」の検証をしないので、手動経路では`.uproject`の`Plugins`全件の`.uplugin`実在を自分で確認し、結果を`QA.md`に書く**（lockに載るはずだったplugin版も同様）。必須pluginが利用可能でない、またはrecipeの記録物が必要な場合はscaffold生成物と同等と扱わず、通常経路が使えるまで停止する。RoomSevenをコピー元にしない。
 
+### Editor targetの決め方（recipe別）
+
+「Editor targetをbuildする」の**target名は`-ProjectName`から決まらない**。recipeごとに、生成物の`Source/`直下にある`*.Target.cs`で決まる。`<ProjectName>Editor`と一律に推測しない。
+
+<!-- editor-target-route:begin（scripts/Test-UETemplateScaffold.ps1 が3列目を生成物の実測と照合する） -->
+| recipe | Source/直下の`*.Target.cs` | Editor target名 | 導出根拠（`template-lock.json`） |
+|---|---|---|---|
+| `third-person-game` | あり（2件） | `<ProjectName>Editor` | `identity.project_file`が`<ProjectName>.uproject`。materializeが`TP_ThirdPersonEditor.Target.cs`を`<ProjectName>Editor.Target.cs`へ改名する。**`<ProjectName>Editor`になるのはmaterializeするこのrecipeだけ** |
+| `spectator-explore` | あり（2件） | `TP_FirstPersonEditor` | `identity.project_file`が`TP_FirstPerson.uproject`。生コピーなので**`-ProjectName`はtarget名に入らない** |
+| `vertical-loop` | なし | `存在しない` | `identity.project_modules`が`[]`、`Source/`が無い。`.uproject`と`Config/`などだけで、template名の`TP_BlankBPEditor`もsourceには存在しない |
+<!-- editor-target-route:end -->
+
+target名は`Source/`直下の`*.Target.cs`のbasenameから`.Target.cs`を除いた値で確認する。buildの実体は既存UE installの`<EngineRoot>\Engine\Build\BatchFiles\Build.bat`（このrepoはbuild scriptを同梱しない）で、例は`Build.bat <target名> Win64 Development -Project="<生成project>\<project_file>"`。この例は本repoで実行して確かめていない（Unverified）。
+
+**`vertical-loop`はBP-onlyなので、上表のとおり文書どおりに`Source/`の`*.Target.cs`を探してもtargetが無い。** UBTはcode無しprojectを`Source/`直下に`*.Target.cs`が無いことで判定し、build時に`Intermediate/Source/`へ`<.uprojectのbasename>Editor.Target.cs`（ここでは`TP_BlankBPEditor`、template名）・`<basename>.Target.cs`・`<basename>.Build.cs`・`<basename>.cpp`を**合成**して、その合成targetでbuildする。`vertical-loop`は`MovieRenderPipeline`を有効化し、engine側`.uplugin`の`EnabledByDefault`が`false`なので、この合成に当たると推論される。これは`Engine/Source/Programs/UnrealBuildTool/System/NativeProjects.cs`の静的読取からの推論で、UBTを実行した実測ではない（Unverified）。
+
+- 合成はbuild時に`Intermediate/`へ起きる。`Intermediate/`は`.gitignore`の対象でtrackされず、**`template-lock.json`の`identity`（`project_modules: []`）は変わらない**。したがって合成の有無はlockにもgit差分にも残らず、QAの`[QA-BUILD-01]`に使ったtarget名と`Intermediate/Source/`の有無を自分で記録しない限り、後から再構成できない。
+- 合成targetでbuildが通っても、「`Source/`もmoduleも無いのが正常」というidentity契約（`AGENTS.md`、[構造と更新](07-architecture.md)）に反してprojectがcode-basedになったことの証明ではなく、PASSの根拠にもしない。
+- 3通りの詰まり方を避ける。(1)buildコマンドが無いと止まる、(2)`-ProjectName`から`<ProjectName>Editor`を推測して外す、(3)合成された`TP_BlankBPEditor`でbuildが通ったのをそのままPASSと記録する。
+
 ### 生成後の制作確認
 
-1. Editor targetをbuildし、新規projectだけを開く。必要な場合にPython Editor Script Plugin / Editor Scripting Utilities / Movie Render Queueを有効にし、自分のEditorだけ再起動する。
+1. Editor targetを上の[recipe別の表](#editor-targetの決め方recipe別)で決めてbuildし、新規projectだけを開く。使ったtarget名と、`Intermediate/Source/`に合成targetが作られたかを`[QA-BUILD-01]`へ記録する。必要な場合にPython Editor Script Plugin / Editor Scripting Utilities / Movie Render Queueを有効にし、自分のEditorだけ再起動する。
 2. `/Game/<Name>/Maps/L_<Name>`を保存。Project SettingsでEditor Startup MapとGame Default Mapを指定し、package対象mapに含める。GameModeとPawn、camera、collision、入力設定は、Playが用途に含まれるrecipeで照合する。
 3. 撮影smokeなら原作の床・cube・point light・camera・2秒sequenceのみ。ゲームsmokeなら歩ける小mapのみ。Fab/Splice不要で成立させる。
 
@@ -158,10 +178,10 @@ job objectは回収の唯一の根拠にしない。Microsoftの仕様（[Job Ob
 
 ## 最小smokeの証拠
 
-clone commit → preflight（`Production/.runs/run_<runid>/preflight.md`）→ lease（同dir の `LEASE.json`）→ project生成（`Production/<Name>_<runid>/`、generatorが排他mkdir）→ Editor build → Playで床/cube/camera表示 → MRQ 2秒 → ffprobeと目視 → optional Shipping → 解放。
+clone commit → preflight（`Production/.runs/run_<runid>/preflight.md`）→ lease（同dir の `LEASE.json`）→ project生成（`Production/<Name>_<runid>/`、generatorが排他mkdir）→ Editor build（target名は[recipe別の表](#editor-targetの決め方recipe別)）→ Playで床/cube/camera表示 → MRQ 2秒 → ffprobeと目視 → optional Shipping → 解放。
 生成前の書き込み先は`Production/.runs/run_<runid>/`だけであり、生成先project dirの中には何も書かない。
 
-clone commit → preflight → lease → project生成 → Editor build → Playで床/cube/camera表示 → MRQ 2秒 → ffprobeと目視 → optional Shipping → 解放。
+clone commit → preflight → lease → project生成 → Editor build（target名は[recipe別の表](#editor-targetの決め方recipe別)）→ Playで床/cube/camera表示 → MRQ 2秒 → ffprobeと目視 → optional Shipping → 解放。
 MRQ 2秒の書き出しは`docs/05-qa.md`の経路A（画像列＋既存ffmpeg）と経路B（`H.264 MP4 [8bit]`で直接MP4）のどちらでもよいが、使った経路・MRQの出力設定名・元PNG列の有無を生成後の`Out/run_<runid>/QA.md`（preflightから移した記録）へ記録する。
 各工程はpass/fail/unverified、exit code、実ファイルhashで記録する。文書リンク点検だけをUE smokeと呼ばない。
 

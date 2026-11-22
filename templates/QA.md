@@ -44,7 +44,7 @@ writer/lease nonce・取得/解放receipt（`scripts/Lease-UETemplateProject.ps1
 
 | 項目 | pass/fail/unverified/non-goal | 対象版/hash・実測・証拠 |
 |---|---|---|
-| [QA-BUILD-01] 新規project生成・Editor build | unverified | 生成したproject名・Editor buildのtargetと結果 |
+| [QA-BUILD-01] 新規project生成・Editor build | unverified | 生成したproject名、使ったEditor target名（`docs/01-start.md`のrecipe別の表から決める。`Source/`に`*.Target.cs`が無いrecipeは「target無し」）、`Intermediate/Source/`にUBTの合成targetが作られたか（有/無/未確認）、buildの結果 |
 | [QA-MAP-01] 初期map/camera・黒frameなし | unverified | 起動直後のmapとcamera、黒frameの有無 |
 | [QA-PLAY-01] 起動map・Pawn・開始姿勢 | unverified | 起動したmap名・採用Pawn・開始時の姿勢。意図したmapで開始したことを確認 |
 | [QA-PLAY-02] 座位/立位（仕様時） | unverified | 仕様に座位/立位がある場合のみ。仕様に無ければ`non-goal` |
