@@ -1,5 +1,15 @@
 # 変更履歴
 
+## Unreleased — DOT-3460 — 2026-11-22
+
+- `scripts/Test-UETemplateScaffold.ps1` の「異なる project 名は異なる lock の識別子を作る」assertion は、かつて 1 行にタブで結合されていた。PowerShell は途中に現れた 2 つ目の `Assert-True` を構文エラーにせず文字列引数として取り込むため、その assertion は一度も評価されず、suite は PASS / exit 0 のままだった。DOT-3460 の着手時点で、その行は `origin/main` 上すでに 2 行に分かれていた（本変更では分割していない）。実在する結合を落とす gate が無いことが残っていた欠陥である。
+- 変更: 新規 suite `scripts/Test-UETemplateScripts.ps1` を追加した。`scripts/*.ps1` を PowerShell の AST で解析し、(1) `Assert-*` の名前が呼び出し位置に無い行（＝文字列引数として捨てられた呼び出し）、(2) 同じ file で定義された `Assert-*` helper に、宣言より多い位置引数を渡した呼び出しを、path と行番号つきで報告する。空走査にならないよう走査 file 数と呼び出し数を assert し、コード上の出現数と解析された呼び出し数の一致を確認する。
+- 負例: suite 内で実際の scaffold suite の連続する 2 つの assertion をタブで結合した使い捨てコピーを作り、gate がその path と行番号を名指しで落とす（名前の位置と位置引数 5 > 2 の両面）こと、復旧したコピーでは沈黙することを固定した。位置引数超過のみの fixture、コメントと文字列内の helper 名を数えない fixture も入れた。使い捨てコピーは一時 directory にのみ置き、repo と `Production/` は汚さない。
+- `.github/workflows/verify.yml` に job `script assertion gate` を 1 つ足した。既存 job・action・secret・権限は変えていない。`docs/07-architecture.md` に「assertion を 1 行に結合しない／結合は gate が落とす」を 1 箇所だけ書いた。
+- 移行: 既存の生成物・`template-lock.json`・既存 suite の group は変えていない。assertion を追加する側は、1 行に 1 つの `Assert-*` だけを書く。
+- 実測: Windows、`pwsh`（PowerShell 7）と Windows PowerShell 5.1 で `scripts/Test-UETemplateScripts.ps1` を実行しどちらも exit 0。`scripts/Test-UETemplateScaffold.ps1` は exit 0。同 suite の lock 識別子 assertion のオペランドを `$false` に固定した使い捨て変更は `ASSERT FAILED: different project names produce different lock identifiers` で落ちる（Claude catch-up subagent 実行）。
+- Unverified Scope: UE 5.8.4 の compile / Editor / PIE / MRQ / render は実行していない（UE を起動しない PowerShell harness 層）。`.ps1` の走査対象は `scripts/` 直下のみで、他の path に増えた `.ps1` は対象外。別 file の helper に対する位置引数の検査はしない（同じ file で定義された helper のみ）。GitHub Actions 上での新 job の挙動は PR の check で確認する。
+
 ## Unreleased — DOT-3251 — 2026-11-22
 
 - `scripts/Measure-UERenderArtifacts.ps1` の decode 判定が timeout を本物の失敗より先に評価していたため、`decode_failed` と `decode_timeout` が同居すると ground truth が `fail` でも `unverified`（exit 2）と報告し、report 本文（`failures[]` に `decode_failed`）と `artifact_verdict` が矛盾した。優先順を反転し、decode 失敗・codec 不一致が1件でもあれば `fail` を先に確定する。timeout は失敗が無いときだけ `unverified` にする。
