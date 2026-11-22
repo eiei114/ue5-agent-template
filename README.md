@@ -126,11 +126,13 @@ workerのrunは自分のプロセス木（writer + 子孫）を同期回収し�
   -Digits 4 `
   -ExpectedWidth 1080 `
   -ExpectedHeight 1920 `
+  -RunId '<runid>' `
+  -SourceRevision '<template commit>' `
   -ReportPath '<project>\Out\run_<runid>\evidence\frames-check-<attempt>.json' `
   -RenderExitCode 0
 ```
 
-欠番・範囲外・曖昧名・0 byte・decode不能・解像度不一致・同一frameの重複（`frame_variety`。宣言時だけpass/fail）を検出し、reportを新規作成する（同じrunの再検査は`<attempt>`を増やした別file。規則は[検品](docs/05-qa.md)の「画像列検査の再実行」節）。`-FrameStep` / `-FrameNumberOffset`はMRQの`Output Frame Step` / `Frame Number Offset`の実値を書き写す（既定1と0は連番、上の例は2なので240frame範囲に120枚の格子）。`-NamePrefix` / `-Digits`はMRQの`File Name Format`（indexの前の固定文字列）と`Zero Pad Frame Numbers`の実値で、render前に決めてQAへ記録し同じ値を渡す（画像は改名しない。MRQ既定は`Shot0001.0000.png`形・4桁で、helperの`-Digits`既定6はMRQの既定ではない）。未宣言の格子は`missing_frames`ではなく`index_lattice_mismatch`として、未宣言の前置きは`naming_contract_mismatch`として報告する。`-RenderExitCode`（と記録専用の`-RenderNotification`）は、MRQの実終了codeがある場合だけ渡す（上の例の`0`は書式の例）。渡さないのが既定で、`checks.render_exit`が`unverified`のため総合も`unverified`（exit 2）になる。整数0で`pass`、0以外は`fail`（総合fail・exit 1）、整数でない値は引数拒否でreportなし・exit 3。終了codeはpass=0/fail=1/unverified=2（引数拒否は3）。decodeは本物の失敗がtimeoutに優先して`fail`になり（timeoutは1回再試行して`attempts`を記録）、`-TotalDecodeBudgetMilliseconds`（既定5分）の超過は`decode_budget_exhausted`付きの`unverified`になる。通知/exit、画像列、MP4、目視、音は別判定として扱う（[検品](docs/05-qa.md)）。回帰は`scripts/Test-UERenderArtifacts.ps1`。UE実機のMRQ・ffprobe・映像/音/loopの実測は未検証（Unverified）。
+欠番・範囲外・曖昧名・0 byte・decode不能・解像度不一致・同一frameの重複（`frame_variety`。宣言時だけpass/fail）を検出し、reportを新規作成する（同じrunの再検査は`<attempt>`を増やした別file。規則は[検品](docs/05-qa.md)の「画像列検査の再実行」節）。`-FrameStep` / `-FrameNumberOffset`はMRQの`Output Frame Step` / `Frame Number Offset`の実値を書き写す（既定1と0は連番、上の例は2なので240frame範囲に120枚の格子）。`-NamePrefix` / `-Digits`はMRQの`File Name Format`（indexの前の固定文字列）と`Zero Pad Frame Numbers`の実値で、render前に決めてQAへ記録し同じ値を渡す（画像は改名しない。MRQ既定は`Shot0001.0000.png`形・4桁で、helperの`-Digits`既定6はMRQの既定ではない）。未宣言の格子は`missing_frames`ではなく`index_lattice_mismatch`として、未宣言の前置きは`naming_contract_mismatch`として報告する。`-RenderExitCode`（と記録専用の`-RenderNotification`）は、MRQの実終了codeがある場合だけ渡す（上の例の`0`は書式の例）。渡さないのが既定で、`checks.render_exit`が`unverified`のため総合も`unverified`（exit 2）になる。整数0で`pass`、0以外は`fail`（総合fail・exit 1）、整数でない値は引数拒否でreportなし・exit 3。`-RunId` / `-SourceRevision`は必須で、未指定・空・空白だけの値はreportを作る前に拒否する（runと元template revisionに結び付かないreportを残さない）。終了codeはpass=0/fail=1/unverified=2（引数拒否は3）。decodeは本物の失敗がtimeoutに優先して`fail`になり（timeoutは1回再試行して`attempts`を記録）、`-TotalDecodeBudgetMilliseconds`（既定5分）の超過は`decode_budget_exhausted`付きの`unverified`になる。通知/exit、画像列、MP4、目視、音は別判定として扱う（[検品](docs/05-qa.md)）。回帰は`scripts/Test-UERenderArtifacts.ps1`。UE実機のMRQ・ffprobe・映像/音/loopの実測は未検証（Unverified）。
 
 ## GitHubから開始
 
