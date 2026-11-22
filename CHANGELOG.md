@@ -22,6 +22,16 @@
 
 移行: report への `frames[].attempts`、`decode_summary`、`violations.decode_not_evaluated`、`decode_budget_exhausted` は schema への追加で `schema_version` は 1 のまま。旧 report を読む consumer を壊さない。decode 失敗と timeout が同居する画像列は、これまでの `unverified`（exit 2）から `fail`（exit 1）に変わる。
 
+## Unreleased — DOT-3436 — 2026-11-22
+
+- `scripts/Measure-UERenderArtifacts.ps1` の codec 照合は `-Extension` が `.png` のときだけ走り、`.jpg` / `.exr` / `.bmp` の列では黙って skip されていた。`.jpg` 名で 000000 だけ実 PNG・残りが実 JPEG の列が `decode=pass` / `failures=[]` / `VERDICT: pass` で通り、`.exr` 名で保存した PNG bytes も通った（DOT-3436 の baseline 観測）。`docs/05-qa.md` の「拡張子と非空サイズだけで合格にしない」に対する実装保証が `.png` にしか無かった。
+- 変更: 拡張子から期待 codec を決める（`.png`=png、`.jpg`/`.jpeg`=mjpeg、`.bmp`=bmp、`.exr`=exr、大小無視）。不一致・混在は既存の `codec_mismatch`（file と観測 codec を名指し）で fail。表に無い拡張子は拒否せず、`codec_not_configured` を報告して decode と総合 verdict を `unverified`（exit 2）にし、pass にしない（解像度未指定と同じ原則）。report には `input.expected_codec` と `expectations.codec`（未定義は `not_configured`）を追加した。既存 field・`.png` の verdict・exit code は変えていない。
+- `scripts/Test-UERenderArtifacts.ps1`: group を追加した。実 mjpeg の `.jpg` 3 枚が pass、`.jpg` 名で 1 枚だけ PNG の列が `codec_mismatch` で fail（odd frame を名指し、`frames[].codec` は png,mjpeg,mjpeg）、PNG bytes の `.exr` が fail、未知拡張子 `.tif` が exit 2 の `unverified` になる側まで固定した。JPEG fixture は ffmpeg で一度生成した 64x48 の実 baseline JPEG を埋め込み、suite は encoder を要らない。fixture は 4 件増え（31 から 35）、入力不変 gate の件数も更新した。既存 group は1件も削っていない。
+- `docs/05-qa.md` に拡張子→期待 codec の表と未知拡張子の扱いを、`templates/QA.md` の QA-IMG-01 に「拡張子と期待 codec」の記録欄を足した。
+- 移行: `.png`（省略時）の呼び出しは挙動不変。`.exr` / `.jpg` 等を渡していた呼び出しは、中身が拡張子どおりの codec でなければ今後 fail になる。表に無い拡張子を渡していた呼び出しは exit 0 から exit 2 になる。
+- 非目標: 1 ファイル内の複数 frame（DOT-3407）、decode/timeout 優先順位（DOT-3251）、命名・provenance の判定、拡張子の自動推定・改名は扱わない。
+- Unverified Scope: UE 5.8.4 の実 MRQ render は実行していない（MRQ が `.jpg` を書くことは実 install のヘッダ参照のみ）。`exr` の codec 名は ffprobe 8.1.2 での観測で、他版の表記は未確認。GitHub Actions `windows-latest` での結果は CI で確認する。
+
 ## Unreleased — DOT-3441 — 2026-11-22
 
 - 生成projectへ複製される文書が、生成物内に存在しない repo path を案内していた。とくに `vertical-loop` の `Recipe/Capture.md` は書き出し手順の唯一の正本 `docs/05-qa.md` を指すが、`docs/` を複製するのは `MulticaOnlineStarter` を要求する recipe の `docs/08` だけで、`scripts/` はどの recipe でも複製しないため、生成物だけを受け取ったagentは検査手順に到達できなかった。`third-person-game` の `Recipe/Play.md` も、生成後に存在しない `Config/TemplateDefs.ini` を存在するかのように案内していた。現行 suite は文書の参照を一般には検査せず、この未解決参照を1件も落とせなかった。
