@@ -13,6 +13,13 @@ param(
 
 	[string]$FfprobePath = '',
 
+	# UTC instant taken immediately before the render/encode attempt, for example
+	# (Get-Date).ToUniversalTime().ToString('o'). Without it the MP4 cannot be tied to this attempt.
+	[string]$RenderStartedUtc = '',
+
+	# The image sequence the MP4 was encoded from. Frames older than the marker are leftovers.
+	[string]$FramesDirectory = '',
+
 	[ValidateRange(1000, 120000)]
 	[int]$ProbeTimeoutMilliseconds = 15000
 )
@@ -144,6 +151,8 @@ $checks = [ordered]@{
 	duration = 'unverified'
 	resolution = 'unverified'
 	fps = 'unverified'
+	render_attempt = 'unverified'
+	source_frames_fresh = 'unverified'
 }
 $failures = New-Object System.Collections.Generic.List[object]
 $expectations = [ordered]@{
@@ -170,6 +179,14 @@ $presetInfo = [ordered]@{
 	file = $presetFull
 	name = $null
 	use = ''
+}
+$provenance = [ordered]@{
+	render_started_utc = ''
+	video_last_write_utc = ''
+	frames_directory = ''
+	frames_total = $null
+	frames_fresh = $null
+	frames_stale = $null
 }
 $probeInfo = [ordered]@{
 	requested_path = $FfprobePath
@@ -447,6 +464,60 @@ if ($measured -and $null -ne $parsed) {
 	}
 }
 
+# ---------------------------------------------------------------- provenance (which render attempt made this MP4)
+# `ffmpeg -n` exits 0 without writing when the output already exists, so an exit code and a probe of
+# a leftover MP4 can both look correct. The MP4 must be newer than the render-start marker, and no
+# source frame may be older than it.
+
+$markerUtc = $null
+if ([string]::IsNullOrWhiteSpace($RenderStartedUtc)) {
+	Add-Failure 'marker_missing' 'no -RenderStartedUtc was given, so the MP4 cannot be tied to the current render attempt (an older MP4 left by ffmpeg -n would look identical)' 'unverified'
+} else {
+	$parsedMarker = [DateTime]::MinValue
+	$styles = [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal
+	if (-not [DateTime]::TryParse($RenderStartedUtc.Trim(), [System.Globalization.CultureInfo]::InvariantCulture, $styles, [ref]$parsedMarker)) {
+		Add-Failure 'marker_invalid' "-RenderStartedUtc is not a parsable timestamp: $RenderStartedUtc" 'unverified'
+	} elseif ($parsedMarker -gt [DateTime]::UtcNow.AddSeconds(5)) {
+		Add-Failure 'marker_in_future' "-RenderStartedUtc is in the future: $RenderStartedUtc" 'unverified'
+	} else {
+		$markerUtc = $parsedMarker
+		$provenance.render_started_utc = $markerUtc.ToString('o')
+	}
+}
+
+if ($null -ne $markerUtc -and -not [string]::IsNullOrWhiteSpace($videoFull)) {
+	$videoWrite = (Get-Item -LiteralPath $videoFull).LastWriteTimeUtc
+	$provenance.video_last_write_utc = $videoWrite.ToString('o')
+	if ($videoWrite -ge $markerUtc) {
+		Set-Check 'render_attempt' 'pass'
+	} else {
+		Set-Check 'render_attempt' 'fail'
+		Add-Failure 'video_stale' "the MP4 was last written at $($provenance.video_last_write_utc), before this render attempt started ($($provenance.render_started_utc)); this encode did not write it (ffmpeg -n exits 0 when the output already exists), so it is a previous attempt's file" 'fail' "mtime=$($provenance.video_last_write_utc) marker=$($provenance.render_started_utc)"
+	}
+}
+
+if ([string]::IsNullOrWhiteSpace($FramesDirectory)) {
+	Add-Failure 'frames_directory_missing' 'no -FramesDirectory was given, so leftover frames from an earlier render cannot be ruled out' 'unverified'
+} elseif (-not (Test-Path -LiteralPath $FramesDirectory -PathType Container)) {
+	Add-Failure 'frames_directory_not_found' "the source frame directory was not found: $FramesDirectory" 'unverified'
+} elseif ($null -ne $markerUtc) {
+	$provenance.frames_directory = [System.IO.Path]::GetFullPath($FramesDirectory)
+	$frameFiles = @(Get-ChildItem -LiteralPath $FramesDirectory -File -Force)
+	$staleFrames = @($frameFiles | Where-Object { $_.LastWriteTimeUtc -lt $markerUtc })
+	$provenance.frames_total = $frameFiles.Count
+	$provenance.frames_stale = $staleFrames.Count
+	$provenance.frames_fresh = $frameFiles.Count - $staleFrames.Count
+	if ($frameFiles.Count -eq 0) {
+		Add-Failure 'frames_directory_empty' "the source frame directory holds no files: $FramesDirectory" 'unverified'
+	} elseif ($staleFrames.Count -gt 0) {
+		Set-Check 'source_frames_fresh' 'fail'
+		$sample = (@($staleFrames | Sort-Object Name | Select-Object -First 5 | ForEach-Object { $_.Name }) -join ',')
+		Add-Failure 'stale_source_frames' "$($staleFrames.Count) of $($frameFiles.Count) source frame(s) are older than this render attempt, so the MP4 can mix an earlier render with the current one" 'fail' $sample
+	} else {
+		Set-Check 'source_frames_fresh' 'pass'
+	}
+}
+
 # ---------------------------------------------------------------- verdict
 
 $failedChecks = @($checks.Keys | Where-Object { $checks[$_] -eq 'fail' })
@@ -478,6 +549,7 @@ $report = [ordered]@{
 	}
 	expectations = $expectations
 	observed = $observed
+	provenance = $provenance
 	decoder = $probeInfo
 	checks = $checks
 	failures = @($failures | ForEach-Object { $_ })
@@ -492,6 +564,7 @@ $report = [ordered]@{
 	)
 	notes = @(
 		'This report covers the encoded MP4 only; it is not a render, playback, audio or loop result.',
+		'render_attempt and source_frames_fresh compare file modification times with -RenderStartedUtc: they show the MP4 was written after the marker and no older frame remains, not that the picture content is right.',
 		'ffmpeg -frames:v is an output upper bound. A short source sequence is encoded short with exit 0, which is why the frame count is checked here rather than inferred from the encode command.'
 	)
 }
@@ -515,7 +588,7 @@ try {
 
 Write-Output "VERDICT: $verdict"
 Write-Output ("PRESET: {0} (frame_count={1} duration={2}s {3}x{4} {5}fps)" -f $presetInfo.name, $expectations.frame_count, $expectations.duration_seconds, $expectations.width, $expectations.height, $expectations.fps)
-Write-Output ("CHECKS: preset={0} probe={1} stream_count={2} frame_count={3} duration={4} resolution={5} fps={6}" -f $checks.preset, $checks.probe, $checks.stream_count, $checks.frame_count, $checks.duration, $checks.resolution, $checks.fps)
+Write-Output ("CHECKS: preset={0} probe={1} stream_count={2} frame_count={3} duration={4} resolution={5} fps={6} render_attempt={7} source_frames_fresh={8}" -f $checks.preset, $checks.probe, $checks.stream_count, $checks.frame_count, $checks.duration, $checks.resolution, $checks.fps, $checks.render_attempt, $checks.source_frames_fresh)
 Write-Output ("FFPROBE: {0} {1}" -f $probeInfo.resolution, $probeInfo.version)
 Write-Output ("OBSERVED: frames={0} duration={1} size={2}x{3} r_frame_rate={4} video_streams={5} audio_streams={6}" -f $observed.nb_read_frames, $observed.duration_seconds, $observed.width, $observed.height, $observed.r_frame_rate, $observed.video_stream_count, $observed.audio_stream_count)
 foreach ($failure in $failures) {

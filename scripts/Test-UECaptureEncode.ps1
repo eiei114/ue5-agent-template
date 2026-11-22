@@ -16,6 +16,8 @@ $reportRoot = Join-Path $fixtureRoot 'reports'
 $sourceRoot = Join-Path $fixtureRoot 'sources'
 $videoRoot = Join-Path $fixtureRoot 'videos'
 $reportCounter = 0
+# Taken before any fixture exists: every fixture written afterwards belongs to "this render attempt".
+$suiteStartUtc = [DateTime]::UtcNow.AddSeconds(-2).ToString('o')
 
 function Assert-True([bool]$Condition, [string]$Message) {
 	if (-not $Condition) { throw "ASSERT FAILED: $Message" }
@@ -260,12 +262,12 @@ try {
 	$b = Invoke-EncodeFixture -Preset $landscape -SourceFrames $landscape.FrameCount -FrameLimit $landscape.FrameCount -EncodeFps 30 -Name 'b-correct'
 	Assert-True ($b.ExitCode -eq 0) "the correct landscape encode exited 0, got $($b.ExitCode): $($b.Output)"
 	$bReport = New-ReportPath 'b-correct'
-	$bResult = Invoke-Tool -Script $measureScript -Bound @{ Preset = 'landscape'; VideoPath = $b.VideoPath; ReportPath = $bReport }
+	$bResult = Invoke-Tool -Script $measureScript -Bound @{ Preset = 'landscape'; VideoPath = $b.VideoPath; ReportPath = $bReport; RenderStartedUtc = $suiteStartUtc; FramesDirectory = $b.SourceDirectory }
 	Assert-True (-not $bResult.Threw) "the landscape inspection of the correct video did not throw: $($bResult.Error)"
 	Assert-True ($bResult.ExitCode -eq 0) "a correct landscape encode exits 0, got $($bResult.ExitCode): $($bResult.Output)"
 	$bData = Read-Report $bReport
 	Assert-True ($bData.artifact_verdict -eq 'pass') 'the correct landscape video verdict is pass'
-	foreach ($check in @('preset', 'probe', 'stream_count', 'frame_count', 'duration', 'resolution', 'fps')) {
+	foreach ($check in @('preset', 'probe', 'stream_count', 'frame_count', 'duration', 'resolution', 'fps', 'render_attempt', 'source_frames_fresh')) {
 		Assert-True ($bData.checks.$check -eq 'pass') "correct landscape check '$check' is pass, got '$($bData.checks.$check)'"
 	}
 	Assert-True ($bData.observed.nb_read_frames -eq $landscape.FrameCount) 'the correct landscape video has 300 frames'
@@ -277,7 +279,7 @@ try {
 	$bVertical = Invoke-EncodeFixture -Preset $vertical -SourceFrames $vertical.FrameCount -FrameLimit $vertical.FrameCount -EncodeFps 30 -Name 'b-vertical'
 	Assert-True ($bVertical.ExitCode -eq 0) "the vertical encode exited 0, got $($bVertical.ExitCode): $($bVertical.Output)"
 	$bVerticalReport = New-ReportPath 'b-vertical'
-	$bVerticalResult = Invoke-Tool -Script $measureScript -Bound @{ Preset = 'vertical'; VideoPath = $bVertical.VideoPath; ReportPath = $bVerticalReport }
+	$bVerticalResult = Invoke-Tool -Script $measureScript -Bound @{ Preset = 'vertical'; VideoPath = $bVertical.VideoPath; ReportPath = $bVerticalReport; RenderStartedUtc = $suiteStartUtc; FramesDirectory = $bVertical.SourceDirectory }
 	Assert-True ($bVerticalResult.ExitCode -eq 0) "a correct vertical encode exits 0, got $($bVerticalResult.ExitCode): $($bVerticalResult.Output)"
 	$bVerticalData = Read-Report $bVerticalReport
 	Assert-True ($bVerticalData.artifact_verdict -eq 'pass') 'the correct vertical video verdict is pass'
@@ -402,7 +404,127 @@ try {
 	Assert-True (@(Get-FailureCategories $partialDataReport) -contains 'preset_invalid') 'the report names preset_invalid for a non-integral frame count'
 	Write-Output 'PASS: the preset definition rejects a duplicated or non-integral frame count instead of quietly trusting it'
 
-	# ============================================================ group 11: reports are exclusive and the inputs are untouched
+	# ============================================================ group 11: which render attempt made the MP4
+	# `ffmpeg -n` exits 0 without writing when the output exists. A re-render followed by the same
+	# encode line therefore leaves the previous MP4 in place, and its frame count and duration still
+	# match the expectation. Only the modification time against a render-start marker exposes it.
+	function Set-FileAge([string[]]$Paths, [int]$HoursOld) {
+		$aged = [DateTime]::UtcNow.AddHours(-$HoursOld)
+		foreach ($path in $Paths) { [System.IO.File]::SetLastWriteTimeUtc($path, $aged) }
+	}
+
+	function New-TestFrames {
+		param([string]$Directory, [int]$Count, [pscustomobject]$Preset, [string]$Source)
+		[System.IO.Directory]::CreateDirectory($Directory) | Out-Null
+		$result = Invoke-External -FilePath $script:FfmpegPath -ArgumentList @(
+			'-hide_banner', '-loglevel', 'error', '-y',
+			'-f', 'lavfi', '-i', ("{0}=size={1}x{2}:rate=30" -f $Source, ($Preset.Width / 10), ($Preset.Height / 10)),
+			'-frames:v', "$Count", '-start_number', '0',
+			(Join-Path $Directory '%06d.png')
+		)
+		Assert-True ($result.ExitCode -eq 0) "test frames were generated in $Directory (ffmpeg exited $($result.ExitCode)): $($result.Output)"
+	}
+
+	function Invoke-TestEncode {
+		param([string]$Directory, [int]$FrameLimit, [string]$VideoPath, [pscustomobject]$Preset)
+		return Invoke-External -FilePath $script:FfmpegPath -ArgumentList @(
+			'-hide_banner', '-loglevel', 'error', '-n',
+			'-framerate', '30', '-start_number', '0',
+			'-i', (Join-Path $Directory '%06d.png'),
+			'-frames:v', "$FrameLimit",
+			'-vf', ("scale={0}:{1}" -f $Preset.Width, $Preset.Height),
+			'-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '28', '-preset', 'veryfast',
+			'-movflags', '+faststart',
+			$VideoPath
+		)
+	}
+
+	# (b) re-render, then the same encode line: ffmpeg exits 0, the old MP4 stays, the probe still matches.
+	$v1 = Invoke-EncodeFixture -Preset $vertical -SourceFrames $vertical.FrameCount -FrameLimit $vertical.FrameCount -EncodeFps 30 -Name 'p-v1'
+	Assert-True ($v1.ExitCode -eq 0) "the first attempt encoded, got $($v1.ExitCode): $($v1.Output)"
+	Set-FileAge -Paths (@($v1.VideoPath) + @(Get-ChildItem -LiteralPath $v1.SourceDirectory -File | ForEach-Object { $_.FullName })) -HoursOld 1
+	$v1Hash = Get-VideoHash $v1.VideoPath
+	$attemptTwoMarker = [DateTime]::UtcNow.ToString('o')
+	Remove-Item -LiteralPath $v1.SourceDirectory -Recurse -Force
+	New-TestFrames -Directory $v1.SourceDirectory -Count 60 -Preset $vertical -Source 'smptebars'
+	$reencode = Invoke-TestEncode -Directory $v1.SourceDirectory -FrameLimit $vertical.FrameCount -VideoPath $v1.VideoPath -Preset $vertical
+	Assert-True ($reencode.ExitCode -eq 0) "the second encode with -n exits 0 even though it wrote nothing (the reported defect), got $($reencode.ExitCode)"
+	Assert-True ($reencode.Output -match 'already exists') "ffmpeg says on stderr that the output already exists: $($reencode.Output)"
+	Assert-True ((Get-VideoHash $v1.VideoPath) -ceq $v1Hash) 'the second encode left the first attempt MP4 byte-identical'
+	$staleReport = New-ReportPath 'p-stale-mp4'
+	$staleResult = Invoke-Tool -Script $measureScript -Bound @{ Preset = 'vertical'; VideoPath = $v1.VideoPath; ReportPath = $staleReport; RenderStartedUtc = $attemptTwoMarker; FramesDirectory = $v1.SourceDirectory }
+	Assert-True ($staleResult.ExitCode -eq 1) "an MP4 older than the render marker exits 1, got $($staleResult.ExitCode): $($staleResult.Output)"
+	$staleData = Read-Report $staleReport
+	Assert-True ($staleData.artifact_verdict -eq 'fail') 'the stale MP4 verdict is fail'
+	Assert-True ($staleData.checks.frame_count -eq 'pass' -and $staleData.checks.duration -eq 'pass') 'the stale MP4 still matches the 240 frame / 8 s expectation, so the count check alone would have passed it'
+	Assert-True ($staleData.checks.render_attempt -eq 'fail') 'the render_attempt check fails'
+	Assert-True (@(Get-FailureCategories $staleData) -contains 'video_stale') 'the report names video_stale'
+	Assert-True ($staleData.checks.source_frames_fresh -eq 'pass') 'the 60 frames of the second attempt are fresh, so only the MP4 is stale'
+	Write-Output 'PASS: re-running the encode line over an existing MP4 exits 0 and keeps the old file, and the inspector fails it as video_stale although the frame count and duration match'
+
+	# (c) v1 leftovers under a few v2 frames: the count is right, the content is a mix of two renders.
+	$mixDir = Join-Path $sourceRoot 'p-mixed'
+	New-TestFrames -Directory $mixDir -Count $vertical.FrameCount -Preset $vertical -Source 'testsrc2'
+	Set-FileAge -Paths @(Get-ChildItem -LiteralPath $mixDir -File | ForEach-Object { $_.FullName }) -HoursOld 1
+	$mixMarker = [DateTime]::UtcNow.ToString('o')
+	New-TestFrames -Directory $mixDir -Count 60 -Preset $vertical -Source 'smptebars'
+	$mixVideo = Join-Path $videoRoot 'p-mixed.mp4'
+	$mixEncode = Invoke-TestEncode -Directory $mixDir -FrameLimit $vertical.FrameCount -VideoPath $mixVideo -Preset $vertical
+	Assert-True ($mixEncode.ExitCode -eq 0) "the mixed-source encode exits 0, got $($mixEncode.ExitCode): $($mixEncode.Output)"
+	$mixReport = New-ReportPath 'p-mixed-frames'
+	$mixResult = Invoke-Tool -Script $measureScript -Bound @{ Preset = 'vertical'; VideoPath = $mixVideo; ReportPath = $mixReport; RenderStartedUtc = $mixMarker; FramesDirectory = $mixDir }
+	Assert-True ($mixResult.ExitCode -eq 1) "leftover frames from an earlier render exit 1, got $($mixResult.ExitCode): $($mixResult.Output)"
+	$mixData = Read-Report $mixReport
+	Assert-True ($mixData.checks.frame_count -eq 'pass' -and $mixData.checks.render_attempt -eq 'pass') 'the mixed MP4 is fresh and has the right frame count, so neither check alone catches it'
+	Assert-True ($mixData.checks.source_frames_fresh -eq 'fail') 'the source_frames_fresh check fails'
+	Assert-True (@(Get-FailureCategories $mixData) -contains 'stale_source_frames') 'the report names stale_source_frames'
+	Assert-True ($mixData.provenance.frames_fresh -eq 60 -and $mixData.provenance.frames_stale -eq ($vertical.FrameCount - 60)) 'the report counts 60 fresh and the rest stale frames'
+	Write-Output 'PASS: 60 new frames over 180 leftover frames give a right-sized MP4 that still fails as stale_source_frames'
+
+	# (d) a missing frame in the middle stops the encoder short.
+	$gapDir = Join-Path $sourceRoot 'p-gap'
+	New-TestFrames -Directory $gapDir -Count $vertical.FrameCount -Preset $vertical -Source 'testsrc2'
+	Remove-Item -LiteralPath (Join-Path $gapDir '000119.png') -Force
+	$gapVideo = Join-Path $videoRoot 'p-gap.mp4'
+	$gapEncode = Invoke-TestEncode -Directory $gapDir -FrameLimit $vertical.FrameCount -VideoPath $gapVideo -Preset $vertical
+	Assert-True ($gapEncode.ExitCode -eq 0) "the gapped encode exits 0, got $($gapEncode.ExitCode): $($gapEncode.Output)"
+	$gapReport = New-ReportPath 'p-gap'
+	$gapResult = Invoke-Tool -Script $measureScript -Bound @{ Preset = 'vertical'; VideoPath = $gapVideo; ReportPath = $gapReport; RenderStartedUtc = $suiteStartUtc; FramesDirectory = $gapDir }
+	Assert-True ($gapResult.ExitCode -eq 1) "a gapped sequence exits 1, got $($gapResult.ExitCode): $($gapResult.Output)"
+	Assert-True (@(Get-FailureCategories (Read-Report $gapReport)) -contains 'frame_count_mismatch') 'a gap is reported as frame_count_mismatch'
+	Write-Output 'PASS: a gap in the sequence encodes short with exit 0 and fails on the frame count'
+
+	# (e) ffprobe cannot read the file: its exit code is non-zero and no stream is reported.
+	$brokenVideo = Join-Path $videoRoot 'p-broken.mp4'
+	[System.IO.File]::WriteAllBytes($brokenVideo, [System.Text.Encoding]::ASCII.GetBytes('this is not an mp4'))
+	$brokenReport = New-ReportPath 'p-broken'
+	$brokenResult = Invoke-Tool -Script $measureScript -Bound @{ Preset = 'vertical'; VideoPath = $brokenVideo; ReportPath = $brokenReport; RenderStartedUtc = $suiteStartUtc; FramesDirectory = $gapDir }
+	Assert-True ($brokenResult.ExitCode -eq 1) "an unreadable MP4 exits 1, got $($brokenResult.ExitCode): $($brokenResult.Output)"
+	$brokenData = Read-Report $brokenReport
+	Assert-True ($brokenData.checks.probe -eq 'fail' -and $brokenData.decoder.exit_code -ne 0) 'the probe exit code is recorded and non-zero'
+	Assert-True ($brokenData.artifact_verdict -ne 'pass') 'an unreadable MP4 is never a pass'
+	Write-Output 'PASS: an unreadable MP4 fails on the probe exit code instead of reading an empty stream list as a measurement'
+
+	# Without the marker or the frame directory the attempt cannot be tied to the MP4: never a pass.
+	$noMarkerReport = New-ReportPath 'p-no-marker'
+	$noMarkerResult = Invoke-Tool -Script $measureScript -Bound @{ Preset = 'landscape'; VideoPath = $b.VideoPath; ReportPath = $noMarkerReport; FramesDirectory = $b.SourceDirectory }
+	Assert-True ($noMarkerResult.ExitCode -eq 2) "a correct MP4 without a render marker exits 2 (unverified), got $($noMarkerResult.ExitCode): $($noMarkerResult.Output)"
+	$noMarkerData = Read-Report $noMarkerReport
+	Assert-True ($noMarkerData.artifact_verdict -eq 'unverified' -and $noMarkerData.checks.frame_count -eq 'pass') 'the measurements pass but the verdict stays unverified'
+	Assert-True (@(Get-FailureCategories $noMarkerData) -contains 'marker_missing') 'the report names marker_missing'
+
+	$noFramesReport = New-ReportPath 'p-no-frames-dir'
+	$noFramesResult = Invoke-Tool -Script $measureScript -Bound @{ Preset = 'landscape'; VideoPath = $b.VideoPath; ReportPath = $noFramesReport; RenderStartedUtc = $suiteStartUtc }
+	Assert-True ($noFramesResult.ExitCode -eq 2) "a correct MP4 without a frame directory exits 2, got $($noFramesResult.ExitCode): $($noFramesResult.Output)"
+	Assert-True (@(Get-FailureCategories (Read-Report $noFramesReport)) -contains 'frames_directory_missing') 'the report names frames_directory_missing'
+
+	$futureReport = New-ReportPath 'p-future-marker'
+	$futureResult = Invoke-Tool -Script $measureScript -Bound @{ Preset = 'landscape'; VideoPath = $b.VideoPath; ReportPath = $futureReport; RenderStartedUtc = [DateTime]::UtcNow.AddHours(2).ToString('o'); FramesDirectory = $b.SourceDirectory }
+	Assert-True ($futureResult.ExitCode -eq 2) "a marker in the future exits 2, got $($futureResult.ExitCode): $($futureResult.Output)"
+	Assert-True (@(Get-FailureCategories (Read-Report $futureReport)) -contains 'marker_in_future') 'the report names marker_in_future'
+	Write-Output 'PASS: a missing or impossible marker and a missing frame directory leave the verdict unverified, never pass'
+
+	# ============================================================ group 12: reports are exclusive and the inputs are untouched
 	$reportFiles = @(Get-ChildItem -LiteralPath $reportRoot -Force)
 	$expectedReports = $script:reportCounter
 	Assert-True (@($reportFiles | Where-Object { $_.PSIsContainer }).Count -eq 0) 'no directories were created in reports/'
