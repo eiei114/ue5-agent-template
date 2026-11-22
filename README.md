@@ -113,18 +113,21 @@ workerのrunは自分のプロセス木（writer + 子孫）を同期回収し�
 - 共有Chrome・他runのprocess・writerの親は停止対象外として記録する。
 - UEを起動しない層なので、UEのbuild/Editor/renderはこの手順の対象外。回帰は`scripts/Test-UETemplateProcessOwnership.ps1`（UE不使用の自作fixture）。詳細は[着手手順](docs/01-start.md)のlease節。
 
+```powershell
 .\scripts\Measure-UERenderArtifacts.ps1 `
   -FramesDirectory '<project>\Out\run_<runid>\frames' `
   -StartNumber 0 `
   -EndNumberExclusive 240 `
   -FrameStep 2 `
   -FrameNumberOffset 0 `
+  -NamePrefix 'Shot0001.' `
+  -Digits 4 `
   -ExpectedWidth 1080 `
   -ExpectedHeight 1920 `
   -ReportPath '<project>\Out\run_<runid>\evidence\frames-check.json'
 ```
 
-欠番・範囲外・曖昧名・0 byte・decode不能・解像度不一致を検出し、reportを新規作成する。`-FrameStep` / `-FrameNumberOffset`はMRQの`Output Frame Step` / `Frame Number Offset`の実値を書き写す（既定1と0は連番、上の例は2なので240frame範囲に120枚の格子）。未宣言の格子は`missing_frames`ではなく`index_lattice_mismatch`として報告する。終了codeはpass=0/fail=1/unverified=2。通知/exit、画像列、MP4、目視、音は別判定として扱う（[検品](docs/05-qa.md)）。回帰は`scripts/Test-UERenderArtifacts.ps1`。UE実機のMRQ・ffprobe・映像/音/loopの実測は未検証（Unverified）。
+欠番・範囲外・曖昧名・0 byte・decode不能・解像度不一致を検出し、reportを新規作成する。`-FrameStep` / `-FrameNumberOffset`はMRQの`Output Frame Step` / `Frame Number Offset`の実値を書き写す（既定1と0は連番、上の例は2なので240frame範囲に120枚の格子）。`-NamePrefix` / `-Digits`はMRQの`File Name Format`（indexの前の固定文字列）と`Zero Pad Frame Numbers`の実値で、render前に決めてQAへ記録し同じ値を渡す（画像は改名しない。MRQ既定は`Shot0001.0000.png`形・4桁で、helperの`-Digits`既定6はMRQの既定ではない）。未宣言の格子は`missing_frames`ではなく`index_lattice_mismatch`として、未宣言の前置きは`naming_contract_mismatch`として報告する。終了codeはpass=0/fail=1/unverified=2。通知/exit、画像列、MP4、目視、音は別判定として扱う（[検品](docs/05-qa.md)）。回帰は`scripts/Test-UERenderArtifacts.ps1`。UE実機のMRQ・ffprobe・映像/音/loopの実測は未検証（Unverified）。
 
 ## GitHubから開始
 
