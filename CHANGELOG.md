@@ -1,5 +1,17 @@
 # 変更履歴
 
+## Unreleased — DOT-3251 — 2026-11-22
+
+- `scripts/Measure-UERenderArtifacts.ps1` の decode 判定が timeout を本物の失敗より先に評価していたため、`decode_failed` と `decode_timeout` が同居すると ground truth が `fail` でも `unverified`（exit 2）と報告し、report 本文（`failures[]` に `decode_failed`）と `artifact_verdict` が矛盾した。優先順を反転し、decode 失敗・codec 不一致が1件でもあれば `fail` を先に確定する。timeout は失敗が無いときだけ `unverified` にする。
+- timeout した frame は新しい process で1回だけ再試行し、`frames[].attempts` に記録する（再試行で復号できれば `ok`・`attempts=2`）。総予算 `-TotalDecodeBudgetMilliseconds`（既定 300000、CI の `timeout-minutes: 20` に収まる値）を追加した。超過は `pass` にも `fail` にも丸めず、`decode_budget_exhausted` を `failures[]` に積んだ `unverified` にする。report に `decode_summary`（評価/未評価 frame 数、状態別内訳、再試行数、予算、経過 ms）と `violations.decode_not_evaluated` を追加した。
+- `scripts/Test-UERenderArtifacts.ps1` に負例を追加した。(a) 本物の decode 失敗 + timeout が `fail`/exit 1（修正前 helper に当てると `unverified`/exit 2 で落ちることを確認済み）、timeout のみは `unverified` のまま、一過性の遅さは再試行で `ok`・`attempts=2`、(c) 総予算 1 ms で `pass` にならず `decode_budget_exhausted` と評価/未評価 frame 数が残る。(b) 既存の clean 240 frame の `pass`/exit 0 は維持。
+- `docs/05-qa.md`、`templates/QA.md`（QA-IMG-01 に decode 内訳の記載要求）、`README.md` を新しい契約に合わせた。
+- 既定の 10 秒 per-frame deadline、frame ごとに process 1 本の方式、判定項目（欠番・解像度・命名）は変えていない。性能改善は主張しない。
+
+未検証: UE の実 MRQ render・実 ffmpeg encode、本 host 以外・他 ffprobe 版・GitHub Actions `windows-latest` 上での負荷時の頻度。
+
+移行: report への `frames[].attempts`、`decode_summary`、`violations.decode_not_evaluated`、`decode_budget_exhausted` は schema への追加で `schema_version` は 1 のまま。旧 report を読む consumer を壊さない。decode 失敗と timeout が同居する画像列は、これまでの `unverified`（exit 2）から `fail`（exit 1）に変わる。
+
 ## Unreleased — DOT-3441 — 2026-11-22
 
 - 生成projectへ複製される文書が、生成物内に存在しない repo path を案内していた。とくに `vertical-loop` の `Recipe/Capture.md` は書き出し手順の唯一の正本 `docs/05-qa.md` を指すが、`docs/` を複製するのは `MulticaOnlineStarter` を要求する recipe の `docs/08` だけで、`scripts/` はどの recipe でも複製しないため、生成物だけを受け取ったagentは検査手順に到達できなかった。`third-person-game` の `Recipe/Play.md` も、生成後に存在しない `Config/TemplateDefs.ini` を存在するかのように案内していた。現行 suite は文書の参照を一般には検査せず、この未解決参照を1件も落とせなかった。
