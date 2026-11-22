@@ -225,6 +225,13 @@ jobs:
           ffmpeg -version
           ffprobe -version
 
+      - name: Test-UEPerformanceRecord.ps1 -SelfTest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./scripts/Test-UEPerformanceRecord.ps1 -SelfTest
+          if ($LASTEXITCODE -ne 0) { throw "Test-UEPerformanceRecord.ps1 -SelfTest exited $LASTEXITCODE" }
+
       - name: Test-UECaptureEncode.ps1
         shell: pwsh
         run: |
