@@ -102,7 +102,7 @@ $framesArgument = $FramesDirectory.TrimEnd([char[]]@('\', '/')) + '\' + $inputPa
 
 $ffmpegCommand = 'ffmpeg -n -framerate {0} -start_number {1} -i "{2}" -frames:v {3} -c:v {4} -pix_fmt {5} -crf {6} -movflags +faststart "{7}"' -f $fpsText, $startValue, $framesArgument, $frameCount, $codec, $pixFmt, $crfValue, $VideoPath
 $ffprobeCommand = 'ffprobe -v error -count_frames -show_entries stream=index,codec_type,codec_name,profile,level,width,height,pix_fmt,bits_per_raw_sample,r_frame_rate,nb_read_frames,color_range,color_space,color_transfer,color_primaries,sample_rate,channels -show_entries format=duration,size -of json "{0}"' -f $VideoPath
-$framesCheckPath = 'Out/run_<runid>/evidence/frames-check.json'
+$framesCheckPath = 'Out/run_<runid>/evidence/frames-check-<attempt>.json'
 $framesCheckCommand = '.\scripts\Measure-UERenderArtifacts.ps1 -FramesDirectory "{0}" -StartNumber {1} -EndNumberExclusive {2} -ExpectedWidth {3} -ExpectedHeight {4} -ReportPath "{5}"' -f $FramesDirectory, $startValue, $endExclusive, $widthValue, $heightValue, $framesCheckPath
 $markerCommand = '$renderStartedUtc = (Get-Date).ToUniversalTime().ToString(''o'')'
 $inspectCommand = '.\scripts\Measure-UECaptureEncode.ps1 -Preset {0} -VideoPath "{1}" -ReportPath "{2}" -RenderStartedUtc $renderStartedUtc -FramesDirectory "{3}"' -f $Preset, $VideoPath, $ReportPath, $FramesDirectory
