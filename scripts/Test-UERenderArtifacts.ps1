@@ -863,6 +863,168 @@ try {
 	Assert-True ($timeoutData.artifact_verdict -eq 'unverified') 'a decode timeout cannot produce a pass'
 	Write-Output 'PASS: missing, failing and slow decoders stay unverified or fail, and the timeout is bounded'
 
+	# ============================================================ group 11b: fail outranks timeout, retry, total budget
+	# One stub decoder stands in for ffprobe. It answers by the file name it is given, so a single
+	# sequence can hold frames that decode, frames that exit 0 without a decoded picture (a real decode
+	# failure) and frames that run past the deadline.
+	#   000002.png : exit 0, stream header but no decoded frame  -> decode failure
+	#   000001.png / 000003.png : never finish                   -> timeout on every attempt
+	#   000004.png : slow on the first attempt only (flag file)  -> transient slowness when flaky is on
+	$stubDecoder = Join-Path $fixtureRoot 'stub-decoder.cmd'
+	$stubLines = @(
+		'@echo off',
+		'setlocal',
+		'if "%~1"=="-version" goto version',
+		'set "LAST="',
+		'for %%a in (%*) do set "LAST=%%~nxa"',
+		'if "%LAST%"=="000002.png" goto nopicture',
+		'if "%LAST%"=="000001.png" goto slow',
+		'if "%LAST%"=="000003.png" goto slow',
+		'if "%LAST%"=="000004.png" if defined STUB_FLAKY_FLAG goto flaky',
+		':good',
+		'echo {"streams":[{"codec_name":"png"}],"frames":[{"width":64,"height":48,"pix_fmt":"rgb24"}]}',
+		'exit /b 0',
+		':nopicture',
+		'echo {"streams":[{"codec_name":"png"}],"frames":[]}',
+		'exit /b 0',
+		':flaky',
+		'if exist "%STUB_FLAKY_FLAG%" goto good',
+		'echo x>"%STUB_FLAKY_FLAG%"',
+		':slow',
+		'ping -n 20 127.0.0.1 >nul',
+		'exit /b 0',
+		':version',
+		'echo stub-decoder 1.0',
+		'exit /b 0'
+	)
+	[System.IO.File]::WriteAllText($stubDecoder, (($stubLines -join "`r`n") + "`r`n"), [System.Text.UTF8Encoding]::new($false))
+	Register-FixtureRootFile 'stub-decoder.cmd'
+	$stubDir = Join-Path $fixtureRoot 'stub-sequence'
+	New-FrameSequence -Directory $stubDir -Start 0 -EndExclusive 6
+	Register-FixtureSnapshot 'stub-sequence'
+
+	# (a) A real decode failure and timeouts together: the failure must win, the timeout must not
+	# demote it to unverified, and both facts stay in the report.
+	$mixedReport = New-ReportPath 'decode-fail-and-timeout'
+	$mixedResult = Invoke-Measure @{
+		FramesDirectory             = $stubDir
+		StartNumber                 = 0
+		EndNumberExclusive          = 6
+		ReportPath                  = $mixedReport
+		ExpectedWidth               = 64
+		ExpectedHeight              = 48
+		DecoderPath                 = $stubDecoder
+		DecoderTimeoutMilliseconds  = 3000
+	}
+	Assert-True ($mixedResult.ExitCode -eq 1) "a decode failure plus a timeout exits 1 (fail), got $($mixedResult.ExitCode): $($mixedResult.Output)"
+	$mixedData = Read-Report $mixedReport
+	Assert-True ($mixedData.artifact_verdict -eq 'fail') "a decode failure plus a timeout is a fail, got $($mixedData.artifact_verdict)"
+	Assert-True ($mixedData.checks.decode -eq 'fail') 'the decode check is fail, not unverified, when a frame really failed to decode'
+	$mixedCategories = Get-FailureCategories $mixedData
+	Assert-True ($mixedCategories -contains 'decode_failed') 'the real decode failure stays in failures[]'
+	Assert-True ($mixedCategories -contains 'decode_timeout') 'the timeouts stay in failures[] next to the failure'
+	$mixedFrames = @($mixedData.frames)
+	Assert-True ($mixedFrames[2].decode -eq 'failed') 'the undecodable frame is recorded as failed'
+	Assert-True ($mixedFrames[1].decode -eq 'timeout' -and $mixedFrames[1].attempts -eq 2) 'a timed-out frame was retried once and both attempts are recorded'
+	Assert-True ($mixedFrames[0].decode -eq 'ok' -and $mixedFrames[0].attempts -eq 1) 'a frame that decoded first time records a single attempt'
+
+	# Timeouts alone, without any decode failure, remain unverified: the fail priority must not turn a
+	# slow decoder into a failure.
+	$timeoutOnlyDir = Join-Path $fixtureRoot 'stub-timeout-only'
+	New-FrameSequence -Directory $timeoutOnlyDir -Start 3 -EndExclusive 4
+	Register-FixtureSnapshot 'stub-timeout-only'
+	$timeoutOnlyReport = New-ReportPath 'decode-timeout-only'
+	$timeoutOnlyResult = Invoke-Measure @{
+		FramesDirectory             = $timeoutOnlyDir
+		StartNumber                 = 3
+		EndNumberExclusive          = 4
+		ReportPath                  = $timeoutOnlyReport
+		ExpectedWidth               = 64
+		ExpectedHeight              = 48
+		DecoderPath                 = $stubDecoder
+		DecoderTimeoutMilliseconds  = 3000
+	}
+	Assert-True ($timeoutOnlyResult.ExitCode -eq 2) "timeouts alone exit 2 (unverified), got $($timeoutOnlyResult.ExitCode): $($timeoutOnlyResult.Output)"
+	$timeoutOnlyData = Read-Report $timeoutOnlyReport
+	Assert-True ($timeoutOnlyData.artifact_verdict -eq 'unverified') 'a persistent timeout without a decode failure stays unverified'
+	Assert-True ($timeoutOnlyData.frames[0].attempts -eq 2) 'the persistent timeout shows two attempts'
+
+	# Transient slowness: the frame is slow once, succeeds on the retry, and is recorded as ok with
+	# attempts=2 rather than being hidden or failing the sequence.
+	$flakyFlag = Join-Path $fixtureRoot 'flaky.flag'
+	Register-FixtureRootFile 'flaky.flag'
+	$flakyDir = Join-Path $fixtureRoot 'stub-flaky'
+	New-FrameSequence -Directory $flakyDir -Start 4 -EndExclusive 6
+	Register-FixtureSnapshot 'stub-flaky'
+	$flakyReport = New-ReportPath 'decode-flaky-retry'
+	$env:STUB_FLAKY_FLAG = $flakyFlag
+	try {
+		$flakyResult = Invoke-Measure @{
+			FramesDirectory             = $flakyDir
+			StartNumber                 = 4
+			EndNumberExclusive          = 6
+			ReportPath                  = $flakyReport
+			ExpectedWidth               = 64
+			ExpectedHeight              = 48
+			DecoderPath                 = $stubDecoder
+			DecoderTimeoutMilliseconds  = 3000
+		}
+	} finally {
+		Remove-Item Env:\STUB_FLAKY_FLAG -ErrorAction SilentlyContinue
+	}
+	Assert-True ($flakyResult.ExitCode -eq 0) "a frame that is slow once and decodes on retry still passes, got $($flakyResult.ExitCode): $($flakyResult.Output)"
+	$flakyData = Read-Report $flakyReport
+	Assert-True ($flakyData.checks.decode -eq 'pass') 'the retried frame leaves decode at pass'
+	Assert-True ($flakyData.frames[0].decode -eq 'ok' -and $flakyData.frames[0].attempts -eq 2) 'the retry is recorded as attempts=2, not hidden'
+	Assert-True ($flakyData.frames[1].attempts -eq 1) 'a neighbouring frame stays at one attempt'
+
+	# (c) A total budget that cannot cover the sequence: never a pass, and the report names the budget
+	# and says how many frames were and were not evaluated.
+	$budgetDir = Join-Path $fixtureRoot 'budget-sequence'
+	New-FrameSequence -Directory $budgetDir -Start 0 -EndExclusive 6
+	Register-FixtureSnapshot 'budget-sequence'
+	$budgetReport = New-ReportPath 'decode-budget-exhausted'
+	$budgetResult = Invoke-Measure @{
+		FramesDirectory                = $budgetDir
+		StartNumber                    = 0
+		EndNumberExclusive             = 6
+		ReportPath                     = $budgetReport
+		ExpectedWidth                  = 64
+		ExpectedHeight                 = 48
+		DecoderPath                    = $stubDecoder
+		DecoderTimeoutMilliseconds     = 3000
+		TotalDecodeBudgetMilliseconds  = 1
+	}
+	Assert-True ($budgetResult.ExitCode -eq 2) "an exhausted budget exits 2 (unverified), got $($budgetResult.ExitCode): $($budgetResult.Output)"
+	$budgetData = Read-Report $budgetReport
+	Assert-True ($budgetData.artifact_verdict -ne 'pass') 'an exhausted budget can never produce a pass'
+	Assert-True ($budgetData.artifact_verdict -eq 'unverified' -and $budgetData.checks.decode -eq 'unverified') 'an exhausted budget is unverified'
+	Assert-True ((Get-FailureCategories $budgetData) -contains 'decode_budget_exhausted') 'decode_budget_exhausted is named in failures[]'
+	Assert-True ($budgetData.decode_summary.budget_exhausted -eq $true) 'the summary states the budget ran out'
+	Assert-True ($budgetData.decode_summary.frames_in_range -eq 6) 'the summary counts the frames in range'
+	Assert-True (($budgetData.decode_summary.frames_evaluated + $budgetData.decode_summary.frames_not_evaluated) -eq 6) 'evaluated and not-evaluated frames add up to the frames in range'
+	Assert-True ($budgetData.decode_summary.frames_not_evaluated -ge 1) 'at least one frame is reported as not evaluated'
+
+	# A generous budget changes nothing: a clean sequence still passes and nothing is exhausted.
+	$roomyDir = Join-Path $fixtureRoot 'budget-roomy'
+	New-FrameSequence -Directory $roomyDir -Start 5 -EndExclusive 6
+	Register-FixtureSnapshot 'budget-roomy'
+	$roomyReport = New-ReportPath 'decode-budget-roomy'
+	$roomyResult = Invoke-Measure @{
+		FramesDirectory                = $roomyDir
+		StartNumber                    = 5
+		EndNumberExclusive             = 6
+		ReportPath                     = $roomyReport
+		ExpectedWidth                  = 64
+		ExpectedHeight                 = 48
+		DecoderPath                    = $stubDecoder
+		TotalDecodeBudgetMilliseconds  = 120000
+	}
+	Assert-True ($roomyResult.ExitCode -eq 0) "a clean sequence inside a generous budget passes, got $($roomyResult.ExitCode): $($roomyResult.Output)"
+	$roomyData = Read-Report $roomyReport
+	Assert-True ($roomyData.decode_summary.budget_exhausted -eq $false -and $roomyData.decode_summary.frames_not_evaluated -eq 0) 'a generous budget is not exhausted'
+	Write-Output 'PASS: a decode failure outranks a timeout, timeouts are retried once with attempts recorded, and a total budget is explicit'
+
 	# ============================================================ group 12: the untouched-input gate can actually fail
 	# A gate that has never been observed to fail is the same defect one level up. This group corrupts a
 	# throwaway fixture in each of the three ways a suite regression would - a removed file, a rewritten
@@ -1326,7 +1488,7 @@ try {
 	# (one non-empty report per allocated path, minus the deliberately refused ones).
 	Assert-FixtureInputsUnchanged
 	$fixtureCount = $script:fixtureBaselines.Count
-	Assert-True ($fixtureCount -eq 26) "every fixture directory built by the suite is covered by the comparison, got $fixtureCount"
+	Assert-True ($fixtureCount -eq 31) "every fixture directory built by the suite is covered by the comparison, got $fixtureCount"
 	Assert-True (@(Get-FixtureInputDrift).Count -eq 0) 'no fixture directory was modified, added to or removed after it was built'
 	Assert-True (@(Get-ReportDrift).Count -eq 0) 'reports/ holds exactly one non-empty report per allocated report path'
 	Write-Output "PASS: all $fixtureCount fixture directories and the report directory are unchanged since they were built"
