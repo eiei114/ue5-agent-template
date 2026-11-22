@@ -11,6 +11,19 @@
 未検証: 実Shipping buildで各計測が本当に使えないことの実行確認、外部計測器が当該hostで実際にframe timeを取得できること、`bUseConsoleInShipping` 等を明示的に有効にしたtargetでの挙動、`ALLOW_DEBUG_FILES` / `STATS` / `ALLOW_CONSOLE` の実ビルド最終値、過去Bonfire記録の計測器。
 
 移行: 既存の `unverified` は `unverified` のまま。過去の性能記録の書き換えは強制しない。新しい記録の形は次の run から使う。外部計測器の導入・自動化、FPS目標値、MRQ / ffmpeg / ffprobe の手順は変えていない。
+
+## Unreleased — DOT-3065（UE-DELIV-001） — 2026-11-22
+
+`AGENTS.md` と `docs/06-delivery.md` は納品セットに `SHA256SUMS.txt` を必須としていたが、生成器も検証器も無く、書式・検証 cwd・完全性が未定義だった。素直に PowerShell で書いた manifest は GNU `sha256sum -c` で検証できず、検証できる書式にしても cwd 依存の偽 PASS と部分 manifest の合格が残っていた。
+
+- `scripts/New-DeliveryManifest.ps1`（新規）: `DELIVERY.json` の `artifacts[]` から `SHA256SUMS.txt` を生成する。UTF-8 BOM なし・LF のみ・`<小文字 hex 64 桁>` + 空白 2 つ + `/` 区切りの相対 path。`artifacts[].bytes` と実 file 長の不一致、宣言 artifact の欠落、宣言 `sha256` と実 hash の不一致、不正 path（絶対・`..`・drive・先頭 `*`）、載せる artifact が 0 件、のいずれでも停止し manifest を書かない。書いた後に検証器と同じ検査で自己検証し、落ちれば削除して停止する。
+- `scripts/Test-DeliveryManifest.ps1`（新規）: manifest の bytes を直接検査する（BOM・CR・NUL/UTF-16・末尾 LF・空行・大文字 hex・空白 1 つ・`*`・`./`・`\`・重複）。`-DeliveryJson` を渡すと `artifacts[]` との集合一致を双方向で検査し、`bytes` も照合する。各 file は **manifest のある dir から**解決するので、cwd にある同名 stale コピーでは偽 PASS しない。exit は 0=合格 / 1=違反 / 2=入力不備。
+- hash は .NET `SHA256`（`scripts/DeliveryManifest.ps1`）。`Get-FileHash` に依存しない。
+- `scripts/Test-DeliveryManifest.Tests.ps1`（新規、CI の `scaffold` job に追加）: 実生成物を `sha256sum -c`（manifest のある dir で exit 0、改変後 exit 1）と照合する。UTF-16LE・BOM+CRLF・BOM なし CRLF の既定レシピ出力と、host 実際の `Out-File` / `Set-Content -Encoding UTF8` の出力が落ちること、部分 manifest（1/5）・空 manifest・宣言外 entry・bytes 不一致・欠落の 5 ケースが止まること、`extracted-check/` に全 artifact の stale コピーを置いて本物を改変した場合に `sha256sum -c ../SHA256SUMS.txt` が exit 0 になる（偽 PASS の実証）一方で検証器は exit 1 になること、`Get-FileHash` を throw する関数で隠しても生成・検証できること、`Get-FileHash` / `certutil` / `sha256sum` と hash が一致すること、suite 前後で checkout の `git status --porcelain` が同一であることを固定した。
+- `docs/04-package.md`: `Get-FileHash` の 1 行を、書式契約・生成/検証コマンド・hash 実装・`sha256sum -c` の cwd 規約へ置き換えた。`docs/05-qa.md`: `extracted-check/` からの照合は偽 PASS を起こすため manifest と artifact を同一 dir に置いてその dir で検証する旨を追記。`docs/06-delivery.md`: 納品セットに `DELIVERY.json` との集合一致（完全性規則）を追加。
+
+`SHA256SUMS.txt` に載せない `kind` は `sha256sums` と `delivery_manifest`（自己 hash を持てないため）。既存の run の manifest は書き換えない。`scripts/New-UETemplateScaffold.ps1`、recipe、online plugin、`templates/` は変更していない。**UE install / compile / Editor / PIE / MRQ / render / Shipping / packaged build は実行していない**（Unverified Scope）。実 UE artifact に対する manifest の正しさは未検証で、fixture（自作 bytes）での実測のみ。
+
 ## Unreleased — DOT-3117 — 2026-11-13
 
 - `templates/QA.md` が、repo 自身が要求する受入項目のうち10項目（起動map・Pawn・開始姿勢、座位/立位、host の session 作成、2 人目 client の join、score と player count の replication、client leave、reconnect、failed search、timeout）に対応する行を持っていなかった。行が無ければ検品者はその欄自体を書かないため、`docs/05-qa.md:36` の「合否・版/hash・実施者・日時・証拠・未確認をセットにする」を満たさないまま `Out/run_<runid>/` の QA が納品セットに入った。行を追加し、各行に機械検査用の `[QA-...]` ID を付けた。

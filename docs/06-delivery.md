@@ -14,11 +14,12 @@
 | CREDITS | `CREDITS.md` | `templates/CREDITS.md` |
 | QA | `QA.md` | `templates/QA.md` |
 | 納品manifest | `DELIVERY.json` | `templates/DELIVERY.json` |
-| 完全性manifest | `SHA256SUMS.txt` | 生成物。雛形なし（書式・検証はDOT-3065） |
+| 完全性manifest | `SHA256SUMS.txt` | 生成物。雛形なし（`scripts/New-DeliveryManifest.ps1`で生成。書式・検証は`docs/04-package.md`） |
 
 - 映像納品と実行版納品のどちらでも、納品セットの`README.md`・`CREDITS.md`・`QA.md`・`DELIVERY.json`・`SHA256SUMS.txt`は同じ版で揃える。映像納品はMP4とthumbnail、実行版納品はZIPを加える。必須項目が1つでも欠けたら納品しない（種別によって不要な項目だけを省略する）。
 - `README.md`は`templates/README.md`を複製して記入し、操作表・起動方法・同一版SHA・非目標・既知の不具合を空欄のまま残さない。記入後の`README.md`自身のSHA-256を`DELIVERY.json`の`readme_receipt`へ書く（受領証欄の定義は`templates/DELIVERY.json`）。
 - 表の`正本`が`templates/`を指す項目は、実ファイルが無ければ納品セットが成立しない。`scripts/Test-UETemplateScaffold.ps1`が表・`AGENTS.md`の列挙・`templates/`の実ファイルを機械照合し、`templates/README.md`を消すと落ちる。
+- **完全性規則**：`SHA256SUMS.txt`が載せるpathの集合は、`DELIVERY.json`の`artifacts[].filename`（自分自身のhashを持てない`kind=sha256sums`・`delivery_manifest`を除く）と**双方向で一致**しなければならない。manifestが宣言artifactを取りこぼしても、宣言外のfileを載せても、artifactが無くても納品しない。`sha256sum -c`だけではこの一致を証明できないため（一部の行だけでも通る）、`scripts/Test-DeliveryManifest.ps1 -ManifestPath <SHA256SUMS.txt> -DeliveryJson <DELIVERY.json>`がexit 0であることを納品の条件にする。
 - `kind`の値は`templates/DELIVERY.json`の`artifact_kind_vocabulary`だけを使う。未定義の`kind`を増やさない。
 
 添付または許可済みprivate経路で本人が受け取れる状態を確認する。ローカルpathは納品URLではない。
