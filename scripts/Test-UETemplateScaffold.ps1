@@ -1424,7 +1424,8 @@ try {
 			$fileRelative = $file.FullName.Substring($root.Length + 1).Replace('\', '/')
 			$lines = [System.IO.File]::ReadAllLines($file.FullName)
 			$fileNotice = $false
-			foreach ($line in $lines) { if ($line.Contains('source checkout') -and (& $marker $line)) { $fileNotice = $true; break } }
+			# Only a leading blockquote counts as a file-level notice; a bullet that says it about one path must not excuse the others.
+			foreach ($line in $lines) { if ($line.StartsWith('>') -and $line.Contains('source checkout') -and (& $marker $line)) { $fileNotice = $true; break } }
 			for ($index = 0; $index -lt $lines.Count; $index++) {
 				$line = $lines[$index]
 				$candidates = [System.Collections.Generic.List[string]]::new()
@@ -1442,6 +1443,8 @@ try {
 				foreach ($candidate in ($candidates | Select-Object -Unique)) {
 					$checked++
 					if (Test-Path -LiteralPath (Join-Path $root $candidate.Replace('/', '\'))) { continue }
+					# A plugin README names files relative to its own directory (Source/..., Config/...).
+					if (Test-Path -LiteralPath (Join-Path $file.DirectoryName $candidate.Replace('/', '\'))) { continue }
 					if ((& $marker $line) -or $fileNotice) { continue }
 					$problems.Add(('{0}:{1} points at {2}, which is not in the generated project and is not stated as source-checkout relative' -f $fileRelative, ($index + 1), $candidate))
 				}

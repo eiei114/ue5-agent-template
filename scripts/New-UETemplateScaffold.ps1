@@ -1293,6 +1293,7 @@ foreach ($payloadName in @('SET.md', 'recipe.json', 'Capture.md')) {
 if ($hasPlayDelta) {
 	$generatorOwnedPaths += 'Recipe\Play.md'
 }
+$generatorOwnedPaths += 'docs\05-qa.md'
 if ($pluginNames -contains 'MulticaOnlineStarter') { $generatorOwnedPaths += 'docs\08-online-foundations.md' }
 $templateSourceName = if ($materialize) { $ProjectName } else { $null }
 $plannedPaths = Get-PlannedOutputRelativePaths -SourceTemplate $sourceTemplate -EngineTemplateRoot $engineTemplateRoot -TemplateName $templateName -Name $templateSourceName -GeneratorOwnedPaths $generatorOwnedPaths
@@ -1516,6 +1517,12 @@ try {
 	if ($hasPlayDelta) {
 		Copy-Item -LiteralPath $playSource -Destination (Join-Path $recipeOutput 'Play.md')
 	}
+	# Every recipe ships Recipe/Capture.md, and the export and inspection procedure it relies on lives in
+	# docs/05-qa.md, so the guide goes out with every recipe (composition never depends on a recipe name).
+	# The closure rule is in docs/07-architecture.md.
+	$exportGuideTarget = Join-Path $stagingPath 'docs'
+	[System.IO.Directory]::CreateDirectory($exportGuideTarget) | Out-Null
+	Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\05-qa.md') -Destination (Join-Path $exportGuideTarget '05-qa.md')
 	if ($pluginNames -contains 'MulticaOnlineStarter') {
 		$onlineGuideTarget = Join-Path $stagingPath 'docs'
 		[System.IO.Directory]::CreateDirectory($onlineGuideTarget) | Out-Null
