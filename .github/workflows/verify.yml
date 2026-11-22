@@ -71,6 +71,16 @@ jobs:
           ./scripts/Test-UECreditsInventory.ps1
           if ($LASTEXITCODE -ne 0) { throw "Test-UECreditsInventory.ps1 exited $LASTEXITCODE" }
 
+      # The delivery manifest generator and verifier fix the SHA256SUMS.txt bytes, the
+      # verification directory and the set-equality with DELIVERY.json. The suite needs
+      # no engine; GNU sha256sum cross-checks run only where it is on PATH.
+      - name: Test-DeliveryManifest.Tests.ps1
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./scripts/Test-DeliveryManifest.Tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Test-DeliveryManifest.Tests.ps1 exited $LASTEXITCODE" }
+
       - name: Integration review regressions
         shell: pwsh
         run: |
