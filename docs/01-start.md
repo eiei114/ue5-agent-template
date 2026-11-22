@@ -3,7 +3,7 @@
 ## Preflightの完了条件
 
 
-`templates/QA.md`を**複製**して、`Production/.runs/run_<runid>/preflight.md`へ日時、Issue/run、hostname/OS、UE実version、GPU/VRAM、disk/RAM、既存toolchain、モデル指定/実効値、利用枠の観測範囲を記録。不明を0や無料と扱わない。`templates/`は雛形であり編集しない（tracked fileを汚すとgeneratorのclean-tree gateで停止する）。`Production/.runs/run_<runid>/`は生成先`Production/<Name>_<runid>/`の外にある台帳dirで、生成前にここへ書いても生成を妨げない。project生成後は同じ内容を`Production/<Name>_<runid>/Out/run_<runid>/QA.md`へ移し、以降はそこで追記する。
+`templates/QA.md`を**複製**して、`Production/.runs/run_<runid>/preflight.md`へ日時、Issue/run、hostname/OS、UE実version、GPU/VRAM、disk/RAM、既存toolchain、モデル指定/実効値、利用枠の観測範囲を記録。不明を0や無料と扱わない。effortを不明と書く前に、`docs/02-runtime.md`の「実効値の観測」を1回実行する（観測できるのに不明、は残さない）。`templates/`は雛形であり編集しない（tracked fileを汚すとgeneratorのclean-tree gateで停止する）。`Production/.runs/run_<runid>/`は生成先`Production/<Name>_<runid>/`の外にある台帳dirで、生成前にここへ書いても生成を妨げない。project生成後は同じ内容を`Production/<Name>_<runid>/Out/run_<runid>/QA.md`へ移し、以降はそこで追記する。
 
 
 不明値の規則はlockにも適用する。engineが書いていない値はnullで、template_commit_publishedの未検査もnull（合格ではない）。engineが明示した0や空文字と区別する。
