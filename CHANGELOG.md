@@ -1,5 +1,13 @@
 # 変更履歴
 
+## Unreleased — DOT-3432 — 2026-11-22
+
+- 画像列QA helper `scripts/Measure-UERenderArtifacts.ps1` のreportは `frames[].sha256` を `''` で初期化して実digestを後から入れており、「計算した値」と「未計算/placeholder」を同じfieldで区別できなかった。さらにそのdigestを検証するtestが無く、digestを定数 `'deadbeef'` にした改変helperでも3 frameの正常列が `VERDICT: pass` になることを確認していた。加えて `docs/05-qa.md` は「helper自身は入力のhashを計算しない」と書き、実装と矛盾していた。
+- 変更: `frames[]` に `digest_state`（`computed` / `not_computed`）を追加した。`computed` のときだけ `sha256` は小文字hex 64桁の実SHA-256、計算できなければ `sha256: null` と `not_computed` で、空文字やplaceholderは書かない。0 byte fileも同じ規則で空bytesのSHA-256を計算する（empty file failure自体は従来どおり）。report `notes` の "Inputs were read only" は、helperが書き込まないことの説明であって検査中の外部変更の否定ではない旨の文言にした。`docs/05-qa.md` の記述を実装どおりに直した。
+- 移行: `frames[].sha256` を読むconsumerは `digest_state` を先に見る。以前は未計算時に `''` だったが、今後は `null`。`computed` の値と既存field・verdict・exit codeは変わらない。既存report・`Production/<Name>_<runid>/` は書き換えていない。
+- `scripts/Test-UERenderArtifacts.ps1`: digest契約の検証 `Get-DigestViolations` を追加し、clean 240 frameと0 byte fixtureが実fileのSHA-256と一致すること、3 frameの `digest3` fixtureに対して digest を定数/空文字にした改変helperのcopy（fixture root配下）がfile名とindexを名指しで検出されることをsuite内に固定した（fixtureは22→23）。
+- 実測: Windows、`pwsh`（PowerShell 7）と Windows PowerShell 5.1 で `scripts/Test-UERenderArtifacts.ps1` を実行し、どちらも全groupがPASSでexit 0（Windows 11、Claude catch-up subagent実行）。UE 5.8.4 の compile / PIE / Editor / MRQ / render / MP4 は実行しておらず **Unverified**。
+
 ## Unreleased — DOT-3300 — 2026-11-22
 
 - `templates/online/MulticaOnlineStarter/README.md` の冒頭が "Small redistributable C++ starting point" と書き、`LICENSE-NOTICE.md`（配布ライセンス未指定・public配置は改変/再配布許諾ではない）と矛盾していた。agentがpublic visibilityを再配布許諾と誤読しうるため、"redistributable" を削除し、ライセンス未指定・別途ライセンス/許諾の確認が必要な旨と `LICENSE-NOTICE.md` へのリンクを冒頭に追加した。UE・第三者の利用条件は別に適用されると保った。
