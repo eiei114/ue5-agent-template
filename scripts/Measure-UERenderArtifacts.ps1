@@ -449,7 +449,9 @@ function Get-EntryFileName($Entry) {
 
 function Format-SampleList($Items) {
 	if ($null -eq $Items) { return '' }
-	$list = if ($Items -is [System.Collections.IList]) { $Items } else { @($Items) }
+	# `if (...) { $Items }` would unroll a one-element list into a bare scalar, and `$list[0]` of a
+	# string or an ordered dictionary is not the element. Always materialise an array.
+	$list = @($Items)
 	if ($list.Count -eq 0) { return '' }
 	$limit = [Math]::Min(20, $list.Count)
 	$shown = New-Object System.Collections.Generic.List[string]
@@ -745,6 +747,82 @@ $duplicateGroupSamples = @($duplicateGroupList | Select-Object -First $duplicate
 	}
 })
 
+# ---------------------------------------------------------------- input stability re-check
+
+# The inventory ($entries) and each frame's SHA-256 were taken before the decoder ran. Re-list the
+# directory and hash the in-range frames again now, so a name set or a digest that moved while the
+# decoder was running is recorded instead of being reported as a consistent snapshot. This is a
+# detection, not a lock and not a snapshot: the helper does not hold the files open, copy them or
+# stop other writers, and a change that lands after this re-check, or one that is undone between the
+# two reads, is not seen. A pass here means "no change was observed", nothing stronger.
+$stabilityAdded = New-Object System.Collections.Generic.List[string]
+$stabilityRemoved = New-Object System.Collections.Generic.List[string]
+$stabilityChanged = New-Object System.Collections.Generic.List[object]
+$stabilityUnverifiable = New-Object System.Collections.Generic.List[object]
+$stabilityRescanned = $false
+$stabilityRehashed = 0
+
+$initialByName = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([System.StringComparer]::Ordinal)
+foreach ($initialEntry in $entries) {
+	$initialByName[[string]$initialEntry.Name] = $initialEntry
+}
+$finalByName = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([System.StringComparer]::Ordinal)
+try {
+	foreach ($finalEntry in @(Get-ChildItem -LiteralPath $framesFull -Force)) {
+		$finalByName[[string]$finalEntry.Name] = $finalEntry
+	}
+	$stabilityRescanned = $true
+} catch {
+	$stabilityUnverifiable.Add([ordered]@{ file = ''; reason = "the directory could not be listed again: $($_.Exception.Message)" })
+}
+
+if ($stabilityRescanned) {
+	foreach ($name in @($initialByName.Keys | Sort-Object)) {
+		if (-not $finalByName.ContainsKey($name)) { $stabilityRemoved.Add($name) }
+	}
+	foreach ($name in @($finalByName.Keys | Sort-Object)) {
+		if (-not $initialByName.ContainsKey($name)) { $stabilityAdded.Add($name) }
+	}
+
+	$hashedNames = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+	foreach ($checked in $frameChecks) {
+		$checkedName = [string]$checked.file
+		[void]$hashedNames.Add($checkedName)
+		if (-not $finalByName.ContainsKey($checkedName)) { continue }
+		if ($checked.digest_state -ne 'computed') {
+			$stabilityUnverifiable.Add([ordered]@{ file = $checkedName; reason = 'no SHA-256 was computed before decoding, so there is nothing to compare against' })
+			continue
+		}
+		try {
+			$afterHash = (Get-FileHash -LiteralPath (Join-Path $framesFull $checkedName) -Algorithm SHA256).Hash.ToLowerInvariant()
+			$stabilityRehashed++
+			if ($afterHash -cne $checked.sha256) {
+				$stabilityChanged.Add([ordered]@{ file = $checkedName; index = [int]$checked.index; sha256_before = [string]$checked.sha256; sha256_after = $afterHash })
+			}
+		} catch {
+			$stabilityUnverifiable.Add([ordered]@{ file = $checkedName; reason = "the file could not be hashed again: $($_.Exception.Message)" })
+		}
+	}
+
+	# Entries that were not hashed (out-of-range frames, strays) can only be compared by size.
+	foreach ($name in @($initialByName.Keys)) {
+		if ($hashedNames.Contains($name) -or -not $finalByName.ContainsKey($name)) { continue }
+		$before = $initialByName[$name]
+		$after = $finalByName[$name]
+		if ($before.PSIsContainer -or $after.PSIsContainer) { continue }
+		if ([long]$before.Length -ne [long]$after.Length) {
+			$stabilityChanged.Add([ordered]@{ file = $name; index = $null; sha256_before = $null; sha256_after = $null; size_before = [long]$before.Length; size_after = [long]$after.Length })
+		}
+	}
+}
+
+$inputStabilityState = 'pass'
+if ($stabilityAdded.Count -gt 0 -or $stabilityRemoved.Count -gt 0 -or $stabilityChanged.Count -gt 0) {
+	$inputStabilityState = 'fail'
+} elseif (-not $stabilityRescanned -or $stabilityUnverifiable.Count -gt 0) {
+	$inputStabilityState = 'unverified'
+}
+
 # ---------------------------------------------------------------- aggregate checks
 
 $namingState = 'pass'
@@ -828,7 +906,7 @@ if ($AllowIdenticalFrames) {
 # variety, so an undeclared (unverified) frame_variety does not turn an existing pass into exit 2.
 # Once a declaration is made, its fail or unverified result counts like any other check.
 $verdictStates = @(
-	$namingState, $compositionState, $completenessState, $rangeState, $sizeState, $decodeState, $resolutionState, $renderExitState
+	$namingState, $compositionState, $completenessState, $rangeState, $sizeState, $decodeState, $resolutionState, $renderExitState, $inputStabilityState
 )
 if ($varietyDeclaration -ne 'none') { $verdictStates += $varietyState }
 $verdict = Get-WorstState -States $verdictStates
@@ -965,6 +1043,24 @@ if (-not $codecConfigured) {
 		sample = ''
 	})
 }
+if ($stabilityAdded.Count -gt 0 -or $stabilityRemoved.Count -gt 0 -or $stabilityChanged.Count -gt 0) {
+	$stabilitySample = New-Object System.Collections.Generic.List[object]
+	# File names only, tagged by what happened to them, so the one-line sample stays readable.
+	foreach ($item in $stabilityChanged) { $stabilitySample.Add("changed:$($item['file'])") }
+	foreach ($item in $stabilityAdded) { $stabilitySample.Add("added:$item") }
+	foreach ($item in $stabilityRemoved) { $stabilitySample.Add("removed:$item") }
+	$failures.Add([ordered]@{
+		category = 'input_changed_during_check'
+		detail = "the directory changed while it was being inspected: $($stabilityChanged.Count) frame(s) changed, $($stabilityAdded.Count) entry(ies) added, $($stabilityRemoved.Count) removed after they were listed. frames[] mixes bytes from different moments, so this report cannot be treated as one consistent snapshot. Stop whatever writes into this directory and run the check again"
+		sample = (Format-SampleList -Items $stabilitySample.ToArray())
+	})
+} elseif ($inputStabilityState -eq 'unverified') {
+	$failures.Add([ordered]@{
+		category = 'input_stability_unverified'
+		detail = "input stability could not be confirmed for $($stabilityUnverifiable.Count) item(s); no change was observed, but the re-check was incomplete"
+		sample = (Format-SampleList -Items $stabilityUnverifiable.ToArray())
+	})
+}
 if (-not $resolutionConfigured) {
 	$failures.Add([ordered]@{
 		category = 'resolution_not_configured'
@@ -1046,6 +1142,18 @@ $report = [ordered]@{
 		resolution = $resolutionState
 		render_exit = $renderExitState
 		frame_variety = $varietyState
+		input_stability = $inputStabilityState
+	}
+	input_stability = [ordered]@{
+		state = $inputStabilityState
+		method = 'directory listing and per-frame SHA-256 compared before and after decoding; detection only, not a lock or a snapshot'
+		rescanned = $stabilityRescanned
+		frames_rehashed = $stabilityRehashed
+		changed = $stabilityChanged.ToArray()
+		added = $stabilityAdded.ToArray()
+		removed = $stabilityRemoved.ToArray()
+		unverifiable = $stabilityUnverifiable.ToArray()
+		not_detected = 'a change made after the re-check, or one undone between the two reads, is not seen'
 	}
 	frame_variety_declaration = $varietyDeclaration
 	decoder = $decoder
@@ -1099,7 +1207,7 @@ $report = [ordered]@{
 	notes = @(
 		'This report covers the source image sequence only; it is not a render, playback, audio or loop result.',
 		'A previous run with the same frame count cannot be ruled out by this check alone. Use a fresh run-scoped output directory and verify ownership before rendering.',
-		'Inputs were opened read only (each frame was read to compute frames[].sha256 and to decode it); this helper did not rename, repair or modify the inspected directory. That is not proof that nothing else changed the files while the check ran. frames[].sha256 is a real SHA-256 only where digest_state is computed.'
+		'Inputs were opened read only (each frame was read to compute frames[].sha256 and to decode it); this helper did not rename, repair or modify the inspected directory. That is not proof that nothing else changed the files while the check ran: input_stability only records whether the listing and the SHA-256 digests were the same before and after decoding, and does not stop or exclude other writers. frames[].sha256 is a real SHA-256 only where digest_state is computed.'
 	)
 }
 
@@ -1121,7 +1229,7 @@ try {
 }
 
 Write-Output "VERDICT: $verdict"
-Write-Output ("CHECKS: composition={0} naming={1} completeness={2} range={3} file_size={4} decode={5} resolution={6} render_exit={7} frame_variety={8}" -f $compositionState, $namingState, $completenessState, $rangeState, $sizeState, $decodeState, $resolutionState, $renderExitState, $varietyState)
+Write-Output ("CHECKS: composition={0} naming={1} completeness={2} range={3} file_size={4} decode={5} resolution={6} render_exit={7} frame_variety={8} input_stability={9}" -f $compositionState, $namingState, $completenessState, $rangeState, $sizeState, $decodeState, $resolutionState, $renderExitState, $varietyState, $inputStabilityState)
 Write-Output ("IDENTITY: distinct={0} duplicate_frames={1} duplicate_groups={2} longest_identical_run={3} declaration={4}" -f $distinctFrameHashes, $duplicateFrameCount, $duplicateGroupList.Count, $longestIdenticalRun, $varietyDeclaration)
 Write-Output ("DECODER: {0} {1}" -f $decoder.resolution, $decoder.version)
 Write-Output ("FRAMES: expected={0} observed={1}" -f $expectedCount, $inRangeFrames.Count)
