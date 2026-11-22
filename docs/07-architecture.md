@@ -21,7 +21,7 @@
 
 `spectator-explore`は公式`TP_FirstPerson`を起点にし、プレイと撮影を同じsetへ向ける。`vertical-loop`は公式`TP_BlankBP`を起点にしてゲーム操作を要求しない。この2つはtemplateのprojectファイル名と`Source/<EngineTemplate>`をそのまま残す（生コピー経路）。`third-person-game`だけが`materialize_project: true`で、`Config/TemplateDefs.ini`の規則を適用し`<Name>.uproject`へ実体化する。
 
-`spectator-explore`は公式`TP_FirstPerson`を起点にし、プレイと撮影を同じsetへ向ける。`vertical-loop`は公式`TP_BlankBP`を起点にしてゲーム操作を要求しない。この2つはtemplateのprojectファイル名と`Source/<EngineTemplate>`をそのまま残す（生コピー経路）。`third-person-game`だけが`materialize_project: true`で、`Config/TemplateDefs.ini`の実装済みキーを適用し`<Name>.uproject`へ実体化する（materialize経路）。
+`spectator-explore`は公式`TP_FirstPerson`を起点にし、プレイと撮影を同じsetへ向ける。`vertical-loop`は公式`TP_BlankBP`を起点にしてゲーム操作を要求しない。この2つはtemplateのprojectファイル名と、templateが持つなら`Source/<EngineTemplate>`をそのまま残す（生コピー経路。`TP_FirstPerson`はC++ template、`TP_BlankBP`はBlueprint-onlyで`Modules`が空・`Source/`が無く、足さない）。`third-person-game`だけが`materialize_project: true`で、`Config/TemplateDefs.ini`の実装済みキーを適用し`<Name>.uproject`へ実体化する（materialize経路）。
 
 generatorはEngineの既存templateをコピーし、recipe文書・online plugin・`template-lock.json`を加える。**3 recipeともtemplate自身の`Config/TemplateDefs.ini`を1つの実装（`scripts/New-UETemplateScaffold.ps1`の`Copy-TemplateTree`）で読む**。違いはrenameを適用するかどうかだけで、copy範囲の規則は共通である。generator自身がmap/Sequence/`.uasset`を捏造しない。
 
@@ -134,8 +134,8 @@ Blueprintなどの`.uasset`はtemplateのままbyte単位でコピーする。�
 
 | 項目 | 契約 | 確認先 |
 |---|---|---|
-| projectファイル名 | `materialize_project`のrecipeは`<Name>.uproject`、生コピーのrecipeは`<EngineTemplate>.uproject`（`TP_FirstPerson` / `TP_BlankBP`）。どちらも`Source/<Module>/<Module>.Build.cs`と一致していること | 実ファイル、`template-lock.json`の`identity.project_file` |
-| module名 | `.uproject`の`Modules[].Name`は`Source/<Module>/<Module>.Build.cs`と一致する。`materialize_project`なら`<Name>`、生コピーならtemplate名のまま | `identity.project_modules`、`Source/` |
+| projectファイル名 | `materialize_project`のrecipeは`<Name>.uproject`、生コピーのrecipeは`<EngineTemplate>.uproject`（`TP_FirstPerson` / `TP_BlankBP`）。moduleを持つtemplateでは`Source/<Module>/<Module>.Build.cs`と一致していること | 実ファイル、`template-lock.json`の`identity.project_file` |
+| module名 | moduleを持つtemplateでは、`.uproject`の`Modules[].Name`は`Source/<Module>/<Module>.Build.cs`と一致する。`materialize_project`なら`<Name>`、生コピーのC++ templateならtemplate名のまま。**生コピーのBlueprint-only template（`TP_BlankBP`）は`Modules`が空で`Source/`が無く、「一致させる対象が存在しない」のが正常**。module・`Source/`を足さず、`identity.project_modules: []`を壊れたlockと読んで書き換えない | `identity.project_modules`（空配列が正常な場合がある）、`Source/` |
 | `EngineAssociation` | 空にしない。templateが値を持たない場合は`Engine/Build/Build.version`の`MajorVersion.MinorVersion`から導く | `identity.engine_association` |
 | project identity（`DefaultGame.ini`） | `ProjectID`/`ProjectName`は`[/Script/EngineSettings.GeneralProjectSettings]`配下に置く。生コピーrecipeも生成project自身の`ProjectID`を持つ（templateの値や`TP_* Template`という名前を引き継がない） | 実ファイルの`Config/DefaultGame.ini`、`default_game_ini_identity`（`section` / `project_id` / `project_name` / `normalized_from_section` / `created_section`） |
 | 置換不能時 | コピー前に照合し、既知パターンに一致しない場合は停止して未一致pathを列挙する。生コピーを黙って出力しない | generatorのstderr/例外、`scripts/Test-UETemplateScaffold.ps1`の負例 |

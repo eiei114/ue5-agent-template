@@ -8,6 +8,12 @@
 - 回帰: `scripts/Test-UERenderArtifacts.ps1` に group `render-exit-code-judged-not-only-recorded` を 1 つ追加した（既存 21 group は 1 件も削っていない。計 22）。非 0（1 / 7 / -1）→ `render_exit` = `fail` / exit 1 / `failures` に render 由来 1 件のみ、0（前後空白つきも）→ `pass`、未指定と通知本文だけ → `unverified` / exit 2、通知本文に `FAILED` とあっても exit 0 なら `pass`（本文を解釈しない）、非整数 7 種 → exit 3・report なし・verdict 出力なし。既存 group の `unevaluated_by_this_tool` assert は新しい語彙（`evaluated_from_exit_code`）に置き換えた。既存 group は `Invoke-Measure` が `-RenderExitCode 0` を補って元の期待を保つ（render 引数を自分で渡す group は補わない）。
 - Unverified Scope: UE 5.8.4 の compile / Editor / PIE / MRQ / render は実行していない（UE を起動しない PowerShell / docs 層）。実 MRQ が非 0 の終了 code を返すとき、その値がこの引数へ正しく渡るかは観測していない。「exit 0 が render 成功を意味する」とも「非 0 が必ず失敗を意味する」とも主張しない（呼び出し側が宣言した値の扱いだけを変えた）。静止画・部分 render・multi-shot で `render_exit` が何を意味するかは未調査のため、既定は `unverified`。
 
+## Unreleased — UE-IDENTITY-BPTEMPLATE-001 (DOT-3439) — 2026-11-22
+
+- 理由: identity 契約が「projectファイル名・`Modules[].Name`・`Source/<Module>`は常に一致」と無条件に書いていた一方、`vertical-loop` の起点 `TP_BlankBP` は Blueprint-only の公式 template で `Modules` が空・`Source/` が無い。契約文と成功表示（generator は exit 0）が食い違い、agent が module や `Source/` を足す方向に動く恐れがあった。test の `TP_BlankBP` fixture も実在しない module と `Source/` を合成し、「blank template に module がある」を契約として固定していた。
+- 変更: identity 契約を 3 分岐（materialize / 生コピー・C++ template / 生コピー・Blueprint-only template）で `AGENTS.md`・`docs/01-start.md`・`docs/07-architecture.md`・`README.md` に書き直した。**Blueprint-only template では module が無いのが正常**で、「一致させる対象が存在しない」。module・`Source/` は足さず、`template-lock.json` の `identity.project_modules: []` も正常で手で書き換えない。`scripts/Test-UETemplateScaffold.ps1` の `TP_BlankBP` fixture を `Modules: []` / `Source/` 無しの実 template 形にし（`Write-FixtureTemplate -BlueprintOnly`、他 template の fixture は据え置き）、`vertical-loop` の生成物が `Modules` 0 件・`Source/` 無し・`identity.project_modules` 空配列であることを assert した。descriptor が module を宣言するのに `Source/` に無い場合に停止する既存の負例は残している。
+- 移行: generator の判定ロジック・既存の生成済み project・既存の `template-lock.json` は変更していない。文書と test fixture だけの変更。UE 実機の compile / PIE / render は未実行（Unverified）。
+
 ## Unreleased — UE-QA-ENCODE-RECEIPT-001 (DOT-3444) — 2026-11-22
 
 - 理由: 書き出し検品の受領証（ffprobe の entry 一覧）が `pix_fmt` も `profile` も測っておらず、docs が宣言する H.264/yuv420p と、実際の yuv444p・10bit の成果物が同一の pass 受領証になっていた。しかも `-pix_fmt` は強制ではなく、encoder が選べない形式を指定すると ffmpeg は警告して別形式を選び exit 0 で終わる（FFmpeg 公式 docs `-pix_fmt`、2026-11-08 取得。`+` を前置したときだけエラー終了）。

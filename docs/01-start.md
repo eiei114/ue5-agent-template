@@ -22,7 +22,7 @@ Windows offlineなら新規buildをqueueして成功扱いしない。MacBookは
 | Recipe | Engine template | 用途 | scaffoldのidentity | 宣言するplugin（`required_plugins`） |
 |---|---|---|---|---|
 | `spectator-explore` | `TP_FirstPerson` | ゲーム＋撮影（探索・鑑賞） | `materialize_project`指定なし（false）。templateをコピーし、`.uproject`名とmodule名は`TP_FirstPerson`のまま | `MovieRenderPipeline`、`OnlineSubsystem`、`OnlineSubsystemNull`、`OnlineSubsystemUtils`、`MulticaOnlineStarter` |
-| `vertical-loop` | `TP_BlankBP` | 撮影専用（capture-only）。gameplayを必須にしない | `materialize_project`指定なし（false）。templateをコピーし、`.uproject`名とmodule名は`TP_BlankBP`のまま | `MovieRenderPipeline` |
+| `vertical-loop` | `TP_BlankBP` | 撮影専用（capture-only）。gameplayを必須にしない | `materialize_project`指定なし（false）。templateをコピーし、`.uproject`名は`TP_BlankBP`のまま。Blueprint-onlyなので`Modules`は空・`Source/`は無いのが正常（module名は存在しない） | `MovieRenderPipeline` |
 | `third-person-game` | `TP_ThirdPerson` | ゲーム＋撮影（三人称） | `materialize_project: true`。template規則を適用し、`.uproject`名・`Source`・moduleを`ProjectName`へ置換 | `MovieRenderPipeline` |
 
 recipeの正本は各 [`recipe.json`](../templates/recipes/)。選択可能な値は `templates/recipes/` 配下で **`recipe.json` を持つ** ディレクトリ名で、generatorに直書きされた一覧ではなくデータで決まる（`SET.md` だけを持つ `templates/recipes/common/` はrecipeではない）。新しいrecipeの追加手順（必要なファイル・`recipe.json`の必須field・`required_plugins`と`Plugins/`の関係・`purpose`の契約）は[構造と更新](07-architecture.md)を参照。`third-person-game`は`ProjectName`をC++識別子（英字始まり、英数字と`_`のみ）にする。scaffoldの引数例：
@@ -73,7 +73,7 @@ generatorは`Production/.stage-<runid>-<nonce>/`に全成果物を書き、最�
 
 scaffold scriptが使えない場合に限り、recipe表のEngine templateを選ぶ（`spectator-explore`=`TP_FirstPerson`、`vertical-loop`=`TP_BlankBP`、`third-person-game`=`TP_ThirdPerson`）。Recipeの用途に合わせた選択であり、First Person C++やgameplayは一律必須ではない。Starter Contentは不要なら無効にする。
 
-Project BrowserはUE側のtemplate materialize規則でprojectを作るため、特に`vertical-loop`/`spectator-explore`では、scaffoldの`materialize_project: false`（template名を維持）と同じ出力にならない。手動生成物をscaffold生成物と同等と見なしたり、`.uproject`だけをrenameしたりしない。`.uproject`・`Modules[].Name`・`Source/**/[Module].Build.cs`が一致すること、`EngineAssociation`が非空であることを確認する。generatorが付与するrecipe文書・plugin payload・`template-lock.json`はProject Browserでは生成されないため、手動でlockを捏造・編集せず、選択recipe/template・UE版・確認したidentityを`QA.md`に記録する。**Project Browserは「このinstallにpluginが在るか」の検証をしないので、手動経路では`.uproject`の`Plugins`全件の`.uplugin`実在を自分で確認し、結果を`QA.md`に書く**（lockに載るはずだったplugin版も同様）。必須pluginが利用可能でない、またはrecipeの記録物が必要な場合はscaffold生成物と同等と扱わず、通常経路が使えるまで停止する。RoomSevenをコピー元にしない。
+Project BrowserはUE側のtemplate materialize規則でprojectを作るため、特に`vertical-loop`/`spectator-explore`では、scaffoldの`materialize_project: false`（template名を維持）と同じ出力にならない。手動生成物をscaffold生成物と同等と見なしたり、`.uproject`だけをrenameしたりしない。module を持つtemplate（`spectator-explore` / `third-person-game`）では`.uproject`・`Modules[].Name`・`Source/**/[Module].Build.cs`が一致すること、Blueprint-onlyの`vertical-loop`では`Modules`が空で`Source/`が無いこと（module・`Source/`を足さない）、`EngineAssociation`が非空であることを確認する。generatorが付与するrecipe文書・plugin payload・`template-lock.json`はProject Browserでは生成されないため、手動でlockを捏造・編集せず、選択recipe/template・UE版・確認したidentityを`QA.md`に記録する。**Project Browserは「このinstallにpluginが在るか」の検証をしないので、手動経路では`.uproject`の`Plugins`全件の`.uplugin`実在を自分で確認し、結果を`QA.md`に書く**（lockに載るはずだったplugin版も同様）。必須pluginが利用可能でない、またはrecipeの記録物が必要な場合はscaffold生成物と同等と扱わず、通常経路が使えるまで停止する。RoomSevenをコピー元にしない。
 
 ### Editor targetの決め方（recipe別）
 
