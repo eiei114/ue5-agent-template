@@ -42,7 +42,7 @@ writer/lease nonce・取得/解放receipt（`scripts/Lease-UETemplateProject.ps1
 | [QA-PLAY-01] 起動map・Pawn・開始姿勢 | unverified | 起動したmap名・採用Pawn・開始時の姿勢。意図したmapで開始したことを確認 |
 | [QA-PLAY-02] 座位/立位（仕様時） | unverified | 仕様に座位/立位がある場合のみ。仕様に無ければ`non-goal` |
 | [QA-PLAY-03] 視点/移動/zoom/collision/reset/help/終了 | unverified | 項目別に記録 |
-| [QA-PERF-01] 最新版5分Play・性能 | unverified | 解像度/品質/frame timeの平均/スパイク/観測方法と測定時間 |
+| [QA-PERF-01] 最新版5分Play・性能 | unverified | 解像度/品質/frame timeの平均/スパイク/測定時間に加え、`build_config`（Editor/Development/Shipping）・`instrument`（engine-statunit/engine-fpschart/engine-startfile/external-capture/manual-or-unknown/none）・`artifact`（数値の出所path。無ければnone）・`measured_at`。Shippingでengine-*は不成立、noneは合格根拠にしない。`scripts/Test-UEPerformanceRecord.ps1` |
 | [QA-AUDIO-01] ゲーム実音の聴取 | unverified | |
 | [QA-IMG-01] エンコード前の画像列検査 | unverified | `evidence/frames-check.json`。start/end(exclusive)/命名/期待解像度、MRQ Output Frame Step / Frame Number Offset / Handle Frame Count / Zero Pad Frame Numbers / File Name FormatとhelperのFrameStep/FrameNumberOffset/Digits、欠番・範囲外・曖昧名・0 byte・decode・解像度の各判定 |
 | [QA-MRQ-01] MRQ完了通知・exit code | unverified | 通知本文/exit。画像列検査とは別欄に記録 |
