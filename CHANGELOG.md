@@ -132,6 +132,13 @@
 - 移行: 前置きのある画像列を検査していた呼び出しは `-NamePrefix` / `-Digits` を足す。前置き無し・6 桁の呼び出しは変更不要。DOT-3251 の decode/timeout 優先順位と DOT-3254 の入力不変 gate には触れていない。
 - 未検証: UE 5.8.4 の実 MRQ render は実行していない。「既定名が `Shot0001.0000.png` 形になる」は engine source の既定値からの推論で、実 render 出力の観測ではない。`{layer_name}` が空のときの連結・区切りは実 render でしか確定しない（両形を fixture に入れて吸収した）。GitHub Actions `windows-latest` での結果は CI 実行で確認する。
 
+## Unreleased — DOT-3401 — 2026-11-22
+
+- `scripts/Measure-UERenderArtifacts.ps1` は `-RunId` / `-SourceRevision` の既定値が空文字で、README の例も両方を渡さなかったため、`run_id` / `source_revision` が空のままpassするreportを作れた。未指定・空・空白だけの値をreport作成前に `Invalid input` で拒否するようにし、README の例に両引数を足した（`docs/05-qa.md` の例は既に渡している）。
+- 判定ロジック・assertion・report のpath/reparse-point境界・exit code は変えていない。有効値はreportへそのまま記録される。
+- `scripts/Test-UERenderArtifacts.ps1` に、欠落・空・空白の7ケースがreportを作らず拒否されること、明示値が逐語で記録され正常判定が変わらないことを確かめるgroupを追加した。他のケースへは固定のfixture値を与える。
+- 検証はWindows PowerShell 5.1での `Test-UERenderArtifacts.ps1`（UE不使用のfixture）のみ。UE 5.8.4 compile/PIE/実MRQ/render/MP4/ffprobeは実行しておらず未検証（Unverified）。
+
 ## Unreleased — DOT-3300 — 2026-11-22
 
 - `templates/online/MulticaOnlineStarter/README.md` の冒頭が "Small redistributable C++ starting point" と書き、`LICENSE-NOTICE.md`（配布ライセンス未指定・public配置は改変/再配布許諾ではない）と矛盾していた。agentがpublic visibilityを再配布許諾と誤読しうるため、"redistributable" を削除し、ライセンス未指定・別途ライセンス/許諾の確認が必要な旨と `LICENSE-NOTICE.md` へのリンクを冒頭に追加した。UE・第三者の利用条件は別に適用されると保った。
