@@ -127,7 +127,7 @@ workerのrunは自分のプロセス木（writer + 子孫）を同期回収し�
   -ReportPath '<project>\Out\run_<runid>\evidence\frames-check.json'
 ```
 
-欠番・範囲外・曖昧名・0 byte・decode不能・解像度不一致を検出し、reportを新規作成する。`-FrameStep` / `-FrameNumberOffset`はMRQの`Output Frame Step` / `Frame Number Offset`の実値を書き写す（既定1と0は連番、上の例は2なので240frame範囲に120枚の格子）。`-NamePrefix` / `-Digits`はMRQの`File Name Format`（indexの前の固定文字列）と`Zero Pad Frame Numbers`の実値で、render前に決めてQAへ記録し同じ値を渡す（画像は改名しない。MRQ既定は`Shot0001.0000.png`形・4桁で、helperの`-Digits`既定6はMRQの既定ではない）。未宣言の格子は`missing_frames`ではなく`index_lattice_mismatch`として、未宣言の前置きは`naming_contract_mismatch`として報告する。終了codeはpass=0/fail=1/unverified=2。通知/exit、画像列、MP4、目視、音は別判定として扱う（[検品](docs/05-qa.md)）。回帰は`scripts/Test-UERenderArtifacts.ps1`。UE実機のMRQ・ffprobe・映像/音/loopの実測は未検証（Unverified）。
+欠番・範囲外・曖昧名・0 byte・decode不能・解像度不一致を検出し、reportを新規作成する。`-FrameStep` / `-FrameNumberOffset`はMRQの`Output Frame Step` / `Frame Number Offset`の実値を書き写す（既定1と0は連番、上の例は2なので240frame範囲に120枚の格子）。`-NamePrefix` / `-Digits`はMRQの`File Name Format`（indexの前の固定文字列）と`Zero Pad Frame Numbers`の実値で、render前に決めてQAへ記録し同じ値を渡す（画像は改名しない。MRQ既定は`Shot0001.0000.png`形・4桁で、helperの`-Digits`既定6はMRQの既定ではない）。未宣言の格子は`missing_frames`ではなく`index_lattice_mismatch`として、未宣言の前置きは`naming_contract_mismatch`として報告する。終了codeはpass=0/fail=1/unverified=2。decodeは本物の失敗がtimeoutに優先して`fail`になり（timeoutは1回再試行して`attempts`を記録）、`-TotalDecodeBudgetMilliseconds`（既定5分）の超過は`decode_budget_exhausted`付きの`unverified`になる。通知/exit、画像列、MP4、目視、音は別判定として扱う（[検品](docs/05-qa.md)）。回帰は`scripts/Test-UERenderArtifacts.ps1`。UE実機のMRQ・ffprobe・映像/音/loopの実測は未検証（Unverified）。
 
 ## GitHubから開始
 
