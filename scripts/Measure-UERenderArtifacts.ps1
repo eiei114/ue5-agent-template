@@ -298,15 +298,19 @@ if ($minDistinctDeclared -and $ExpectedMinDistinctFrames -lt 1) {
 $resolutionConfigured = ($ExpectedWidth -gt 0 -and $ExpectedHeight -gt 0)
 # The declared range is shifted into absolute frame numbers by FrameNumberOffset and then sampled
 # with FrameStep. A step larger than 1 therefore expects a regular lattice, not a contiguous run.
-$latticeFirst = $StartNumber + $FrameNumberOffset
-$latticeLastExclusive = $EndNumberExclusive + $FrameNumberOffset
-$expectedCount = 0
-$expectedLast = $latticeFirst - $FrameStep
-$expectedIndices = New-Object System.Collections.Generic.HashSet[int]
-for ($index = $latticeFirst; $index -lt $latticeLastExclusive; $index += $FrameStep) {
-	$null = $expectedIndices.Add($index)
-	$expectedCount++
-	$expectedLast = $index
+# The lattice is never materialised. Its size, last index and membership are computed arithmetically
+# in 64-bit, so a mistaken huge EndNumberExclusive (for example Int32.MaxValue) costs the same as a
+# short range instead of building a collection as wide as the range before the directory is read.
+[long]$latticeFirst = [long]$StartNumber + [long]$FrameNumberOffset
+[long]$latticeLastExclusive = [long]$EndNumberExclusive + [long]$FrameNumberOffset
+[long]$expectedCount = [long][Math]::Floor(([double]($latticeLastExclusive - $latticeFirst) + $FrameStep - 1) / $FrameStep)
+[long]$expectedLast = $latticeFirst + (($expectedCount - 1) * [long]$FrameStep)
+# Upper bound on indices listed in the report. The totals stay exact; only the lists are capped.
+$maxListedIndices = 200
+
+function Test-ExpectedIndex([long]$Index) {
+	if ($Index -lt $latticeFirst -or $Index -ge $latticeLastExclusive) { return $false }
+	return ((($Index - $latticeFirst) % [long]$FrameStep) -eq 0)
 }
 if ($minDistinctDeclared -and $ExpectedMinDistinctFrames -gt $expectedCount) {
 	throw "Invalid input: ExpectedMinDistinctFrames ($ExpectedMinDistinctFrames) is larger than the $expectedCount frame(s) the declared range expects, so it could never be met."
@@ -394,9 +398,19 @@ foreach ($frame in $frameFiles) {
 	$byIndex[$key] = $frame
 }
 
-$missingIndices = New-Object System.Collections.Generic.List[int]
-foreach ($expected in ($expectedIndices | Sort-Object)) {
-	if (-not $byIndex.ContainsKey($expected)) { $missingIndices.Add($expected) }
+# Missing indices are counted from the observed side: every expected index that is present is a
+# distinct observed index, so missing = expected - present-in-lattice. The listed sample walks the
+# lattice only until it holds enough entries; each step is either a listed miss or one observed
+# index, so the walk is bounded by the observed count plus the cap, never by the range width.
+$presentInLatticeCount = 0
+foreach ($observedKey in $byIndex.Keys) {
+	if (Test-ExpectedIndex ([long]$observedKey)) { $presentInLatticeCount++ }
+}
+[long]$missingCount = $expectedCount - $presentInLatticeCount
+$missingIndices = New-Object System.Collections.Generic.List[long]
+for ([long]$walk = $latticeFirst; $walk -lt $latticeLastExclusive -and $missingIndices.Count -lt $maxListedIndices; $walk += [long]$FrameStep) {
+	# An observed index is always a 32-bit int; a lattice point beyond that range cannot be on disk.
+	if ($walk -gt [int]::MaxValue -or -not $byIndex.ContainsKey([int]$walk)) { $missingIndices.Add($walk) }
 }
 
 # A sequence that is itself a regular lattice with a different stride is not a sequence full of
@@ -420,12 +434,12 @@ if ($presentIndices.Count -ge 2) {
 }
 $outOfRangeIndices = New-Object System.Collections.Generic.List[int]
 foreach ($observed in ($byIndex.Keys | Sort-Object)) {
-	if (-not $expectedIndices.Contains([int]$observed)) { $outOfRangeIndices.Add([int]$observed) }
+	if (-not (Test-ExpectedIndex ([long]$observed))) { $outOfRangeIndices.Add([int]$observed) }
 }
 
 $inRangeFrames = @($byIndex.Keys | Sort-Object | ForEach-Object { $byIndex[[int]$_] })
 
-function Format-IndexList($Indices) {
+function Format-IndexList($Indices, [long]$Total = -1) {
 	if ($null -eq $Indices) { return '' }
 	# A generic List must not be re-wrapped with @(); PowerShell 7 rejects that coercion.
 	$list = if ($Indices -is [System.Collections.IList]) { $Indices } else { @($Indices) }
@@ -433,7 +447,8 @@ function Format-IndexList($Indices) {
 	$limit = [Math]::Min(20, $list.Count)
 	$shown = New-Object System.Collections.Generic.List[string]
 	for ($i = 0; $i -lt $limit; $i++) { $shown.Add([string]$list[$i]) }
-	if ($list.Count -gt $limit) { $shown.Add("...(+$($list.Count - $limit) more)") }
+	$all = if ($Total -ge 0) { $Total } else { [long]$list.Count }
+	if ($all -gt $limit) { $shown.Add("...(+$($all - $limit) more)") }
 	return ($shown -join ',')
 }
 
@@ -830,7 +845,7 @@ $compositionState = 'pass'
 if ($nestedEntries.Count -gt 0) { $compositionState = 'fail' }
 
 $completenessState = 'pass'
-if ($missingIndices.Count -gt 0) { $completenessState = 'fail' }
+if ($missingCount -gt 0) { $completenessState = 'fail' }
 
 $rangeState = 'pass'
 if ($outOfRangeIndices.Count -gt 0) { $rangeState = 'fail' }
@@ -922,22 +937,22 @@ if ($null -ne $namingContractMismatch) {
 	$mismatchDeclaration = "-NamePrefix '$($namingContractMismatch.prefix)' -Digits $($namingContractMismatch.digits)"
 	$failures.Add([ordered]@{
 		category = 'naming_contract_mismatch'
-		detail = "$($namingContractMismatch.entries.Count) entry(ies) form a sequence named '$($namingContractMismatch.prefix)' + $($namingContractMismatch.digits)-digit index$Extension, but the declared contract is $mismatchPrefixText + ${Digits}-digit index$Extension, so no file matched. The $($missingIndices.Count) declared index(es) are reported absent because the names differ, not because frames are lost; do not re-render for this. Copy MRQ's File Name Format and Zero Pad Frame Numbers into the call (for this directory: $mismatchDeclaration). Nothing was renamed or guessed."
+		detail = "$($namingContractMismatch.entries.Count) entry(ies) form a sequence named '$($namingContractMismatch.prefix)' + $($namingContractMismatch.digits)-digit index$Extension, but the declared contract is $mismatchPrefixText + ${Digits}-digit index$Extension, so no file matched. The $missingCount declared index(es) are reported absent because the names differ, not because frames are lost; do not re-render for this. Copy MRQ's File Name Format and Zero Pad Frame Numbers into the call (for this directory: $mismatchDeclaration). Nothing was renamed or guessed."
 		sample = (Format-SampleList -Items $namingContractMismatch.entries)
 	})
 }
-if ($missingIndices.Count -gt 0 -and $null -eq $namingContractMismatch) {
+if ($missingCount -gt 0 -and $null -eq $namingContractMismatch) {
 	if ($observedLatticeMismatch) {
 		$failures.Add([ordered]@{
 			category = 'index_lattice_mismatch'
-			detail = "observed indices advance by $observedStride but the declared frame step is $FrameStep; $($missingIndices.Count) declared index(es) are absent because the lattices differ, not because the sequence has gaps. Declare -FrameStep $observedStride (and the matching -FrameNumberOffset) for this sequence, or render the declared step."
-			sample = (Format-IndexList -Indices $missingIndices)
+			detail = "observed indices advance by $observedStride but the declared frame step is $FrameStep; $missingCount declared index(es) are absent because the lattices differ, not because the sequence has gaps. Declare -FrameStep $observedStride (and the matching -FrameNumberOffset) for this sequence, or render the declared step."
+			sample = (Format-IndexList -Indices $missingIndices -Total $missingCount)
 		})
 	} else {
 		$failures.Add([ordered]@{
 			category = 'missing_frames'
-			detail = "$($missingIndices.Count) expected index(es) absent from ${latticeFirst}..$($expectedLast) (step $FrameStep)"
-			sample = (Format-IndexList -Indices $missingIndices)
+			detail = "$missingCount expected index(es) absent from ${latticeFirst}..$($expectedLast) (step $FrameStep)"
+			sample = (Format-IndexList -Indices $missingIndices -Total $missingCount)
 		})
 	}
 }
@@ -1172,7 +1187,9 @@ $report = [ordered]@{
 		elapsed_ms = [long]$budgetClock.ElapsedMilliseconds
 	}
 	violations = [ordered]@{
+		missing_count = $missingCount
 		missing_indices = $missingIndices.ToArray()
+		missing_indices_truncated = ($missingCount -gt $missingIndices.Count)
 		out_of_range_indices = $outOfRangeIndices.ToArray()
 		unexpected_entries = $unexpectedEntries.ToArray()
 		ambiguous_entries = $ambiguousEntries.ToArray()
