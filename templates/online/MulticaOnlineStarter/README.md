@@ -1,9 +1,16 @@
 # Multica Online Starter (Null/LAN only)
 
-Small redistributable C++ starting point for a new UE project. It uses the
+Small C++ starting point for a new UE project. It uses the
 installed engine's Online Subsystem Null provider and listen-server replication.
 It includes no map, input asset, account, credential, SDK download, or licensed
 asset. It is not an EOS/Steam-ready or internet-NAT-tested product.
+
+**License status:** this repository has no distribution license specified, and
+its public visibility is not a grant to copy, modify, or redistribute this
+plugin. Confirm a separate license or permission before copying it into another
+repository or redistributing it. See [LICENSE-NOTICE.md](../../../LICENSE-NOTICE.md).
+Unreal Engine and any third-party tools or assets keep their own terms, which
+this notice does not override.
 
 ## Enable in a new recipe project
 
