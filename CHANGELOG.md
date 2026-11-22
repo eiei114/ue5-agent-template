@@ -1,5 +1,16 @@
 # 変更履歴
 
+## Unreleased — UE-QA-ENCODE-RECEIPT-001 (DOT-3444) — 2026-11-22
+
+- 理由: 書き出し検品の受領証（ffprobe の entry 一覧）が `pix_fmt` も `profile` も測っておらず、docs が宣言する H.264/yuv420p と、実際の yuv444p・10bit の成果物が同一の pass 受領証になっていた。しかも `-pix_fmt` は強制ではなく、encoder が選べない形式を指定すると ffmpeg は警告して別形式を選び exit 0 で終わる（FFmpeg 公式 docs `-pix_fmt`、2026-11-08 取得。`+` を前置したときだけエラー終了）。
+- 変更: `docs/05-qa.md` の ffprobe 受領証に `pix_fmt`・`profile`・`level`・`bits_per_raw_sample`・`color_range`・`color_space`・`color_transfer`・`color_primaries` を追加し（ffprobe が出さない項目は `unknown` と書き、空欄・省略で pass にしない）、「エンコードとMP4の尺検査」節に照合規則 `RECEIPT-PIXFMT-RULE` を 1 箇所だけ置いた（宣言の yuv420p は `pix_fmt` の実測が yuv420p のときだけ満たされる）。同節に `-pix_fmt` の fallback の日付付き記録と、既定は encode 後の照合（`-pix_fmt +yuv420p` は既定にしない理由つき）を書いた。`templates/QA.md` の `QA-MRQ-02` に形式の記録欄を足し、規則は複写せず `docs/05-qa.md` を指す。
+- 機械固定: `scripts/Measure-UECaptureEncode.ps1` の probe に上記 entry を足し、`pixel_format` check を追加した。期待値は `templates/CAPTURE-PRESETS.json` の `pix_fmt`（未記載は yuv420p）で、不一致は `pixel_format_mismatch` で `fail`（exit 1）、読めなければ `pixel_format_unreadable` で `unverified`（exit 2）。report の `observed` に pix_fmt / profile / level / bit 深度 / 色情報を残す。`scripts/Get-UECaptureEncodePlan.ps1` が表示する ffprobe 行も同じ entry にした。
+- 移行: 既存の生成物・`template-lock.json`・preset 定義は変えていない。inspector の report に `checks.pixel_format` と `observed.pix_fmt` などが増え、`CHECKS:` 行に `pixel_format=` が入る。yuv420p 以外で書き出していた運用は、preset の `pix_fmt` を合わせるか encode し直す（宣言を書き換える場合も実測との照合は外さない）。
+- 回帰: `scripts/Test-UECaptureEncode.ps1` に group を 1 つ追加した（既存 group は 1 件も削っていない）。同じ frame 列を `yuv420p` / `yuv444p` / `yuv420p10le` / flag 無し / `rgb24` 指定で encode し、5 通りとも ffmpeg は exit 0、受領証は 420 / 444 / 10bit で別物になり、420 以外は `pixel_format_mismatch` で fail、420 だけが pass する。preset が yuv444p を定義すれば 444 を受理し 420 を拒否する（期待値が inspector 内の literal でないことの確認）。`-pix_fmt +rgb24` は fallback せず非 0 終了する。docs・QA 雛形・表示される ffprobe 行が受領証 entry を持つことを test が読み、`pix_fmt,` を消した複製が検出される負例と、規則が 1 箇所であることの assert を入れた。
+- 落ちる側: 変更前の inspector（commit `ba74035` 時点、`pix_fmt` を読まない）では、この group が `'pix-420' receipt records pix_fmt yuv420p, got ''` で落ちる（実測、2026-11-22）。
+- 実測（Windows、`pwsh` 7 と Windows PowerShell 5.1 の両方、ffmpeg / ffprobe 8.1.2 gyan.dev build、Claude catch-up subagent 実行）: `scripts/Test-UECaptureEncode.ps1` は両 shell で `SUITE_EXIT=0`。この host の ffmpeg 8.1.2 では PNG 入力に `-pix_fmt +yuv420p` を付けると `automatic conversion is disabled` で exit -22 になる（`-vf format=yuv420p` 併記でも同じ）ため、`+` は既定にせず事後照合を既定にした。
+- Unverified Scope: UE 5.8.4 の compile / Editor / PIE / MRQ / render は実行していない（UE を起動しない docs / QA 雛形 / ffmpeg-ffprobe 契約層）。実 MRQ の PNG 列が RGBA か RGB か、bit 深度は観測していない。実際の player / ハードウェア decoder が yuv444p の H.264 を再生できないかは検証しておらず、互換性の主張はしない。色情報（`color_space` / `color_transfer` / `color_primaries`）が実 MRQ→ffmpeg 経路で `unknown` になるかは未確認で、値の照合は行わず記録のみ。MRQ 直 MP4 出力（経路 B）の `pix_fmt` は実物を測っていない。GitHub Actions 上で新 group が落ちること・通ることは未確認（CI の ffmpeg は別 build）。
+
 ## Unreleased — DOT-3442 — 2026-11-22
 
 - 理由: 回帰 suite は group ごとに `PASS:` 行を出すだけで、宣言した group が全部走ったかを検査する箇所が無く、group を丸ごと削除しても PASS / exit 0 で通った（scaffold の path traversal group、render の report exclusivity group の削除は、旧 suite で exit 0 だった）。fixture 件数の assert が偶然に効く group を除き、被覆の欠落は CI にも出なかった。
