@@ -54,6 +54,18 @@ param(
 	[ValidateRange(1, 1200000)]
 	[int]$TotalDecodeBudgetMilliseconds = 300000,
 
+	# Whether a run of byte-identical frames is a defect is the caller's call: a title card or a held
+	# still is a legitimate sequence, so `checks.frame_variety` stays `unverified` unless one of the two
+	# declarations below is made. The repo gives no default threshold.
+	#   -ExpectedMinDistinctFrames N : at least N distinct SHA-256 digests must exist among the frames;
+	#                                  fewer is a fail (a frozen or stalled render), N or more is a pass.
+	#   -AllowIdenticalFrames        : identical frames are declared acceptable, so the check passes and
+	#                                  records that declaration. It is not a statement that they are good.
+	# The two are exclusive. N may not exceed the number of frames the declared range expects.
+	[int]$ExpectedMinDistinctFrames = 0,
+
+	[switch]$AllowIdenticalFrames,
+
 	[string]$RunId = '',
 
 	[string]$SourceRevision = '',
@@ -267,6 +279,14 @@ if (-not [string]::IsNullOrWhiteSpace($reportParent) -and -not (Test-Path -Liter
 	[System.IO.Directory]::CreateDirectory($reportParent) | Out-Null
 }
 
+$minDistinctDeclared = $PSBoundParameters.ContainsKey('ExpectedMinDistinctFrames')
+if ($minDistinctDeclared -and $AllowIdenticalFrames) {
+	throw 'Invalid input: -ExpectedMinDistinctFrames and -AllowIdenticalFrames contradict each other; declare either a minimum number of distinct frames or that identical frames are acceptable.'
+}
+if ($minDistinctDeclared -and $ExpectedMinDistinctFrames -lt 1) {
+	throw 'Invalid input: ExpectedMinDistinctFrames must be 1 or greater. Use -AllowIdenticalFrames to declare that identical frames are acceptable.'
+}
+
 $resolutionConfigured = ($ExpectedWidth -gt 0 -and $ExpectedHeight -gt 0)
 # The declared range is shifted into absolute frame numbers by FrameNumberOffset and then sampled
 # with FrameStep. A step larger than 1 therefore expects a regular lattice, not a contiguous run.
@@ -279,6 +299,9 @@ for ($index = $latticeFirst; $index -lt $latticeLastExclusive; $index += $FrameS
 	$null = $expectedIndices.Add($index)
 	$expectedCount++
 	$expectedLast = $index
+}
+if ($minDistinctDeclared -and $ExpectedMinDistinctFrames -gt $expectedCount) {
+	throw "Invalid input: ExpectedMinDistinctFrames ($ExpectedMinDistinctFrames) is larger than the $expectedCount frame(s) the declared range expects, so it could never be met."
 }
 
 $prefixLiteral = [System.Text.RegularExpressions.Regex]::Escape($NamePrefix)
@@ -665,6 +688,55 @@ foreach ($frame in $inRangeFrames) {
 	$frameChecks.Add($entry)
 }
 
+# ---------------------------------------------------------------- frame identity (cross-file)
+
+# Every digest above was already computed for frames[].sha256, so this section hashes nothing: it
+# counts occurrences of those digests in one O(n) pass (a hash table keyed by digest plus a running
+# comparison with the previous frame), never by comparing frames pairwise. A frame whose digest could
+# not be computed is left out of the counts and breaks a run; it is never treated as identical.
+$digestGroups = @{}
+$hashedFrameCount = 0
+$unhashedFrameCount = 0
+$longestIdenticalRun = 0
+$currentIdenticalRun = 0
+$previousDigest = $null
+foreach ($frameCheck in $frameChecks) {
+	if ($frameCheck.digest_state -ne 'computed' -or [string]::IsNullOrEmpty([string]$frameCheck.sha256)) {
+		$unhashedFrameCount++
+		$currentIdenticalRun = 0
+		$previousDigest = $null
+		continue
+	}
+	$hashedFrameCount++
+	$digest = [string]$frameCheck.sha256
+	if (-not $digestGroups.ContainsKey($digest)) {
+		$digestGroups[$digest] = New-Object System.Collections.Generic.List[object]
+	}
+	$digestGroups[$digest].Add($frameCheck)
+	# "Run" means neighbours in the observed index order; a gap in the numbering does not break it
+	# because completeness already reports the gap.
+	if ($null -ne $previousDigest -and $previousDigest -ceq $digest) { $currentIdenticalRun++ } else { $currentIdenticalRun = 1 }
+	if ($currentIdenticalRun -gt $longestIdenticalRun) { $longestIdenticalRun = $currentIdenticalRun }
+	$previousDigest = $digest
+}
+$distinctFrameHashes = $digestGroups.Count
+$duplicateGroupList = @($digestGroups.GetEnumerator() | Where-Object { $_.Value.Count -ge 2 } | Sort-Object -Property @{ Expression = { $_.Value.Count }; Descending = $true }, @{ Expression = { [int]$_.Value[0].index } })
+$duplicateFrameCount = [int](($duplicateGroupList | ForEach-Object { $_.Value.Count } | Measure-Object -Sum).Sum)
+$duplicateGroupSampleLimit = 10
+$duplicateFrameSampleLimit = 20
+$duplicateGroupSamples = @($duplicateGroupList | Select-Object -First $duplicateGroupSampleLimit | ForEach-Object {
+	$members = $_.Value
+	[ordered]@{
+		sha256 = [string]$_.Key
+		frame_count = $members.Count
+		first_index = [int]$members[0].index
+		last_index = [int]$members[$members.Count - 1].index
+		indices = @($members | Select-Object -First $duplicateFrameSampleLimit | ForEach-Object { [int]$_.index })
+		files = @($members | Select-Object -First $duplicateFrameSampleLimit | ForEach-Object { [string]$_.file })
+		sample_truncated = ($members.Count -gt $duplicateFrameSampleLimit)
+	}
+})
+
 # ---------------------------------------------------------------- aggregate checks
 
 $namingState = 'pass'
@@ -723,9 +795,35 @@ if (-not $renderExitProvided) {
 	$renderConclusion = 'evaluated_from_exit_code'
 }
 
-$verdict = Get-WorstState -States @(
+# frame_variety judges only what the caller declared. Without a declaration it stays unverified,
+# because a still sequence can be a legitimate deliverable and the repo sets no threshold. A minimum
+# that the distinct digests meet is a pass even when some digests are missing (the counted ones are
+# real and distinct); a shortfall is a fail only when every frame was hashed, otherwise unverified.
+$varietyDeclaration = 'none'
+if ($AllowIdenticalFrames) {
+	$varietyDeclaration = 'allow_identical_frames'
+	$varietyState = 'pass'
+} elseif ($minDistinctDeclared) {
+	$varietyDeclaration = "min_distinct_frames:$ExpectedMinDistinctFrames"
+	if ($distinctFrameHashes -ge $ExpectedMinDistinctFrames) {
+		$varietyState = 'pass'
+	} elseif ($unhashedFrameCount -gt 0) {
+		$varietyState = 'unverified'
+	} else {
+		$varietyState = 'fail'
+	}
+} else {
+	$varietyState = 'unverified'
+}
+
+# The overall verdict keeps its seven-check meaning for every caller that declares nothing about
+# variety, so an undeclared (unverified) frame_variety does not turn an existing pass into exit 2.
+# Once a declaration is made, its fail or unverified result counts like any other check.
+$verdictStates = @(
 	$namingState, $compositionState, $completenessState, $rangeState, $sizeState, $decodeState, $resolutionState, $renderExitState
 )
+if ($varietyDeclaration -ne 'none') { $verdictStates += $varietyState }
+$verdict = Get-WorstState -States $verdictStates
 
 $failures = New-Object System.Collections.Generic.List[object]
 if ($compositionState -eq 'fail') {
@@ -824,6 +922,20 @@ if ($decodeNotEvaluated.Count -gt 0) {
 		sample = (Format-SampleList -Items $decodeNotEvaluated)
 	})
 }
+if ($varietyState -eq 'fail') {
+	$failures.Add([ordered]@{
+		category = 'frame_variety_below_expected'
+		detail = "only $distinctFrameHashes distinct frame digest(s) exist among $hashedFrameCount frame(s) but the caller declared at least $ExpectedMinDistinctFrames; $duplicateFrameCount frame(s) share a digest with another frame and the longest run of identical neighbours is $longestIdenticalRun. A frozen or stalled render is the usual cause; if a still sequence is intended, declare -AllowIdenticalFrames."
+		sample = (@($duplicateGroupSamples | Select-Object -First 3 | ForEach-Object { "[$($_.frame_count) identical frames, index $($_.first_index)..$($_.last_index), first $($_.files[0])]" }) -join ' ')
+	})
+}
+if ($varietyState -eq 'unverified' -and $varietyDeclaration -ne 'none') {
+	$failures.Add([ordered]@{
+		category = 'frame_variety_not_evaluated'
+		detail = "$unhashedFrameCount frame(s) had no computed digest and only $distinctFrameHashes distinct digest(s) were counted, below the declared minimum of $ExpectedMinDistinctFrames, so frame_variety cannot be judged"
+		sample = ''
+	})
+}
 if ($renderExitState -eq 'fail') {
 	$failures.Add([ordered]@{
 		category = 'render_exit_nonzero'
@@ -894,6 +1006,16 @@ $report = [ordered]@{
 		last_index = $(if ($inRangeFrames.Count -gt 0) { [int]$inRangeFrames[-1].index } else { $null })
 		total_bytes = [long](($inRangeFrames | ForEach-Object { [long]$_.file.Length } | Measure-Object -Sum).Sum)
 		nested_entries = @($nestedEntries)
+		# Cross-file identity, from the digests already in frames[]. duplicate_frames counts the frames
+		# that share a digest with at least one other frame; duplicate_groups is the number of such
+		# digests. duplicate_group_samples is a sample (at most 10 groups, 20 indices and files each);
+		# the counts are complete. longest_identical_run counts neighbours in observed index order.
+		hashed_frame_count = $hashedFrameCount
+		distinct_frame_hashes = $distinctFrameHashes
+		duplicate_frames = $duplicateFrameCount
+		duplicate_groups = $duplicateGroupList.Count
+		duplicate_group_samples = $duplicateGroupSamples
+		longest_identical_run = $longestIdenticalRun
 	}
 	naming_contract_mismatch = $(if ($null -eq $namingContractMismatch) { $null } else { [ordered]@{
 		observed_prefix = $namingContractMismatch.prefix
@@ -915,7 +1037,9 @@ $report = [ordered]@{
 		decode = $decodeState
 		resolution = $resolutionState
 		render_exit = $renderExitState
+		frame_variety = $varietyState
 	}
+	frame_variety_declaration = $varietyDeclaration
 	decoder = $decoder
 	decode_summary = [ordered]@{
 		frames_in_range = $inRangeFrames.Count
@@ -989,7 +1113,8 @@ try {
 }
 
 Write-Output "VERDICT: $verdict"
-Write-Output ("CHECKS: composition={0} naming={1} completeness={2} range={3} file_size={4} decode={5} resolution={6} render_exit={7}" -f $compositionState, $namingState, $completenessState, $rangeState, $sizeState, $decodeState, $resolutionState, $renderExitState)
+Write-Output ("CHECKS: composition={0} naming={1} completeness={2} range={3} file_size={4} decode={5} resolution={6} render_exit={7} frame_variety={8}" -f $compositionState, $namingState, $completenessState, $rangeState, $sizeState, $decodeState, $resolutionState, $renderExitState, $varietyState)
+Write-Output ("IDENTITY: distinct={0} duplicate_frames={1} duplicate_groups={2} longest_identical_run={3} declaration={4}" -f $distinctFrameHashes, $duplicateFrameCount, $duplicateGroupList.Count, $longestIdenticalRun, $varietyDeclaration)
 Write-Output ("DECODER: {0} {1}" -f $decoder.resolution, $decoder.version)
 Write-Output ("FRAMES: expected={0} observed={1}" -f $expectedCount, $inRangeFrames.Count)
 foreach ($failure in $failures) {
