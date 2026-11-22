@@ -264,6 +264,8 @@ Multicaの既存ボードと管理機会で「出典調査→候補→小さな�
 
 「同梱する／しない」という主張は散文ではなく `docs/PROVENANCE.inventory.json` を正本とし、`scripts/Test-UETemplateProvenance.ps1` が tracked file と照合する（R1 虚偽の「無い」、R2 宙に浮いた「有る」、R3 未分類の新規層、R4 解決しない相対リンク）。新しい層や area を追加するときは同じ commit で inventory を更新し、`scripts/Test-UETemplateProvenance.Tests.ps1` の負例を回す。実績と未確認点の本文は [docs/PROVENANCE.md](PROVENANCE.md)。
 
+回帰 suite の assertion は 1 行に 2 つ連ねない（タブや空白で結合しない）。PowerShell は途中に現れた 2 つ目のコマンド名を構文エラーにせず文字列引数として捨てるため、結合した assertion は一度も実行されないまま suite が PASS する。`scripts/Test-UETemplateScripts.ps1` が `scripts/*.ps1` を AST で解析し、`Assert-*` が呼び出し位置にない行と、宣言より多い位置引数を渡した呼び出しを path・行番号つきで落とす（被覆件数の正本は suite 自身の出力で、ここには書かない）。
+
 作品には共通commit SHA・UE/Plugin版・レシピ・ローカル差分を記録する。制作中の作品は固定版を使い、自動更新・上書きをしない。更新時は差分、移行方法、検品結果を残す（repo 側の変更理由と移行手順は `CHANGELOG.md`、作品固有の差分は作品の `QA.md` / `DELIVERY.json`）。
 
 Multicaの既存ボードと管理機会で「出典調査→候補→小さな検証→採否→変更理由・移行手順」を記録。公式仕様・掲示板の事例・当該host実測を区別する。未検証情報を既定値へ昇格しない。採否に至った repo の変更理由と移行手順は `CHANGELOG.md` に残す（ここに書いて終わりにしない）。
