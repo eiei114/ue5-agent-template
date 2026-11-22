@@ -57,12 +57,15 @@ preflightとleaseの記録先は`Production/.runs/run_<runid>/`のみ。生成�
 
 `Out/run_<runid>/CREDITS.md`は2階層上の`Content/`（作品のasset本体）の出所を説明する。監査は`scripts/Measure-UECreditsInventory.ps1`に**納品dirとproject rootのどちらを渡しても同じ結論**になること（片方だけの実行は証拠にならない）。engine同梱contentは`Content/`の先頭ディレクトリ単位で`出所区分 (origin)`と`同梱形態 (bundle)`を別行に書く（契約は`templates/CREDITS.md`、記入の正本は`template-lock.json`の`shared_content_packs`）。
 
-project identityの契約は1つだけ。`scripts/New-UETemplateScaffold.ps1`はインストール済みUE公式templateから生成し、**projectファイル名・`Modules[].Name`・`Source/<Module>`は常に互いに一致**していなければならない。`EngineAssociation`は`Engine/Build/Build.version`から導いた値（例`5.8`）を必ず書き込む。
+project identityの契約は1つだけ。`scripts/New-UETemplateScaffold.ps1`はインストール済みUE公式templateから生成し、**projectファイル名・`Modules[].Name`・`Source/<Module>`は、module を持つtemplateでは互いに一致**していなければならない（Blueprint-onlyのtemplateは下の第3の形で、一致させる対象自体が無い）。`EngineAssociation`は`Engine/Build/Build.version`から導いた値（例`5.8`）を必ず書き込む。
 
 
 
 - `materialize_project: true`のrecipe（`third-person-game`）は、template自身の`Config/TemplateDefs.ini`のうち実装している7キー（`FoldersToIgnore` / `FilesToIgnore` / `FolderRenames` / `FilenameReplacements` / `ReplacementsInFiles` / `SharedContentPacks` / `EditDetailLevelPreference`）を適用するので、`<Name>.uproject` / `Source/<Name>` / `Modules[].Name = <Name>`になる。ファイル名のrenameは`FilenameReplacements`、本文の置換は`ReplacementsInFiles`で別の`Extensions`を持つ。`From` / `To` / `bCaseSensitive`はtupleごとに使い、`%TEMPLATENAME_UPPERCASE%`等のtokenも展開する。共有packの探索はmountごとの`DetailLevels`を優先する。実装していないキー（`LocalizedDisplayNames` / `Categories` / `Variants`等のwizard metadata）は**警告して継続**し、適用/未適用キーを`template-lock.json`の`template_defs`に記録する。"UEウィザードと同じ"とは書かない（公式文書にschemaが無く、engine実物との照合も限定的なので、実装範囲を列挙して示す）。
-- それ以外のrecipe（`spectator-explore` / `vertical-loop`）は生コピーするため、template名（`TP_FirstPerson` / `TP_BlankBP`）がそのまま残る。ここで`.uproject`だけrenameすると`Source/**/*.Build.cs`と食い違う。
+- それ以外のrecipe（`spectator-explore` / `vertical-loop`）は生コピーするため、template名（`TP_FirstPerson` / `TP_BlankBP`）がそのまま残る。identityは次の3つの形のどれかで、文書・生成物・lockはこの3分岐で読む。
+  - `materialize_project: true`（`third-person-game`）: `<Name>.uproject` / `Modules[].Name = <Name>` / `Source/<Name>`。
+  - 生コピー・C++ template（`spectator-explore` = `TP_FirstPerson`）: template名のまま、`Modules[].Name`と`Source/<Module>`が一致する。ここで`.uproject`だけrenameすると`Source/**/*.Build.cs`と食い違う。
+  - 生コピー・Blueprint-only template（`vertical-loop` = `TP_BlankBP`）: `TP_BlankBP.uproject`の`Modules`は空、`Source/`は無い。**「一致させる対象が存在しない」のが正常**で、module・`Source/`・`*.Target.cs`を足さない。`template-lock.json`の`identity.project_modules: []`も正常で、lockを手で書き換えない。これを契約違反や生成失敗と読まない（generatorは`exit 0`で成功する）。
 - renameを適用しない生コピー経路でも、template自身の`Config/TemplateDefs.ini`は読む。`FoldersToIgnore` / `FilesToIgnore`で`Media/`や`Config/TemplateDefs.ini`を出力に残さず、`SharedContentPacks`を`Content/<Mount>`へ展開する（`spectator-explore`なら`Characters` / `LevelPrototyping` / `Input` / `Weapons`）。既定mapを開くのに必要なpackを落として成功を名乗らない。展開結果は`template-lock.json`の`shared_content_packs`で確認できる。
 
 generatorはコピー前にdescriptorと`Source/`を照合し、既知パターンに一致しなければ**推測で続行せず停止**して未一致pathを列挙する。コピー後にもコピー物同士で同じ照合を行い、食い違えばdescriptorを書き換えずに停止する。生成後に`.uproject`を手でrenameしない。identityは`template-lock.json`の`identity`（`project_file` / `project_modules` / `engine_association`、`schema_version: 5`）に記録され、そこで確認できる。
