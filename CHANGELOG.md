@@ -11,6 +11,17 @@
 - 落ちる側（使い捨てコピー上のみ、branch には入れていない）: 変更前 HEAD（`1d8f629`）の suite から scaffold の `path traversal rejected` と render の `report creation is exclusive` の PASS 行を除くと、どちらも exit 0（PASS 61 行 / 19 行）で素通りした。新 suite から対応する `Register-Group` 行を除くと、どちらも exit 1 で `ASSERT FAILED: every declared assertion group ran: expected 63, got 62; missing groups: …`（render は 21 / 20）となり、欠落した識別子を名指しする。
 - Unverified Scope: UE 5.8.4 の compile / Editor / PIE / MRQ / render は実行していない（UE を起動しない PowerShell harness 層）。GitHub Actions 上で新 assert が落ちることは PR の check で確認する範囲であり、本変更の実測は本 host のみ。`git diff --check` は repo の CRLF 規約のため `core.whitespace=cr-at-eol` を付けて確認した。
 
+## Unreleased — DOT-3440 — 2026-11-22
+
+- 文書は新規制作の必須工程として「Editor target を build」を指示していたが、target 名の規則も build の実体も書いていなかった。実際の target は recipe ごとに違う。`third-person-game` は materialize で `<ProjectName>Editor`、`spectator-explore` は生コピーなので `-ProjectName` に関係なく `TP_FirstPersonEditor`、`vertical-loop`（`TP_BlankBP` の生コピー）は `Source/` が無く Editor target が存在しない。
+- 変更: `docs/01-start.md` に「Editor target の決め方（recipe 別）」の表を追加した。各行に Editor target 名（または「存在しない」）と `template-lock.json` からの導出根拠を書き、`<ProjectName>Editor` になるのは materialize する recipe だけと明記した。build の実体は既存 UE install の `Engine\Build\BatchFiles\Build.bat` を名指しし、このrepoは build script を同梱しない。着手手順の step 1 と最小 smoke の順序から表へ誘導した。
+- BP-only（`vertical-loop`）の build は、UBT が `Intermediate/Source/` に template 名（`TP_BlankBPEditor`）の合成 target を作って走ると推論される。`template-lock.json` の identity（`project_modules: []`）は変わらず、`Intermediate/` は tracked でないため、この変化は git にも lock にも残らない。これは engine source（`NativeProjects.cs`）の静的読取からの推論で、UBT の実行ではない。
+- `templates/QA.md` の `[QA-BUILD-01]` に、使った Editor target 名と `Intermediate/Source/` に合成 target が作られたかを書かせた。`templates/recipes/third-person-game/Play.md` の 1 行は、`<ProjectName>Editor` が materialize 専用であることを示し、表を参照する形にした。
+- `scripts/Test-UETemplateScaffold.ps1` に group を 1 つ追加した（既存 group は減らしていない）。表の Editor target 列を、3 recipe の生成物の `Source/` 直下の `*.Target.cs` から実測した名前と照合する。fixture には実 install と同じ形の `TP_FirstPerson` / `TP_ThirdPerson` の Editor target file を足した。負例として、`vertical-loop` 行や `spectator-explore` 行に `<ProjectName>Editor` を書いた文書をメモリ上で作り、suite が recipe 名つきで落ちること、表の marker が無い文書は何も検査せず通らず落ちることを固定した。repo の文書は変異させていない。
+- 移行: generator、recipe の構成、既存の生成済み project、既存の `template-lock.json` は変えていない。
+- 実測: Windows で `scripts/Test-UETemplateScaffold.ps1` を `pwsh`（PowerShell 7）と Windows PowerShell 5.1 の両方で実行し exit 0（双方 `GROUPS: 64/64 registered`）。新 group は DOT-3442 の group ledger に `editor-target-route-table-matches-generated` として宣言した。`scripts/Test-UETemplateScripts.ps1` も exit 0（Claude catch-up subagent 実行）。
+- Unverified Scope: UE 5.8.4 の build / UBT 実行 / Editor 起動 / PIE は実行していない。`Build.bat` の例は未実行で、合成 target の挙動は静的読取の推論に留まる。生成物の target 名は合成 Engine fixture からの実測で、実 install から生成した実測ではない。
+
 ## Unreleased — DOT-3460 — 2026-11-22
 
 - `scripts/Test-UETemplateScaffold.ps1` の「異なる project 名は異なる lock の識別子を作る」assertion は、かつて 1 行にタブで結合されていた。PowerShell は途中に現れた 2 つ目の `Assert-True` を構文エラーにせず文字列引数として取り込むため、その assertion は一度も評価されず、suite は PASS / exit 0 のままだった。DOT-3460 の着手時点で、その行は `origin/main` 上すでに 2 行に分かれていた（本変更では分割していない）。実在する結合を落とす gate が無いことが残っていた欠陥である。
