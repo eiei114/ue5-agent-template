@@ -8,6 +8,18 @@
 - `scripts/Test-UERenderArtifacts.ps1`: digest契約の検証 `Get-DigestViolations` を追加し、clean 240 frameと0 byte fixtureが実fileのSHA-256と一致すること、3 frameの `digest3` fixtureに対して digest を定数/空文字にした改変helperのcopy（fixture root配下）がfile名とindexを名指しで検出されることをsuite内に固定した（fixtureは22→23）。
 - 実測: Windows、`pwsh`（PowerShell 7）と Windows PowerShell 5.1 で `scripts/Test-UERenderArtifacts.ps1` を実行し、どちらも全groupがPASSでexit 0（Windows 11、Claude catch-up subagent実行）。UE 5.8.4 の compile / PIE / Editor / MRQ / render / MP4 は実行しておらず **Unverified**。
 
+## Unreleased — DOT-3267 — 2026-11-22
+
+- `scripts/Measure-UERenderArtifacts.ps1` は「`<数字だけ>` + 拡張子」しか受理せず、MRQ が実際に書く `<sequence_name>.<frame_number>.png`（legacy）／`<sequence_name>.<layer_name>.<frame_number>.png`（Movie Graph）の 240 枚を 1 枚も数えられなかった。正しい画像列が `missing_frames` 240件 + `unexpected_name` 240件で `fail` になり、agent が再 render へ進む誤読を招き、`docs/05-qa.md` の ffmpeg 例（`%06d`）も実名では入力を開けなかった。
+- helper に `-NamePrefix`（index の前の固定文字列。未指定は従来どおり前置き無し）を追加し、strict / loose / any-digits の 3 パターンすべてに同じ前置きを適用した。`naming_contract` と `input.name_prefix` に実名を書く。前置きは推定せず、画像の改名もしない。
+- 1 枚も契約に合わず、残りが 1 通りの `<prefix><n桁>` にそろうとき、`missing_frames` / `unexpected_name` ではなく `naming_contract_mismatch` を報告する（一致させる `-NamePrefix` / `-Digits` を詳細に出す。report の `naming_contract_mismatch` に観測した前置き・桁数・件数を記録）。報告だけで、観測した形を採用して通さない。契約に合う 0 枚の decode は `fail` から `unverified` に変えた（何も decode していないため。completeness の失敗は従来どおり）。
+- `-Digits` の既定は **6 のまま残した**。既存の呼び出しと純 6 桁 fixture の verdict を変えないための後方互換で、根拠は「既存 caller を壊さない」だけである。MRQ の既定ではない（engine 既定 4、UI 範囲 1〜5）ことと、MRQ の実値を render 前に記録して同じ値を渡す順序を `docs/05-qa.md` / `README.md` / `templates/QA.md` に書いた。
+- 出典: Epic 公式 docs Image Settings の `File Name Format` / `Zero Pad Frame Numbers`（既定値の記載は無い）と、UE 5.8.4 同梱の MRQ plugin source の読取り（`MoviePipelineOutputSetting.cpp:26,30`、`MovieGraphGlobalOutputSettingNode.cpp:18`、`MovieGraphFileOutputNode.h:87`、`MoviePipelineOutputSetting.h:106-108`）。engine ソース断片は転載していない。
+- `docs/05-qa.md` の ffmpeg 例に MRQ 実名の `-i frames/Shot0001.%04d.png` を併記し、`%06d` は一例で既定ではないと明記した。独立判定表に `naming_contract_mismatch` を足した。
+- `scripts/Test-UERenderArtifacts.ps1` に legacy 形（`Shot0001.NNNN`）と Movie Graph 形（`Shot0001.Deferred.NNNN`）の 240 枚 fixture を追加した。宣言ありで pass、宣言なしで `naming_contract_mismatch`、桁数だけ・前置きだけ間違えた宣言が fail、無関係な stray file は別に報告される側まで固定した。既存の純 6 桁 fixture は変えていない。
+- 移行: 前置きのある画像列を検査していた呼び出しは `-NamePrefix` / `-Digits` を足す。前置き無し・6 桁の呼び出しは変更不要。DOT-3251 の decode/timeout 優先順位と DOT-3254 の入力不変 gate には触れていない。
+- 未検証: UE 5.8.4 の実 MRQ render は実行していない。「既定名が `Shot0001.0000.png` 形になる」は engine source の既定値からの推論で、実 render 出力の観測ではない。`{layer_name}` が空のときの連結・区切りは実 render でしか確定しない（両形を fixture に入れて吸収した）。GitHub Actions `windows-latest` での結果は CI 実行で確認する。
+
 ## Unreleased — DOT-3300 — 2026-11-22
 
 - `templates/online/MulticaOnlineStarter/README.md` の冒頭が "Small redistributable C++ starting point" と書き、`LICENSE-NOTICE.md`（配布ライセンス未指定・public配置は改変/再配布許諾ではない）と矛盾していた。agentがpublic visibilityを再配布許諾と誤読しうるため、"redistributable" を削除し、ライセンス未指定・別途ライセンス/許諾の確認が必要な旨と `LICENSE-NOTICE.md` へのリンクを冒頭に追加した。UE・第三者の利用条件は別に適用されると保った。
