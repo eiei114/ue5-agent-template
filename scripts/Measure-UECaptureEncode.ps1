@@ -151,6 +151,7 @@ $checks = [ordered]@{
 	duration = 'unverified'
 	resolution = 'unverified'
 	fps = 'unverified'
+	pixel_format = 'unverified'
 	render_attempt = 'unverified'
 	source_frames_fresh = 'unverified'
 }
@@ -161,6 +162,7 @@ $expectations = [ordered]@{
 	fps = $null
 	width = $null
 	height = $null
+	pix_fmt = $null
 }
 $observed = [ordered]@{
 	video_stream_count = $null
@@ -172,6 +174,14 @@ $observed = [ordered]@{
 	height = $null
 	r_frame_rate = ''
 	fps = $null
+	pix_fmt = 'unknown'
+	profile = 'unknown'
+	level = 'unknown'
+	bits_per_raw_sample = 'unknown'
+	color_range = 'unknown'
+	color_space = 'unknown'
+	color_transfer = 'unknown'
+	color_primaries = 'unknown'
 	size_bytes = $null
 }
 $presetInfo = [ordered]@{
@@ -274,6 +284,8 @@ if (-not (Test-Path -LiteralPath $presetFull -PathType Leaf)) {
 				$derived = $fpsValue * $durationValue
 				if ([Math]::Abs($derived - [Math]::Round($derived)) -gt 0.0001) {
 					Add-Failure 'preset_invalid' "preset '$Preset' does not yield a whole frame count: fps $fpsValue x duration $durationValue s = $derived" 'unverified'
+				} elseif (-not [string]::IsNullOrWhiteSpace([string]$entry.pix_fmt) -and ([string]$entry.pix_fmt) -notmatch '^[a-z0-9_]+$') {
+					Add-Failure 'preset_invalid' "preset '$Preset' declares pix_fmt '$($entry.pix_fmt)', which is not an ffmpeg pixel format name" 'unverified'
 				} elseif ($null -ne $entry.frame_count) {
 					Add-Failure 'preset_invalid' "preset '$Preset' declares frame_count as well as fps and duration_seconds; the frame count is derived from fps x duration and must not be duplicated in the definition" 'unverified'
 				} else {
@@ -284,6 +296,9 @@ if (-not (Test-Path -LiteralPath $presetFull -PathType Leaf)) {
 					$expectations.fps = $fpsValue
 					$expectations.duration_seconds = $durationValue
 					$expectations.frame_count = [int][Math]::Round($derived)
+					# A preset that does not name a pixel format means the documented H.264/yuv420p.
+					$expectations.pix_fmt = 'yuv420p'
+					if (-not [string]::IsNullOrWhiteSpace([string]$entry.pix_fmt)) { $expectations.pix_fmt = ([string]$entry.pix_fmt).Trim() }
 					$expectations.duration_tolerance_seconds = [Math]::Round((1.0 / $fpsValue), 4)
 					$presetLoaded = $true
 				}
@@ -345,7 +360,7 @@ if ([string]::IsNullOrWhiteSpace($videoFull)) {
 	$probe = Invoke-BoundedProcess -FilePath $probeInfo.path -ArgumentList @(
 		'-v', 'error',
 		'-count_frames',
-		'-show_entries', 'stream=index,codec_type,codec_name,width,height,r_frame_rate,nb_read_frames,duration,sample_rate,channels',
+		'-show_entries', 'stream=index,codec_type,codec_name,width,height,r_frame_rate,nb_read_frames,duration,sample_rate,channels,pix_fmt,profile,level,bits_per_raw_sample,color_range,color_space,color_transfer,color_primaries',
 		'-show_entries', 'format=duration,size',
 		'-of', 'json',
 		$videoFull
@@ -398,6 +413,12 @@ if ($measured -and $null -ne $parsed) {
 		$observed.height = ConvertTo-OptionalInt $video.height
 		$observed.r_frame_rate = [string]$video.r_frame_rate
 		$observed.fps = ConvertTo-FrameRate ([string]$video.r_frame_rate)
+		# The receipt records what the file is, not what the encode line asked for. A field ffprobe
+		# leaves out is written as 'unknown', never as an empty cell.
+		foreach ($receiptField in @('pix_fmt', 'profile', 'level', 'bits_per_raw_sample', 'color_range', 'color_space', 'color_transfer', 'color_primaries')) {
+			$receiptValue = Get-OptionalValue $video.$receiptField
+			$observed[$receiptField] = if ($null -eq $receiptValue) { 'unknown' } else { ([string]$receiptValue).Trim() }
+		}
 
 		$framesValue = Get-OptionalValue $video.nb_read_frames
 		if ($null -eq $framesValue) {
@@ -459,6 +480,18 @@ if ($measured -and $null -ne $parsed) {
 			} else {
 				Set-Check 'fps' 'unverified'
 				Add-Failure 'fps_unreadable' "ffprobe did not report a parsable r_frame_rate for the encoded video (got '$($observed.r_frame_rate)')" 'unverified'
+			}
+
+			# -pix_fmt is a request, not a guarantee: ffmpeg warns and picks another format when the
+			# encoder cannot take it, and still exits 0. Only the measured format satisfies the preset.
+			if ($observed.pix_fmt -eq 'unknown') {
+				Set-Check 'pixel_format' 'unverified'
+				Add-Failure 'pixel_format_unreadable' "ffprobe did not report pix_fmt for the encoded video, so preset '$Preset' (pix_fmt $($expectations.pix_fmt)) cannot be confirmed" 'unverified'
+			} elseif ($observed.pix_fmt -ceq [string]$expectations.pix_fmt) {
+				Set-Check 'pixel_format' 'pass'
+			} else {
+				Set-Check 'pixel_format' 'fail'
+				Add-Failure 'pixel_format_mismatch' "preset '$Preset' expects pix_fmt $($expectations.pix_fmt) but the encoded video is $($observed.pix_fmt) (profile $($observed.profile)); a pix_fmt request that ffmpeg could not honour falls back to another format with exit 0" 'fail' "observed=$($observed.pix_fmt)/$($observed.profile) expected=$($expectations.pix_fmt)"
 			}
 		}
 	}
@@ -565,6 +598,7 @@ $report = [ordered]@{
 	notes = @(
 		'This report covers the encoded MP4 only; it is not a render, playback, audio or loop result.',
 		'render_attempt and source_frames_fresh compare file modification times with -RenderStartedUtc: they show the MP4 was written after the marker and no older frame remains, not that the picture content is right.',
+		'ffmpeg -pix_fmt is a request: when the encoder cannot take it ffmpeg warns, picks another format and exits 0 (FFmpeg docs, -pix_fmt, read 2026-11-08). pixel_format compares the measured pix_fmt with the preset, so a fallback fails.',
 		'ffmpeg -frames:v is an output upper bound. A short source sequence is encoded short with exit 0, which is why the frame count is checked here rather than inferred from the encode command.'
 	)
 }
@@ -588,9 +622,9 @@ try {
 
 Write-Output "VERDICT: $verdict"
 Write-Output ("PRESET: {0} (frame_count={1} duration={2}s {3}x{4} {5}fps)" -f $presetInfo.name, $expectations.frame_count, $expectations.duration_seconds, $expectations.width, $expectations.height, $expectations.fps)
-Write-Output ("CHECKS: preset={0} probe={1} stream_count={2} frame_count={3} duration={4} resolution={5} fps={6} render_attempt={7} source_frames_fresh={8}" -f $checks.preset, $checks.probe, $checks.stream_count, $checks.frame_count, $checks.duration, $checks.resolution, $checks.fps, $checks.render_attempt, $checks.source_frames_fresh)
+Write-Output ("CHECKS: preset={0} probe={1} stream_count={2} frame_count={3} duration={4} resolution={5} fps={6} pixel_format={7} render_attempt={8} source_frames_fresh={9}" -f $checks.preset, $checks.probe, $checks.stream_count, $checks.frame_count, $checks.duration, $checks.resolution, $checks.fps, $checks.pixel_format, $checks.render_attempt, $checks.source_frames_fresh)
 Write-Output ("FFPROBE: {0} {1}" -f $probeInfo.resolution, $probeInfo.version)
-Write-Output ("OBSERVED: frames={0} duration={1} size={2}x{3} r_frame_rate={4} video_streams={5} audio_streams={6}" -f $observed.nb_read_frames, $observed.duration_seconds, $observed.width, $observed.height, $observed.r_frame_rate, $observed.video_stream_count, $observed.audio_stream_count)
+Write-Output ("OBSERVED: frames={0} duration={1} size={2}x{3} r_frame_rate={4} video_streams={5} audio_streams={6} pix_fmt={7} profile={8}" -f $observed.nb_read_frames, $observed.duration_seconds, $observed.width, $observed.height, $observed.r_frame_rate, $observed.video_stream_count, $observed.audio_stream_count, $observed.pix_fmt, $observed.profile)
 foreach ($failure in $failures) {
 	Write-Output ("FAILURE: {0} [{1}] - {2}" -f $failure.category, $failure.state, $failure.detail)
 }
