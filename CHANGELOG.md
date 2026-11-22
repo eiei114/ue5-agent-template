@@ -30,6 +30,17 @@
 - 変更: identity 契約を 3 分岐（materialize / 生コピー・C++ template / 生コピー・Blueprint-only template）で `AGENTS.md`・`docs/01-start.md`・`docs/07-architecture.md`・`README.md` に書き直した。**Blueprint-only template では module が無いのが正常**で、「一致させる対象が存在しない」。module・`Source/` は足さず、`template-lock.json` の `identity.project_modules: []` も正常で手で書き換えない。`scripts/Test-UETemplateScaffold.ps1` の `TP_BlankBP` fixture を `Modules: []` / `Source/` 無しの実 template 形にし（`Write-FixtureTemplate -BlueprintOnly`、他 template の fixture は据え置き）、`vertical-loop` の生成物が `Modules` 0 件・`Source/` 無し・`identity.project_modules` 空配列であることを assert した。descriptor が module を宣言するのに `Source/` に無い場合に停止する既存の負例は残している。
 - 移行: generator の判定ロジック・既存の生成済み project・既存の `template-lock.json` は変更していない。文書と test fixture だけの変更。UE 実機の compile / PIE / render は未実行（Unverified）。
 
+## Unreleased — DOT-3420 — 2026-11-22
+
+- `scripts/Measure-UERenderArtifacts.ps1` の `Invoke-BoundedProcess` は decoder の stdout/stderr を `ReadToEndAsync()` で全量保持していた。timeout は実行時間しか制限しないため、速く大量に出力する decoder で親 process のメモリが膨らみうた（静的読解に基づく可能性で、修正前の実測はしていない）。
+- 変更: stdout/stderr を小さい chunk で継続 drain し、各 stream を固定 1 MiB（1048576 byte、UTF-8 換算、定数で引数では広げられない）までしか保持しない。超過した時点で helper が起動した process tree だけを止め、以後の出力は保持しない。超過は `decode_failed` 扱いの `decode=fail`（`failures[]` に `decode_output_limit`、`decode_summary.output_limit_bytes` / `frames_output_limit_exceeded`、`violations.decode_output_overflows`）で、切れた出力は解析せず再試行もしない。`-version` の超過は `decoder.version` に明記する。
+- `scripts/Test-UERenderArtifacts.ps1`: 自作 `.cmd` stub で stdout flood・stderr flood・両方 flood・`-version` flood が fail で、timeout ではなく byte budget で止まり、report に flood 本文が載らないことを確認する group を足した。上限未満の大きな stderr 付き正常 JSON は従来どおり pass。既存の timeout / nonzero exit / decoder 不在 tests と fixture 不変 gate は変更していない。
+- `docs/05-qa.md` に上限値と終了契約を記載した。
+
+移行: report の追加項目は schema への追加で `schema_version` は変えない。
+
+Unverified Scope: UE 5.8.4 の compile / PIE / MRQ / render / MP4 / 実 ffprobe での検査は実行していない。合成 stub の結果を実 ffprobe・UE の検証として読み替えない。
+
 ## Unreleased — UE-QA-ENCODE-RECEIPT-001 (DOT-3444) — 2026-11-22
 
 - 理由: 書き出し検品の受領証（ffprobe の entry 一覧）が `pix_fmt` も `profile` も測っておらず、docs が宣言する H.264/yuv420p と、実際の yuv444p・10bit の成果物が同一の pass 受領証になっていた。しかも `-pix_fmt` は強制ではなく、encoder が選べない形式を指定すると ffmpeg は警告して別形式を選び exit 0 で終わる（FFmpeg 公式 docs `-pix_fmt`、2026-11-08 取得。`+` を前置したときだけエラー終了）。
