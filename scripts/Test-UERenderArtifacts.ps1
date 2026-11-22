@@ -1104,6 +1104,103 @@ try {
 	Assert-True ($roomyData.decode_summary.budget_exhausted -eq $false -and $roomyData.decode_summary.frames_not_evaluated -eq 0) 'a generous budget is not exhausted'
 	Register-Group 'decode-failure-outranks-timeout-timeouts' 'a decode failure outranks a timeout, timeouts are retried once with attempts recorded, and a total budget is explicit'
 
+	# ============================================================ group 11c: input stability while the decoder runs (DOT-3403)
+	# The helper hashes each frame, then decodes it. Something else writing into the directory in
+	# between used to leave a report whose sha256 named the old bytes while decode/size described the
+	# new ones, and whose verdict was still pass. A stub decoder stands in for that other writer: the
+	# first time it is asked about 000001.png it replaces, adds or deletes a file that was already
+	# hashed. These fixtures are mutated on purpose, so they live under one declared root entry and are
+	# not registered with the untouched-input gate.
+	$unstableRoot = Join-Path $fixtureRoot 'unstable-inputs'
+	[System.IO.Directory]::CreateDirectory($unstableRoot) | Out-Null
+	Register-FixtureRootFile 'unstable-inputs'
+	$mutatingDecoder = Join-Path $unstableRoot 'mutating-decoder.cmd'
+	$mutatingLines = @(
+		'@echo off',
+		'setlocal',
+		'if "%~1"=="-version" goto version',
+		'set "LAST="',
+		'for %%a in (%*) do set "LAST=%%~nxa"',
+		'if "%LAST%"=="000001.png" if defined STUB_MUTATE if not exist "%STUB_MUTATE_FLAG%" goto mutate',
+		':good',
+		'echo {"streams":[{"codec_name":"png"}],"frames":[{"width":64,"height":48,"pix_fmt":"rgb24"}]}',
+		'exit /b 0',
+		':mutate',
+		'echo x>"%STUB_MUTATE_FLAG%"',
+		'if "%STUB_MUTATE%"=="replace" copy /y "%STUB_MUTATE_SOURCE%" "%STUB_MUTATE_DIR%\000000.png" >nul',
+		'if "%STUB_MUTATE%"=="add" copy /y "%STUB_MUTATE_SOURCE%" "%STUB_MUTATE_DIR%\000099.png" >nul',
+		'if "%STUB_MUTATE%"=="delete" del /q "%STUB_MUTATE_DIR%\000000.png"',
+		'goto good',
+		':version',
+		'echo mutating-stub 1.0',
+		'exit /b 0'
+	)
+	[System.IO.File]::WriteAllText($mutatingDecoder, (($mutatingLines -join "`r`n") + "`r`n"), [System.Text.UTF8Encoding]::new($false))
+	$mutationSource = Join-Path $unstableRoot 'replacement-source.png'
+	[System.IO.File]::WriteAllBytes($mutationSource, (New-FixturePng -Width 64 -Height 48 -Shade 199))
+
+	function Invoke-StabilityCase([string]$Label, [string]$Mutation) {
+		$caseDir = Join-Path $unstableRoot ('seq-' + $Label)
+		New-FrameSequence -Directory $caseDir -Start 0 -EndExclusive 3
+		$beforeSnapshot = Get-DirectorySnapshot $caseDir
+		$originalHash = (Get-FileHash -LiteralPath (Join-Path $caseDir '000000.png') -Algorithm SHA256).Hash.ToLowerInvariant()
+		$reportPath = New-ReportPath ('stability-' + $Label)
+		if ($Mutation -ne '') {
+			$env:STUB_MUTATE = $Mutation
+			$env:STUB_MUTATE_DIR = $caseDir
+			$env:STUB_MUTATE_SOURCE = $mutationSource
+			$env:STUB_MUTATE_FLAG = Join-Path $unstableRoot ('flag-' + $Label)
+		}
+		try {
+			$result = Invoke-Measure @{
+				FramesDirectory    = $caseDir
+				StartNumber        = 0
+				EndNumberExclusive = 3
+				ReportPath         = $reportPath
+				ExpectedWidth      = 64
+				ExpectedHeight     = 48
+				DecoderPath        = $mutatingDecoder
+			}
+		} finally {
+			Remove-Item Env:\STUB_MUTATE, Env:\STUB_MUTATE_DIR, Env:\STUB_MUTATE_SOURCE, Env:\STUB_MUTATE_FLAG -ErrorAction SilentlyContinue
+		}
+		return [pscustomobject]@{
+			Result = $result
+			Data = (Read-Report $reportPath)
+			Dir = $caseDir
+			OriginalHash = $originalHash
+			UnchangedByHelper = ($beforeSnapshot -ceq (Get-DirectorySnapshot $caseDir))
+		}
+	}
+
+	$stableCase = Invoke-StabilityCase 'stable' ''
+	Assert-True ($stableCase.Result.ExitCode -eq 0) "an input that does not change during the check still passes, got $($stableCase.Result.ExitCode): $($stableCase.Result.Output)"
+	Assert-True ($stableCase.Data.checks.input_stability -eq 'pass') 'an unchanged input records input_stability=pass'
+	Assert-True ($stableCase.Data.input_stability.state -eq 'pass' -and $stableCase.Data.input_stability.rescanned -eq $true) 'the report says the directory was re-checked after decoding'
+	Assert-True ($stableCase.Data.input_stability.frames_rehashed -eq 3) 'every in-range frame was hashed again after decoding'
+	Assert-True ($stableCase.UnchangedByHelper) 'the helper did not modify an unchanged input'
+
+	$replaceCase = Invoke-StabilityCase 'replace' 'replace'
+	Assert-True ($replaceCase.Result.ExitCode -eq 1) "a frame replaced during the check exits 1 (fail), got $($replaceCase.Result.ExitCode): $($replaceCase.Result.Output)"
+	Assert-True ($replaceCase.Data.artifact_verdict -eq 'fail') 'a replaced frame can never produce a pass'
+	Assert-True ($replaceCase.Data.checks.input_stability -eq 'fail') 'a replaced frame fails input_stability'
+	Assert-True ((Get-FailureCategories $replaceCase.Data) -contains 'input_changed_during_check') 'the change is named in failures[]'
+	$replacedEntry = @($replaceCase.Data.input_stability.changed | Where-Object { $_.file -eq '000000.png' })
+	Assert-True ($replacedEntry.Count -eq 1) 'the replaced file is named in input_stability.changed'
+	Assert-True ($replacedEntry[0].sha256_before -eq $replaceCase.OriginalHash -and $replacedEntry[0].sha256_after -ne $replaceCase.OriginalHash) 'the sample carries the digest from before and after the check'
+	Assert-True ($replaceCase.Data.frames[0].sha256 -eq $replaceCase.OriginalHash) 'frames[].sha256 stays the digest read at inspection time, so the report shows what it describes'
+
+	$addCase = Invoke-StabilityCase 'add' 'add'
+	Assert-True ($addCase.Result.ExitCode -eq 1) "a file added during the check exits 1 (fail), got $($addCase.Result.ExitCode): $($addCase.Result.Output)"
+	Assert-True ($addCase.Data.checks.input_stability -eq 'fail' -and $addCase.Data.artifact_verdict -eq 'fail') 'an added file fails input_stability'
+	Assert-True (@($addCase.Data.input_stability.added) -contains '000099.png') 'the added file is named in input_stability.added'
+
+	$deleteCase = Invoke-StabilityCase 'delete' 'delete'
+	Assert-True ($deleteCase.Result.ExitCode -eq 1) "a file deleted during the check exits 1 (fail), got $($deleteCase.Result.ExitCode): $($deleteCase.Result.Output)"
+	Assert-True ($deleteCase.Data.checks.input_stability -eq 'fail' -and $deleteCase.Data.artifact_verdict -eq 'fail') 'a deleted file fails input_stability'
+	Assert-True (@($deleteCase.Data.input_stability.removed) -contains '000000.png') 'the removed file is named in input_stability.removed'
+	Write-Output 'PASS: an input that is replaced, added to or deleted from while the decoder runs is recorded and never passes'
+
 	# ============================================================ group 12: the untouched-input gate can actually fail
 	# A gate that has never been observed to fail is the same defect one level up. This group corrupts a
 	# throwaway fixture in each of the three ways a suite regression would - a removed file, a rewritten
