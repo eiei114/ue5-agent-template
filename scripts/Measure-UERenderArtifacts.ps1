@@ -45,6 +45,15 @@ param(
 	[ValidateRange(100, 600000)]
 	[int]$DecoderTimeoutMilliseconds = 10000,
 
+	# Total wall-clock budget for every frame probe (including retries) in one call. The default is
+	# 300000 ms (5 minutes): a clean 240-frame sequence took 16 to 44 s unloaded and about 95 s on a
+	# loaded host, so 5 minutes leaves several times that headroom, while four such calls still fit
+	# inside the 20 minute `timeout-minutes` of .github/workflows/verify.yml and the helper reports
+	# before the job is killed. A budget that runs out is never a pass and never a fail: the
+	# remaining frames are reported as not evaluated and decode stays unverified.
+	[ValidateRange(1, 1200000)]
+	[int]$TotalDecodeBudgetMilliseconds = 300000,
+
 	[string]$RunId = '',
 
 	[string]$SourceRevision = '',
@@ -437,7 +446,11 @@ $decodeFailures = New-Object System.Collections.Generic.List[object]
 $codecMismatches = New-Object System.Collections.Generic.List[object]
 $resolutionMismatches = New-Object System.Collections.Generic.List[object]
 $decodeTimeouts = New-Object System.Collections.Generic.List[object]
+$decodeNotEvaluated = New-Object System.Collections.Generic.List[object]
 $expectedCodec = 'png'
+$decodeBudgetExhausted = $false
+$retriedFrameCount = 0
+$budgetClock = [System.Diagnostics.Stopwatch]::StartNew()
 
 foreach ($frame in $inRangeFrames) {
 	$fileInfo = $frame.file
@@ -449,6 +462,7 @@ foreach ($frame in $inRangeFrames) {
 		sha256 = $null
 		digest_state = 'not_computed'
 		decode = 'unverified'
+		attempts = 0
 		codec = ''
 		pix_fmt = ''
 		width = 0
@@ -490,13 +504,41 @@ foreach ($frame in $inRangeFrames) {
 	# `-show_frames` is required for the decode verdict: ffprobe exits 0 and still prints a stream
 	# header for a truncated or corrupt PNG, but it emits no decoded frame. Counting frames is what
 	# separates "a picture decoded" from "a container header was parsed".
-	$probe = Invoke-BoundedProcess -FilePath $decoder.path -ArgumentList @(
-		'-v', 'error',
-		'-select_streams', 'v:0',
-		'-show_entries', 'stream=codec_name:frame=width,height,pix_fmt',
-		'-of', 'json',
-		$fileInfo.FullName
-	) -TimeoutMilliseconds $DecoderTimeoutMilliseconds
+	#
+	# A probe that hits its deadline is retried once in a new process, because a single slow process
+	# on a loaded host is not evidence about the file. Every probe is also bounded by what is left of
+	# the total budget, so the sequence as a whole cannot run unbounded.
+	$probe = $null
+	$budgetCut = $false
+	for ($attempt = 1; $attempt -le 2; $attempt++) {
+		$remainingMilliseconds = $TotalDecodeBudgetMilliseconds - [int][Math]::Min([double][int]::MaxValue, $budgetClock.ElapsedMilliseconds)
+		if ($remainingMilliseconds -le 0) { $budgetCut = $true; break }
+		$probeTimeout = [Math]::Min($DecoderTimeoutMilliseconds, $remainingMilliseconds)
+		$probe = Invoke-BoundedProcess -FilePath $decoder.path -ArgumentList @(
+			'-v', 'error',
+			'-select_streams', 'v:0',
+			'-show_entries', 'stream=codec_name:frame=width,height,pix_fmt',
+			'-of', 'json',
+			$fileInfo.FullName
+		) -TimeoutMilliseconds $probeTimeout
+		$entry.attempts = $attempt
+		if (-not $probe.timedOut) { break }
+		if ($probeTimeout -lt $DecoderTimeoutMilliseconds) {
+			# The deadline that fired was the shortened budget deadline, not the per-frame deadline, so
+			# this frame was cut off by the budget and says nothing about the file.
+			$budgetCut = $true
+			break
+		}
+	}
+	if ($entry.attempts -eq 2) { $retriedFrameCount++ }
+	if ($budgetCut) {
+		$decodeBudgetExhausted = $true
+		$entry.decode = 'not_evaluated'
+		$entry.detail = "the total decode budget of $TotalDecodeBudgetMilliseconds ms ran out before this frame was decoded; it was not evaluated"
+		$decodeNotEvaluated.Add([ordered]@{ file = $frame.name; index = [int]$frame.index })
+		$frameChecks.Add($entry)
+		continue
+	}
 
 	if (-not $probe.started) {
 		$entry.decode = 'failed'
@@ -507,7 +549,7 @@ foreach ($frame in $inRangeFrames) {
 	}
 	if ($probe.timedOut) {
 		$entry.decode = 'timeout'
-		$entry.detail = "decoder did not finish within $DecoderTimeoutMilliseconds ms; the probe was killed and the result is not counted as success"
+		$entry.detail = "decoder did not finish within $DecoderTimeoutMilliseconds ms on $($entry.attempts) attempt(s); the probe was killed and the result is not counted as success"
 		$decodeTimeouts.Add([ordered]@{ file = $frame.name; index = [int]$frame.index; timeout_ms = $DecoderTimeoutMilliseconds })
 		$frameChecks.Add($entry)
 		continue
@@ -606,15 +648,19 @@ if ($outOfRangeIndices.Count -gt 0) { $rangeState = 'fail' }
 $sizeState = 'pass'
 if ($emptyFiles.Count -gt 0) { $sizeState = 'fail' }
 
+# A frame that really failed to decode (or decoded to the wrong codec) is a fail. That fact is
+# settled before any timeout or budget shortfall is looked at, so "could not finish" never hides
+# "is broken": a fail can no longer be demoted to unverified by a slow or exhausted decoder.
 if ($inRangeFrames.Count -eq 0) {
 	# No frame matched the contract, so nothing was handed to the decoder. That is a completeness (or
 	# naming) failure that is already reported; it says nothing about whether any picture decodes.
 	$decodeState = 'unverified'
-} elseif ($decodeTimeouts.Count -gt 0) {
+} elseif ($decodeFailures.Count -gt 0 -or $codecMismatches.Count -gt 0) {
+	$decodeState = 'fail'
+} elseif ($decodeTimeouts.Count -gt 0 -or $decodeNotEvaluated.Count -gt 0) {
 	$decodeState = 'unverified'
 } else {
 	$decodeState = Get-WorstState -States @($decodeStates | Select-Object -Unique)
-	if ($decodeFailures.Count -gt 0 -or $codecMismatches.Count -gt 0) { $decodeState = 'fail' }
 }
 
 if (-not $resolutionConfigured) {
@@ -721,6 +767,13 @@ if ($decodeTimeouts.Count -gt 0) {
 		sample = (Format-SampleList -Items $decodeTimeouts)
 	})
 }
+if ($decodeNotEvaluated.Count -gt 0) {
+	$failures.Add([ordered]@{
+		category = 'decode_budget_exhausted'
+		detail = "the total decode budget of ${TotalDecodeBudgetMilliseconds} ms ran out: $($inRangeFrames.Count - $decodeNotEvaluated.Count) of $($inRangeFrames.Count) frame(s) were evaluated, $($decodeNotEvaluated.Count) were not"
+		sample = (Format-SampleList -Items $decodeNotEvaluated)
+	})
+}
 if (-not $resolutionConfigured) {
 	$failures.Add([ordered]@{
 		category = 'resolution_not_configured'
@@ -790,6 +843,20 @@ $report = [ordered]@{
 		resolution = $resolutionState
 	}
 	decoder = $decoder
+	decode_summary = [ordered]@{
+		frames_in_range = $inRangeFrames.Count
+		frames_evaluated = ($inRangeFrames.Count - $decodeNotEvaluated.Count)
+		frames_not_evaluated = $decodeNotEvaluated.Count
+		frames_ok = @($frameChecks | Where-Object { $_.decode -eq 'ok' }).Count
+		frames_failed = @($frameChecks | Where-Object { $_.decode -eq 'failed' }).Count
+		frames_timeout = @($frameChecks | Where-Object { $_.decode -eq 'timeout' }).Count
+		frames_unverified = @($frameChecks | Where-Object { $_.decode -eq 'unverified' }).Count
+		frames_retried = $retriedFrameCount
+		per_frame_deadline_ms = $DecoderTimeoutMilliseconds
+		total_budget_ms = $TotalDecodeBudgetMilliseconds
+		budget_exhausted = $decodeBudgetExhausted
+		elapsed_ms = [long]$budgetClock.ElapsedMilliseconds
+	}
 	violations = [ordered]@{
 		missing_indices = $missingIndices.ToArray()
 		out_of_range_indices = $outOfRangeIndices.ToArray()
@@ -798,6 +865,7 @@ $report = [ordered]@{
 		empty_files = $emptyFiles.ToArray()
 		decode_failures = $decodeFailures.ToArray()
 		decode_timeouts = $decodeTimeouts.ToArray()
+		decode_not_evaluated = $decodeNotEvaluated.ToArray()
 		codec_mismatches = $codecMismatches.ToArray()
 		resolution_mismatches = $resolutionMismatches.ToArray()
 	}
