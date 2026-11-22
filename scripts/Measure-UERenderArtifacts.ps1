@@ -405,13 +405,28 @@ foreach ($frame in $inRangeFrames) {
 		index = [int]$frame.index
 		file = [string]$frame.name
 		size_bytes = $sizeBytes
-		sha256 = ''
+		sha256 = $null
+		digest_state = 'not_computed'
 		decode = 'unverified'
 		codec = ''
 		pix_fmt = ''
 		width = 0
 		height = 0
 		detail = ''
+	}
+
+	# `sha256` is a lowercase hex digest only when `digest_state` is 'computed'. A digest that could not
+	# be computed is `null` with state 'not_computed', never an empty or placeholder string. A 0-byte file
+	# is hashed like any other (the SHA-256 of zero bytes), so the rule has no special case; the
+	# empty-file failure below is what rejects it. The digest identifies the bytes read during this run;
+	# it does not prove the files were not changed by something else while the check ran.
+	try {
+		$entry.sha256 = (Get-FileHash -LiteralPath $fileInfo.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+		$entry.digest_state = 'computed'
+	} catch {
+		$entry.sha256 = $null
+		$entry.digest_state = 'not_computed'
+		$entry.detail = "SHA-256 could not be computed: $($_.Exception.Message)"
 	}
 
 	if ($sizeBytes -eq 0) {
@@ -423,8 +438,6 @@ foreach ($frame in $inRangeFrames) {
 		$frameChecks.Add($entry)
 		continue
 	}
-
-	$entry.sha256 = (Get-FileHash -LiteralPath $fileInfo.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
 
 	if ($decoder.resolution -ne 'explicit' -and $decoder.resolution -ne 'path_lookup') {
 		$entry.decode = 'unverified'
@@ -752,7 +765,7 @@ $report = [ordered]@{
 	notes = @(
 		'This report covers the source image sequence only; it is not a render, playback, audio or loop result.',
 		'A previous run with the same frame count cannot be ruled out by this check alone. Use a fresh run-scoped output directory and verify ownership before rendering.',
-		'Inputs were read only; the inspected directory was not renamed, repaired or modified.'
+		'Inputs were opened read only (each frame was read to compute frames[].sha256 and to decode it); this helper did not rename, repair or modify the inspected directory. That is not proof that nothing else changed the files while the check ran. frames[].sha256 is a real SHA-256 only where digest_state is computed.'
 	)
 }
 
