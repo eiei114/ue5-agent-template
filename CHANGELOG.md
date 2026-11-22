@@ -1,5 +1,13 @@
 # 変更履歴
 
+## Unreleased — DOT-3441 — 2026-11-22
+
+- 生成projectへ複製される文書が、生成物内に存在しない repo path を案内していた。とくに `vertical-loop` の `Recipe/Capture.md` は書き出し手順の唯一の正本 `docs/05-qa.md` を指すが、`docs/` を複製するのは `MulticaOnlineStarter` を要求する recipe の `docs/08` だけで、`scripts/` はどの recipe でも複製しないため、生成物だけを受け取ったagentは検査手順に到達できなかった。`third-person-game` の `Recipe/Play.md` も、生成後に存在しない `Config/TemplateDefs.ini` を存在するかのように案内していた。現行 suite は文書の参照を一般には検査せず、この未解決参照を1件も落とせなかった。
+- 変更: generator は `docs/05-qa.md` を `Recipe/Capture.md` を持つ全recipeの生成物へ逐語コピーする（composition は recipe 名でなくファイル構成で決める原則のまま。path 予算の計上にも含めた）。`docs/05-qa.md` の本文（MRQ設定・preset・判定規則）は変えず、冒頭に「`scripts/`・`templates/` は source checkout 相対で同梱されない」通知1行を足した。`scripts/` と `templates/CAPTURE-PRESETS.json` は同梱せず、`Recipe/Capture.md` が `template-lock.json` の `template_repository` / `template_commit` で source checkout を特定して実行する手順を示す。`Recipe/Play.md`（`third-person-game` / `spectator-explore`）、`docs/08-online-foundations.md`、`MulticaOnlineStarter/README.md` の解決しない参照には、同じ行または冒頭の通知で source checkout 相対・非同梱を明記した。規則は `docs/07-architecture.md` の「生成物の参照閉包契約」に1箇所だけ書いた。
+- `scripts/Test-UETemplateScaffold.ps1`: 参照閉包groupを追加した。生成した3 recipe（`spectator-explore` 相当のgame / `vertical-loop` / `third-person-game`）の `Recipe/`・`docs/`・`Plugins/` の markdown が指す repo path（backtick、`docs/`・`scripts/`・`templates/` の path、相対リンク）が、生成物内で解決するか source checkout 相対と明記されていることを検査する。空走査にならないよう走査file数と参照数を assert し、同梱した `docs/05-qa.md` を取り除いた fixture で `Recipe/Capture.md` と `docs/05-qa.md` を名指して落ちること、通知を外した fixture で `scripts/` 参照が落ちることを固定した。既存 assertion（`docs/08` 同梱、identity、path traversal、既存出力保護、dirty template 拒否、非数値 `Build.version`、identity drift）は1件も削っていない。
+- 移行: 既存の生成物は書き換えない。次のrunから全recipeの生成物に `docs/05-qa.md` が入る。生成物の写しは生成時点の版で、repo側の更新では自動更新されない。
+- Unverified Scope: UE 5.8.4 の compile / Editor / PIE / MRQ / render / ffprobe は実行していない。検査は合成 Engine fixture（suiteの fixture）で生成した出力に対する静的検査で、実 UE install を `-EngineRoot` にした生成は行っていない。agentが同梱文書から実際に書き出し手順を完走できるかは観測していない。同梱方式による生成物サイズ増（`docs/05-qa.md` 1 file）と二重管理の影響は未評価。
+
 ## Unreleased — DOT-3432 — 2026-11-22
 
 - 画像列QA helper `scripts/Measure-UERenderArtifacts.ps1` のreportは `frames[].sha256` を `''` で初期化して実digestを後から入れており、「計算した値」と「未計算/placeholder」を同じfieldで区別できなかった。さらにそのdigestを検証するtestが無く、digestを定数 `'deadbeef'` にした改変helperでも3 frameの正常列が `VERDICT: pass` になることを確認していた。加えて `docs/05-qa.md` は「helper自身は入力のhashを計算しない」と書き、実装と矛盾していた。
