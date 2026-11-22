@@ -20,8 +20,18 @@ param(
 	[Parameter(Mandatory = $true)]
 	[string]$ReportPath,
 
+	# The zero-padded index width in the file name. MRQ's `Zero Pad Frame Numbers` decides it (engine
+	# default 4, UI range 1-5), so copy the value MRQ was given. 6 is kept only as the historical
+	# default of this helper; it is not an MRQ default.
 	[ValidateRange(1, 10)]
 	[int]$Digits = 6,
+
+	# The literal text MRQ writes before the index, for example `Shot0001.` for the default
+	# `{sequence_name}.{frame_number}` or `Shot0001.Deferred.` for a Movie Graph
+	# `{sequence_name}.{layer_name}.{frame_number}`. Empty keeps the previous bare-index contract.
+	# It is declared, never inferred, and the helper never renames a file to make it fit.
+	[ValidatePattern('^[^\\/:*?"<>|]*$')]
+	[string]$NamePrefix = '',
 
 	[ValidatePattern('^\.[A-Za-z0-9]+$')]
 	[string]$Extension = '.png',
@@ -233,11 +243,14 @@ for ($index = $latticeFirst; $index -lt $latticeLastExclusive; $index += $FrameS
 	$expectedLast = $index
 }
 
-$strictPattern = '^(?<index>[0-9]{' + $Digits + '})' + [System.Text.RegularExpressions.Regex]::Escape($Extension) + '$'
+$prefixLiteral = [System.Text.RegularExpressions.Regex]::Escape($NamePrefix)
+# The declared prefix is matched case-sensitively even in the loose patterns, so a prefix typo is a
+# naming-contract mismatch and not an "extension case differs" near-match.
+$strictPattern = '^' + $prefixLiteral + '(?<index>[0-9]{' + $Digits + '})' + [System.Text.RegularExpressions.Regex]::Escape($Extension) + '$'
 $strictRegex = New-Object System.Text.RegularExpressions.Regex($strictPattern, [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)
-$looseExtensionPattern = '^(?<index>[0-9]{' + $Digits + '})' + [System.Text.RegularExpressions.Regex]::Escape($Extension) + '$'
+$looseExtensionPattern = '^(?-i:' + $prefixLiteral + ')(?<index>[0-9]{' + $Digits + '})' + [System.Text.RegularExpressions.Regex]::Escape($Extension) + '$'
 $looseExtensionRegex = New-Object System.Text.RegularExpressions.Regex($looseExtensionPattern, ([System.Text.RegularExpressions.RegexOptions]::CultureInvariant -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase))
-$anyDigitsPattern = '^(?<index>[0-9]+)' + [System.Text.RegularExpressions.Regex]::Escape($Extension) + '$'
+$anyDigitsPattern = '^(?-i:' + $prefixLiteral + ')(?<index>[0-9]+)' + [System.Text.RegularExpressions.Regex]::Escape($Extension) + '$'
 $anyDigitsRegex = New-Object System.Text.RegularExpressions.Regex($anyDigitsPattern, ([System.Text.RegularExpressions.RegexOptions]::CultureInvariant -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase))
 
 # ---------------------------------------------------------------- directory scan
@@ -271,6 +284,34 @@ foreach ($entry in $entries) {
 		continue
 	}
 	$unexpectedEntries.Add([ordered]@{ file = $entry.Name; reason = 'name_does_not_match_contract' })
+}
+
+# A frame sequence that is complete under a different prefix/width than the declared one is not a
+# sequence of missing frames: the declared naming contract does not describe what MRQ wrote. This is
+# only detected and named; the helper never adopts the observed shape or renames anything.
+$namingContractMismatch = $null
+if ($frameFiles.Count -eq 0) {
+	$shapePattern = '^(?<prefix>.*?[^0-9])(?<digits>[0-9]+)' + [System.Text.RegularExpressions.Regex]::Escape($Extension) + '$'
+	$shapeRegex = New-Object System.Text.RegularExpressions.Regex($shapePattern, ([System.Text.RegularExpressions.RegexOptions]::CultureInvariant -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase))
+	$shapeGroups = @{}
+	foreach ($candidate in $unexpectedEntries) {
+		if ($candidate.reason -ne 'name_does_not_match_contract') { continue }
+		$shapeMatch = $shapeRegex.Match($candidate.file)
+		if (-not $shapeMatch.Success) { continue }
+		$shapeKey = $shapeMatch.Groups['prefix'].Value + [char]0 + $shapeMatch.Groups['digits'].Value.Length
+		if (-not $shapeGroups.ContainsKey($shapeKey)) {
+			$shapeGroups[$shapeKey] = [ordered]@{
+				prefix = $shapeMatch.Groups['prefix'].Value
+				digits = $shapeMatch.Groups['digits'].Value.Length
+				entries = (New-Object System.Collections.Generic.List[object])
+			}
+		}
+		$shapeGroups[$shapeKey].entries.Add($candidate)
+	}
+	# Exactly one shape: several shapes (multi-pass layouts) are not something to name a single fix for.
+	if ($shapeGroups.Count -eq 1) {
+		$namingContractMismatch = @($shapeGroups.Values)[0]
+	}
 }
 
 $byIndex = @{}
@@ -566,7 +607,9 @@ $sizeState = 'pass'
 if ($emptyFiles.Count -gt 0) { $sizeState = 'fail' }
 
 if ($inRangeFrames.Count -eq 0) {
-	$decodeState = 'fail'
+	# No frame matched the contract, so nothing was handed to the decoder. That is a completeness (or
+	# naming) failure that is already reported; it says nothing about whether any picture decodes.
+	$decodeState = 'unverified'
 } elseif ($decodeTimeouts.Count -gt 0) {
 	$decodeState = 'unverified'
 } else {
@@ -596,7 +639,16 @@ if ($compositionState -eq 'fail') {
 		sample = (Format-SampleList -Items @($nestedEntries | ForEach-Object { [ordered]@{ file = $_ } }))
 	})
 }
-if ($missingIndices.Count -gt 0) {
+if ($null -ne $namingContractMismatch) {
+	$mismatchPrefixText = if ($NamePrefix -eq '') { 'no prefix' } else { "prefix '$NamePrefix'" }
+	$mismatchDeclaration = "-NamePrefix '$($namingContractMismatch.prefix)' -Digits $($namingContractMismatch.digits)"
+	$failures.Add([ordered]@{
+		category = 'naming_contract_mismatch'
+		detail = "$($namingContractMismatch.entries.Count) entry(ies) form a sequence named '$($namingContractMismatch.prefix)' + $($namingContractMismatch.digits)-digit index$Extension, but the declared contract is $mismatchPrefixText + ${Digits}-digit index$Extension, so no file matched. The $($missingIndices.Count) declared index(es) are reported absent because the names differ, not because frames are lost; do not re-render for this. Copy MRQ's File Name Format and Zero Pad Frame Numbers into the call (for this directory: $mismatchDeclaration). Nothing was renamed or guessed."
+		sample = (Format-SampleList -Items $namingContractMismatch.entries)
+	})
+}
+if ($missingIndices.Count -gt 0 -and $null -eq $namingContractMismatch) {
 	if ($observedLatticeMismatch) {
 		$failures.Add([ordered]@{
 			category = 'index_lattice_mismatch'
@@ -618,11 +670,13 @@ if ($outOfRangeIndices.Count -gt 0) {
 		sample = (Format-IndexList -Indices $outOfRangeIndices)
 	})
 }
-if ($unexpectedEntries.Count -gt 0) {
+$unexplainedEntries = @($unexpectedEntries | Where-Object { $null -eq $namingContractMismatch -or -not $namingContractMismatch.entries.Contains($_) })
+if ($unexplainedEntries.Count -gt 0) {
+	$namePrefixText = if ($NamePrefix -ne '') { "'$NamePrefix' + " } else { '' }
 	$failures.Add([ordered]@{
 		category = 'unexpected_name'
-		detail = "$($unexpectedEntries.Count) entry(ies) do not match the ${Digits}-digit $Extension contract"
-		sample = (Format-SampleList -Items $unexpectedEntries)
+		detail = "$($unexplainedEntries.Count) entry(ies) do not match the ${namePrefixText}${Digits}-digit $Extension contract"
+		sample = (Format-SampleList -Items $unexplainedEntries)
 	})
 }
 if ($ambiguousEntries.Count -gt 0) {
@@ -684,7 +738,8 @@ $report = [ordered]@{
 	source_revision = $SourceRevision
 	input = [ordered]@{
 		frames_directory = $framesFull
-		naming_contract = "[$Digits digit zero-padded index]$Extension"
+		naming_contract = "$NamePrefix[$Digits digit zero-padded index]$Extension"
+		name_prefix = $NamePrefix
 		digits = $Digits
 		extension = $Extension
 		start_number = $StartNumber
@@ -714,6 +769,11 @@ $report = [ordered]@{
 		total_bytes = [long](($inRangeFrames | ForEach-Object { [long]$_.file.Length } | Measure-Object -Sum).Sum)
 		nested_entries = @($nestedEntries)
 	}
+	naming_contract_mismatch = $(if ($null -eq $namingContractMismatch) { $null } else { [ordered]@{
+		observed_prefix = $namingContractMismatch.prefix
+		observed_digits = $namingContractMismatch.digits
+		observed_count = $namingContractMismatch.entries.Count
+	} })
 	index_lattice = [ordered]@{
 		declared_step = $FrameStep
 		declared_offset = $FrameNumberOffset
