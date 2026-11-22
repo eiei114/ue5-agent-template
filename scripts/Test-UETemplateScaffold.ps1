@@ -713,7 +713,7 @@ function Get-CppCodeOnly([string]$Text) {
 	# only the code. One pass with alternation keeps the remaining text in order.
 	# Limits (deliberate): `#if 0` regions and raw string literals are not parsed, so a module whose
 	# only entry point sits inside a disabled block is still accepted.
-	$pattern = '(?s)(?<raw>R"(?<delimiter>[^ ()\\	
+	$pattern = '(?s)(?<raw>R"(?<delimiter>[^ ()\\	
 ]{0,16})\([\s\S]*?\)\k<delimiter>")|(?<block>/\*.*?\*/)|(?<line>//[^\r\n]*)|(?<string>"(?:\\.|[^"\\\r\n])*")|(?<char>''(?:\\.|[^''\\\r\n])*'')'
 	return [regex]::Replace($Text, $pattern, '')
 }
@@ -1403,6 +1403,81 @@ try {
 	Assert-GeneratorFails { Invoke-Generator 'third-person-game' 'Bad-Name' "$testId-bad" @() } 'materialized recipe rejects non-identifier project names'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $productionRoot "Bad-Name_$testId-bad"))) 'invalid materialized project name creates no output'
 	Write-Output 'PASS: third-person recipe materializes the official template with the implemented TemplateDefs.ini keys'
+
+	# --- Reference closure of generated documents (DOT-3441) ------------------------------------
+	# A generated project is handed to an agent without the source checkout, so every repo path a
+	# generated markdown file points at must resolve inside that output or be stated as source-checkout
+	# relative on the same line / in a file-level notice. The rule lives in docs/07-architecture.md.
+	function Get-UnresolvedRepoReferences([string]$OutputRoot) {
+		$root = [System.IO.Path]::GetFullPath($OutputRoot).TrimEnd('\', '/')
+		$markdownFiles = [System.Collections.Generic.List[object]]::new()
+		foreach ($scope in @('Recipe', 'docs', 'Plugins')) {
+			$scopePath = Join-Path $root $scope
+			if (Test-Path -LiteralPath $scopePath -PathType Container) {
+				foreach ($file in Get-ChildItem -LiteralPath $scopePath -Recurse -File -Force -Filter '*.md') { $markdownFiles.Add($file) }
+			}
+		}
+		$checked = 0
+		$problems = [System.Collections.Generic.List[string]]::new()
+		$marker = { param([string]$Text) $Text.Contains([string][char]0x540C + [char]0x68B1 + [char]0x3055 + [char]0x308C + [char]0x306A + [char]0x3044) -or $Text.Contains('not bundled') }
+		foreach ($file in $markdownFiles) {
+			$fileRelative = $file.FullName.Substring($root.Length + 1).Replace('\', '/')
+			$lines = [System.IO.File]::ReadAllLines($file.FullName)
+			$fileNotice = $false
+			foreach ($line in $lines) { if ($line.Contains('source checkout') -and (& $marker $line)) { $fileNotice = $true; break } }
+			for ($index = 0; $index -lt $lines.Count; $index++) {
+				$line = $lines[$index]
+				$candidates = [System.Collections.Generic.List[string]]::new()
+				foreach ($m in [regex]::Matches($line, '`([^`\r\n]+)`')) {
+					$token = ($m.Groups[1].Value.Trim() -replace '#.*$', '') -replace ':\d+(-\d+)?$', ''
+					if ($token -match '^(docs|scripts|templates|Plugins|Config|Source)/[^\s<>*{}$]+$') { $candidates.Add($token.TrimEnd('/')) }
+				}
+				foreach ($m in [regex]::Matches($line, '(?<![\w/.\-])((?:docs|scripts|templates)/[\w./\-]+\.\w+)')) {
+					$candidates.Add($m.Groups[1].Value.TrimEnd('.', ','))
+				}
+				foreach ($m in [regex]::Matches($line, '\]\((?!https?:|mailto:|#)([^)\s#]+)[^)]*\)')) {
+					$joined = [System.IO.Path]::GetFullPath((Join-Path $file.DirectoryName $m.Groups[1].Value.Replace('/', '\')))
+					$candidates.Add($(if ($joined.StartsWith($root + '\', [System.StringComparison]::OrdinalIgnoreCase)) { $joined.Substring($root.Length + 1).Replace('\', '/') } else { '../' + $m.Groups[1].Value }))
+				}
+				foreach ($candidate in ($candidates | Select-Object -Unique)) {
+					$checked++
+					if (Test-Path -LiteralPath (Join-Path $root $candidate.Replace('/', '\'))) { continue }
+					if ((& $marker $line) -or $fileNotice) { continue }
+					$problems.Add(('{0}:{1} points at {2}, which is not in the generated project and is not stated as source-checkout relative' -f $fileRelative, ($index + 1), $candidate))
+				}
+			}
+		}
+		return [pscustomobject]@{ Checked = $checked; Files = $markdownFiles.Count; Problems = @($problems) }
+	}
+	foreach ($closureCase in @(
+		@{ Recipe = 'spectator-explore'; Output = $firstOutput; MinChecked = 4 },
+		@{ Recipe = 'vertical-loop'; Output = $loopOutput; MinChecked = 1 },
+		@{ Recipe = 'third-person-game'; Output = $tpOutput; MinChecked = 1 }
+	)) {
+		$closure = Get-UnresolvedRepoReferences $closureCase.Output
+		Assert-True ($closure.Files -ge 2) "$($closureCase.Recipe): the closure check scanned the generated markdown instead of an empty set"
+		Assert-True ($closure.Checked -ge $closureCase.MinChecked) "$($closureCase.Recipe): the closure check inspected repo path references ($($closure.Checked) found)"
+		Assert-True ($closure.Problems.Count -eq 0) "$($closureCase.Recipe): every repo path in generated markdown resolves in the output or is marked source-checkout relative. $($closure.Problems -join ' | ')"
+	}
+	$loopExportGuide = Join-Path $loopOutput 'docs\05-qa.md'
+	Assert-True (Test-Path -LiteralPath $loopExportGuide) 'vertical-loop ships the export and inspection guide that Recipe/Capture.md points at'
+	Assert-True ([System.IO.File]::ReadAllText($loopExportGuide) -ceq [System.IO.File]::ReadAllText((Join-Path $repoRoot 'docs\05-qa.md'))) 'the shipped export guide matches the repository source'
+	foreach ($exportPhrase in @('Measure-UERenderArtifacts', 'CAPTURE-PRESETS', 'ffprobe')) {
+		Assert-True ([System.IO.File]::ReadAllText($loopExportGuide).Contains($exportPhrase)) "the shipped export guide reaches $exportPhrase"
+	}
+	# Negative cases: the gate must name the broken path, and must stay quiet when the claim is stated.
+	$closureMutation = Join-Path $fixtureRoot 'closure-mutation'
+	Copy-Item -LiteralPath $loopOutput -Destination $closureMutation -Recurse
+	Remove-Item -LiteralPath (Join-Path $closureMutation 'docs\05-qa.md') -Force
+	$brokenClosure = Get-UnresolvedRepoReferences $closureMutation
+	Assert-True (@($brokenClosure.Problems | Where-Object { $_ -match 'Recipe/Capture\.md:\d+ points at docs/05-qa\.md' }).Count -eq 1) "removing the guide fails the closure check and names Recipe/Capture.md and docs/05-qa.md (got: $($brokenClosure.Problems -join ' | '))"
+	Copy-Item -LiteralPath $loopExportGuide -Destination (Join-Path $closureMutation 'docs\05-qa.md')
+	$guideLines = [System.IO.File]::ReadAllLines((Join-Path $closureMutation 'docs\05-qa.md')) | Where-Object { -not ($_.Contains('source checkout')) }
+	[System.IO.File]::WriteAllLines((Join-Path $closureMutation 'docs\05-qa.md'), [string[]]$guideLines)
+	$unmarkedClosure = Get-UnresolvedRepoReferences $closureMutation
+	Assert-True (@($unmarkedClosure.Problems | Where-Object { $_ -match '^docs/05-qa\.md:\d+ points at scripts/' }).Count -ge 1) 'dropping the source-checkout notice from the shipped guide fails the closure check on its scripts/ reference'
+	Remove-Item -LiteralPath $closureMutation -Recurse -Force
+	Write-Output 'PASS: repo paths in generated markdown resolve in the output or are marked source-checkout relative, and the gate names a broken reference'
 
 	# --- TemplateDefs.ini rule engine (DOT-3135) -----------------------------------------------
 	# Each group below runs the materialize path in an isolated clone, because the fixture recipe has to
