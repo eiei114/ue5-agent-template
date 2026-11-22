@@ -43,6 +43,7 @@ $expectedGroups = @(
 	'mrq-legacy-movie-graph-names',
 	'extension-carries-codec-contract-jpg',
 	'render-exit-code-judged-not-only-recorded',
+	'same-run-reinspection-numbered-report-rule',
 	'all-fixture-directories-report-directory',
 	'group-ledger-drift-fails'
 )
@@ -1699,15 +1700,107 @@ try {
 	}
 	Register-Group 'render-exit-code-judged-not-only-recorded' 'a declared non-zero render exit code fails the verdict and exit 1, 0 passes, no declaration or only a notification stays unverified, and a non-integer is rejected with exit 3 and no report'
 
+	# ============================================================ group 15c: a re-inspection of the same run is written, not refused
+	# docs/05-qa.md tells the agent to re-render a black or short sequence, and the helper refuses to
+	# overwrite a report. With one fixed report path the second inspection of a run therefore wrote
+	# nothing and the QA record kept pointing at the first, stale pass. The path now carries an attempt
+	# number, so both inspections are written and the latest one describes the current frames.
+	$rerunRoot = Join-Path $fixtureRoot 'rerun-run'
+	$rerunFrames = Join-Path $rerunRoot 'frames'
+	$rerunEvidence = Join-Path $rerunRoot 'evidence'
+	New-FrameSequence -Directory $rerunFrames -Start 0 -EndExclusive 3
+	[System.IO.Directory]::CreateDirectory($rerunEvidence) | Out-Null
+	function Get-LatestAttemptReport([string]$EvidenceDirectory) {
+		# The report for the current frames is the one with the highest attempt number.
+		$candidates = @(Get-ChildItem -LiteralPath $EvidenceDirectory -File | Where-Object { $_.Name -match '^frames-check-(\d+)\.json$' })
+		if ($candidates.Count -eq 0) { return $null }
+		return ($candidates | Sort-Object -Property @{ Expression = { [int]($_.Name -replace '^frames-check-(\d+)\.json$', '$1') } } | Select-Object -Last 1)
+	}
+	$attemptArgs = @{ FramesDirectory = $rerunFrames; StartNumber = 0; EndNumberExclusive = 3; ExpectedWidth = 64; ExpectedHeight = 48; RunId = "fixture-$testId"; SourceRevision = 'fixture' }
+	$attempt1Path = Join-Path $rerunEvidence 'frames-check-1.json'
+	$attempt1Result = Invoke-Measure ($attemptArgs + @{ ReportPath = $attempt1Path })
+	Assert-True ($attempt1Result.ExitCode -eq 0) "attempt 1 of the run exits 0, got $($attempt1Result.ExitCode): $($attempt1Result.Output)"
+	$attempt1Data = Read-Report $attempt1Path
+	Assert-True ($attempt1Data.artifact_verdict -eq 'pass' -and $attempt1Data.observed.contract_file_count -eq 3) 'attempt 1 records pass over 3 frames'
+	$attempt1Hash = (Get-FileHash -LiteralPath $attempt1Path -Algorithm SHA256).Hash
+
+	# The re-render produced a shorter sequence. Reusing attempt 1's path is refused with exit 3 and
+	# leaves the stale pass untouched: exactly the situation the numbered path exists to avoid.
+	Remove-Item -LiteralPath (Join-Path $rerunFrames '000002.png')
+	$staleResult = Invoke-Measure ($attemptArgs + @{ ReportPath = $attempt1Path })
+	Assert-True ($staleResult.ExitCode -eq 3) "writing the second inspection to the first report path is refused with exit 3, got $($staleResult.ExitCode)"
+	Assert-True ((Get-FileHash -LiteralPath $attempt1Path -Algorithm SHA256).Hash -ceq $attempt1Hash) 'the refused second inspection left the first report untouched'
+	Assert-True ((Read-Report $attempt1Path).observed.contract_file_count -ne @(Get-ChildItem -LiteralPath $rerunFrames -File).Count) 'the first report no longer describes the current frames, so it cannot be cited as their evidence'
+
+	$attempt2Path = Join-Path $rerunEvidence 'frames-check-2.json'
+	$attempt2Result = Invoke-Measure ($attemptArgs + @{ ReportPath = $attempt2Path })
+	Assert-True ($attempt2Result.ExitCode -eq 1) "attempt 2 of the same run is written and fails the shorter sequence with exit 1, got $($attempt2Result.ExitCode): $($attempt2Result.Output)"
+	$attempt2Data = Read-Report $attempt2Path
+	Assert-True ($attempt2Data.artifact_verdict -eq 'fail') 'attempt 2 records the fail verdict of the current frames'
+	Assert-True ($attempt2Data.observed.contract_file_count -eq 2) 'attempt 2 records the 2 frames that exist now'
+	Assert-True (@($attempt2Data.failures).Count -gt 0) 'attempt 2 names the failure that the stale pass hid'
+	Assert-True ($attempt2Data.generated_at_utc -and $attempt1Data.generated_at_utc) 'both reports carry generated_at_utc'
+	Assert-True ((Get-FileHash -LiteralPath $attempt1Path -Algorithm SHA256).Hash -ceq $attempt1Hash) 'attempt 1 is kept as history, unchanged'
+	$latestReport = Get-LatestAttemptReport $rerunEvidence
+	Assert-True ($latestReport.Name -ceq 'frames-check-2.json') "the latest attempt is the report for the current frames, got $($latestReport.Name)"
+	Assert-True ((Read-Report $latestReport.FullName).observed.contract_file_count -eq @(Get-ChildItem -LiteralPath $rerunFrames -File).Count) 'the latest report matches the frames on disk'
+	Register-FixtureSnapshot 'rerun-run'
+
+	# The rule lives in docs/05-qa.md once and the other documents point at it. Each case below breaks
+	# one thing in a copy of the documents and has to be reported, so the check cannot decay into an
+	# assertion that passes on any text.
+	$citeRule = [regex]::Unescape('\u65e2\u5b58report\u3092\u73fe\u5728\u306eframes\u306e\u8a3c\u62e0\u3068\u3057\u3066\u5f15\u7528\u3057\u306a\u3044')
+	$ruleSection = [regex]::Unescape('\u753b\u50cf\u5217\u691c\u67fb\u306e\u518d\u5b9f\u884c')
+	$utf8Reader = [System.Text.Encoding]::UTF8
+	$ruleDocs = [ordered]@{
+		'docs/05-qa.md'                       = [System.IO.File]::ReadAllText((Join-Path $repoRoot 'docs/05-qa.md'), $utf8Reader)
+		'README.md'                           = [System.IO.File]::ReadAllText((Join-Path $repoRoot 'README.md'), $utf8Reader)
+		'templates/QA.md'                     = [System.IO.File]::ReadAllText((Join-Path $repoRoot 'templates/QA.md'), $utf8Reader)
+		'scripts/Get-UECaptureEncodePlan.ps1' = [System.IO.File]::ReadAllText((Join-Path $repoRoot 'scripts/Get-UECaptureEncodePlan.ps1'), $utf8Reader)
+	}
+	function Get-ReportRuleProblems($Docs, [string]$CiteRule, [string]$RuleSection) {
+		$problems = New-Object System.Collections.Generic.List[string]
+		$ruleCount = 0
+		foreach ($name in @($Docs.Keys)) {
+			$text = [string]$Docs[$name]
+			$ruleCount += ([regex]::Matches($text, [regex]::Escape($CiteRule))).Count
+			if ($text.Contains('frames-check.json')) { $problems.Add("$name still names the single fixed frames-check.json path") }
+			if (-not $text.Contains('frames-check-<attempt>.json')) { $problems.Add("$name does not name frames-check-<attempt>.json") }
+		}
+		if ($ruleCount -ne 1) { $problems.Add("the re-inspection rule appears $ruleCount times, expected exactly 1") }
+		elseif (-not ([string]$Docs['docs/05-qa.md']).Contains($CiteRule)) { $problems.Add('the re-inspection rule is not in docs/05-qa.md') }
+		foreach ($pointer in @('README.md', 'templates/QA.md')) {
+			if (-not ([string]$Docs[$pointer]).Contains($RuleSection)) { $problems.Add("$pointer does not point at the re-inspection section") }
+		}
+		return $problems.ToArray()
+	}
+	$realRuleProblems = @(Get-ReportRuleProblems $ruleDocs $citeRule $ruleSection)
+	Assert-True ($realRuleProblems.Count -eq 0) ('the documents state the re-inspection rule once and name the numbered path: ' + ($realRuleProblems -join '; '))
+	$brokenCases = @(
+		@{ Name = 'the rule sentence is broken'; File = 'docs/05-qa.md'; Edit = { param($t) $t.Replace($citeRule, 'rule removed') }; Needle = 'appears 0 times' },
+		@{ Name = 'the rule is repeated in README.md'; File = 'README.md'; Edit = { param($t) $t + $citeRule }; Needle = 'appears 2 times' },
+		@{ Name = 'README.md goes back to the single fixed path'; File = 'README.md'; Edit = { param($t) $t.Replace('frames-check-<attempt>.json', 'frames-check.json') }; Needle = 'README.md still names the single fixed' },
+		@{ Name = 'the QA template goes back to the single fixed path'; File = 'templates/QA.md'; Edit = { param($t) $t.Replace('frames-check-<attempt>.json', 'frames-check.json') }; Needle = 'templates/QA.md still names the single fixed' },
+		@{ Name = 'the plan script goes back to the single fixed path'; File = 'scripts/Get-UECaptureEncodePlan.ps1'; Edit = { param($t) $t.Replace('frames-check-<attempt>.json', 'frames-check.json') }; Needle = 'scripts/Get-UECaptureEncodePlan.ps1 still names the single fixed' },
+		@{ Name = 'the QA template stops pointing at the section'; File = 'templates/QA.md'; Edit = { param($t) $t.Replace($ruleSection, 'removed') }; Needle = 'templates/QA.md does not point at the re-inspection section' }
+	)
+	foreach ($brokenCase in $brokenCases) {
+		$brokenDocs = [ordered]@{}
+		foreach ($name in @($ruleDocs.Keys)) { $brokenDocs[$name] = $ruleDocs[$name] }
+		$brokenDocs[$brokenCase.File] = & $brokenCase.Edit $ruleDocs[$brokenCase.File]
+		$brokenProblems = @(Get-ReportRuleProblems $brokenDocs $citeRule $ruleSection)
+		Assert-True (($brokenProblems -join '; ').Contains($brokenCase.Needle)) "the rule check fails when $($brokenCase.Name), got: $($brokenProblems -join '; ')"
+	}
+	Register-Group 'same-run-reinspection-numbered-report-rule' 'a second inspection of the same run is written to its own numbered report and describes the current frames, the first report is kept as history, and the single documented rule fails when it is broken or repeated'
 	# ============================================================ group 16: the inspector never changed its input
 	# Every fixture built above registered the snapshot it had when the suite finished building it.
-	# This gate compares all 35 of them again, so a later group that corrupts an earlier fixture is
+	# This gate compares all 36 of them again, so a later group that corrupts an earlier fixture is
 	# caught here by path instead of being reported as a pass by a tautology. reports/ is excluded from
 	# those snapshots because the suite writes it on purpose; its contents are accounted separately
 	# (one non-empty report per allocated path, minus the deliberately refused ones).
 	Assert-FixtureInputsUnchanged
 	$fixtureCount = $script:fixtureBaselines.Count
-	Assert-True ($fixtureCount -eq 35) "every fixture directory built by the suite is covered by the comparison, got $fixtureCount"
+	Assert-True ($fixtureCount -eq 36) "every fixture directory built by the suite is covered by the comparison, got $fixtureCount"
 	Assert-True (@(Get-FixtureInputDrift).Count -eq 0) 'no fixture directory was modified, added to or removed after it was built'
 	Assert-True (@(Get-ReportDrift).Count -eq 0) 'reports/ holds exactly one non-empty report per allocated report path'
 	Register-Group 'all-fixture-directories-report-directory' "all $fixtureCount fixture directories and the report directory are unchanged since they were built"
