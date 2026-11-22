@@ -88,6 +88,24 @@ jobs:
           ./scripts/Test-UEIntegrationReview.ps1
           if ($LASTEXITCODE -ne 0) { throw "Test-UEIntegrationReview.ps1 exited $LASTEXITCODE" }
 
+  script-assertions:
+    name: script assertion gate
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 1
+
+      # A second Assert-* on the same line is parsed as a string argument and never runs, while the
+      # suite still prints PASS. The gate parses scripts/*.ps1 with the PowerShell AST and fails on it.
+      - name: Test-UETemplateScripts.ps1
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./scripts/Test-UETemplateScripts.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Test-UETemplateScripts.ps1 exited $LASTEXITCODE" }
+
   lease:
     name: lease protocol
     runs-on: windows-latest
