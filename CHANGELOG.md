@@ -1,5 +1,16 @@
 # 変更履歴
 
+## Unreleased — DOT-3239 — 2026-11-22
+
+- 性能検品の「観測方法」は自由記述の1語で、`templates/QA.md` の `QA-PERF-01` にも計測器・build config を書く場所が無かった。しかも `docs/04-package.md` は性能をShipping ZIPで測ると定めるのに、UE 5.8.4 のEngineソースを読むと、Shippingの既定では engine 内の計測がすべて使えない。`stat unit` は入力経路（`ALLOW_CONSOLE`、`ALLOW_CONSOLE_IN_SHIPPING` 既定0）、FPS chart は `startfpschart` が `!UE_BUILD_SHIPPING` 配下・出力が `ALLOW_DEBUG_FILES`（Shippingでは `WITH_EDITOR`=0）配下、`stat startfile` は `STATS`（既定0）配下。文書どおりに進むと「Editor Playの数字をShippingの性能として書く」「空欄で納品」「数値の捏造」のどれかに落ちた。これは**UEを起動していない静的な読取**であり、実Shipping buildでの実行確認ではない。
+- `docs/05-qa.md` に Performance record contract を追加した。観測方法を `measured_build_config`（Editor/Development/Shipping）・`instrument`（engine-statunit / engine-fpschart / engine-startfile / external-capture / manual-or-unknown / none）・`artifact`（出所path、無ければ none。none は合格根拠にならない）の3項目に分け、「Shippingを測ったと書くなら、そのconfigで成立する計測器でなければならない」を規則にした。FPS目安には「build configとinstrumentを伴うときだけ意味を持つ」を、Bonfire記録には「計測器不明のため転用不可」を付した（過去記録は書き換えていない）。
+- `templates/QA.md` の `QA-PERF-01` を、**行を増やさず**証拠セルの要求だけ変えて `build_config` / `instrument` / `artifact` / `measured_at` を要求する形にした。データ行は32行のまま。
+- `scripts/Test-UEPerformanceRecord.ps1` を追加した。記録（JSON1件または配列、または引数）の**組の成立**を判定し、数値の妥当性は見ない。Shipping+engine-statunit / engine-fpschart / engine-startfile は不成立（fail、根拠の行を理由に出す）、instrument が none・manual-or-unknown・空、artifact が none・空、measured_at 空は unverified（failではなく総合合格にもしない）、Shipping+external-capture・Development+engine-fpschart・Development+engine-statunit は pass。語彙外・大文字小文字違いは fail。複数記録は fail > unverified > pass の順で集約し、空集合はpassにしない。入力は読むだけで、`-ReportPath` は排他的に新規作成し既存を上書きしない。`-SelfTest` が全分岐と入力不変・report非上書きを固定し、`verify.yml` に追加した。
+- `docs/04-package.md` の Shipping ZIP 検品の項に、Shippingではengine内計測が既定で使えないため外部計測器を使うか別configで測ったことを明記する旨を補った。Shipping / `-archive` / ZIP手順は変えていない。
+
+未検証: 実Shipping buildで各計測が本当に使えないことの実行確認、外部計測器が当該hostで実際にframe timeを取得できること、`bUseConsoleInShipping` 等を明示的に有効にしたtargetでの挙動、`ALLOW_DEBUG_FILES` / `STATS` / `ALLOW_CONSOLE` の実ビルド最終値、過去Bonfire記録の計測器。
+
+移行: 既存の `unverified` は `unverified` のまま。過去の性能記録の書き換えは強制しない。新しい記録の形は次の run から使う。外部計測器の導入・自動化、FPS目標値、MRQ / ffmpeg / ffprobe の手順は変えていない。
 ## Unreleased — DOT-3117 — 2026-11-13
 
 - `templates/QA.md` が、repo 自身が要求する受入項目のうち10項目（起動map・Pawn・開始姿勢、座位/立位、host の session 作成、2 人目 client の join、score と player count の replication、client leave、reconnect、failed search、timeout）に対応する行を持っていなかった。行が無ければ検品者はその欄自体を書かないため、`docs/05-qa.md:36` の「合否・版/hash・実施者・日時・証拠・未確認をセットにする」を満たさないまま `Out/run_<runid>/` の QA が納品セットに入った。行を追加し、各行に機械検査用の `[QA-...]` ID を付けた。

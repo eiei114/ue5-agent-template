@@ -15,6 +15,7 @@ if ($LASTEXITCODE -ne 0) { throw 'BuildCookRun failed' }
 
 4. staged exeだけでなく必要Pak/IoStore/依存一式とREADME/CREDITSを梱包。Development/Editor exeを誤納品しない。READMEは`Out/run_<runid>/README.md`として`templates/README.md`から記入し、起動方法と操作表を実機の値にする（雛形の場所・受領証の契約は`docs/06-delivery.md`）。
 5. 新規 `extracted-check/` へZIPを展開し、そこからexeを起動。UE/元sourceへの絶対path依存がないか確認。docs/05-qaの操作/実音/性能/5分検証を**この版**で行う。
+   Shippingでは既定でengine内の計測（`stat unit` / FPS chart / `stat startfile`）が使えない（UE 5.8.4のEngineソース読取による静的事実）。性能は外部計測器（`external-capture`）で測るか、別のbuild config（Development等）で測ったことを`measured_build_config`として明記する。Editor Playの数値をShippingの性能として書かない。記録の形と機械判定は`docs/05-qa.md`の「Performance record contract」と`scripts/Test-UEPerformanceRecord.ps1`。Shipping / `-archive` / ZIP手順自体は変えない。
 6. ZIPを閉じてからSHA256を採る（PowerShell `Get-FileHash -Algorithm SHA256 <zip>`）。bytes/内部構成/UE/OS/GPU/ビルド設定/hashをDELIVERYへ。hash後にZIPを編集したら再計測。
 
 ## 記入と監査（UE不要・Windows PowerShell）
