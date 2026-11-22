@@ -151,15 +151,27 @@ function Stop-OwnedProcessTree([System.Diagnostics.Process]$Process) {
 	try { $Process.Kill() } catch { }
 }
 
+# Fixed capture budget for each of stdout and stderr of one decoder process, in bytes of UTF-8 text.
+# A valid `ffprobe -version` or single-frame `-of json` answer is well under 4 KiB, so 1 MiB leaves a
+# wide margin and still keeps the helper's retained text far below any memory concern. The budget is a
+# constant, not a parameter: a caller cannot widen it to make a flooding decoder look fine.
+$script:DecoderOutputLimitBytes = 1048576
+
 function Invoke-BoundedProcess {
 	param(
 		[string]$FilePath,
 		[string[]]$ArgumentList,
 		[int]$TimeoutMilliseconds
 	)
-	# Every external probe is bounded. A deadline kill is reported as `timedOut`; it is never
-	# rounded into a success. Only the process started here is terminated.
+	# Every external probe is bounded in time and in captured output. A deadline kill is reported as
+	# `timedOut`; an output-budget kill is reported as `outputLimitExceeded`. Neither is ever rounded
+	# into a success. Only the process started here (and its own tree) is terminated.
+	#
+	# Output is read in small chunks and kept only up to $script:DecoderOutputLimitBytes per stream. The
+	# first chunk that would cross the budget stops retention, marks the stream truncated and kills the
+	# owned process tree; what was kept is then a truncated prefix and callers must not parse it.
 	$process = $null
+	$limit = $script:DecoderOutputLimitBytes
 	try {
 		$startInfo = New-Object System.Diagnostics.ProcessStartInfo
 		$startInfo.FileName = $FilePath
@@ -169,42 +181,84 @@ function Invoke-BoundedProcess {
 		$startInfo.RedirectStandardOutput = $true
 		$startInfo.RedirectStandardError = $true
 		$process = [System.Diagnostics.Process]::Start($startInfo)
-		# Drain both pipes while waiting. Reading them only after the wait makes a slow or verbose
-		# decoder block on a full pipe and turns a short deadline into minutes.
-		$stdoutTask = $process.StandardOutput.ReadToEndAsync()
-		$stderrTask = $process.StandardError.ReadToEndAsync()
-		if (-not $process.WaitForExit($TimeoutMilliseconds)) {
-			$timedOut = $true
-			Stop-OwnedProcessTree -Process $process
-			$null = $process.WaitForExit(2000)
-		} else {
-			$timedOut = $false
+		# Drain both pipes continuously while waiting. Reading them only after the wait makes a slow or
+		# verbose decoder block on a full pipe and turns a short deadline into minutes.
+		$streams = @(
+			[pscustomobject]@{ reader = $process.StandardOutput; task = $null; builder = (New-Object System.Text.StringBuilder); bytes = [long]0; eof = $false; exceeded = $false },
+			[pscustomobject]@{ reader = $process.StandardError; task = $null; builder = (New-Object System.Text.StringBuilder); bytes = [long]0; eof = $false; exceeded = $false }
+		)
+		$buffers = @((New-Object 'char[]' 4096), (New-Object 'char[]' 4096))
+		$timedOut = $false
+		$outputLimitExceeded = $false
+		$killed = $false
+		$deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+		$drainDeadline = $null
+		while ($true) {
+			$progressed = $false
+			for ($i = 0; $i -lt 2; $i++) {
+				$stream = $streams[$i]
+				if ($stream.eof) { continue }
+				if ($null -eq $stream.task) { $stream.task = $stream.reader.ReadAsync($buffers[$i], 0, $buffers[$i].Length) }
+				if (-not $stream.task.IsCompleted) { continue }
+				$count = 0
+				try { $count = [int]$stream.task.Result } catch { $count = 0 }
+				$stream.task = $null
+				$progressed = $true
+				if ($count -le 0) { $stream.eof = $true; continue }
+				if ($stream.exceeded) { continue } # keep draining, retain nothing more
+				$chunkBytes = $utf8NoBom.GetByteCount($buffers[$i], 0, $count)
+				if (($stream.bytes + $chunkBytes) -gt $limit) {
+					$stream.exceeded = $true
+					$outputLimitExceeded = $true
+					continue
+				}
+				$null = $stream.builder.Append($buffers[$i], 0, $count)
+				$stream.bytes += $chunkBytes
+			}
+			if ($outputLimitExceeded -and -not $killed) {
+				Stop-OwnedProcessTree -Process $process
+				$killed = $true
+				$drainDeadline = [DateTime]::UtcNow.AddSeconds(2)
+			}
+			if ($streams[0].eof -and $streams[1].eof) { break }
+			if ($null -ne $drainDeadline) {
+				if ([DateTime]::UtcNow -ge $drainDeadline) { break }
+			} elseif ($process.HasExited) {
+				# Exited normally: the pipes still need a short grace to hand over what is buffered.
+				$drainDeadline = [DateTime]::UtcNow.AddSeconds(2)
+			} elseif ([DateTime]::UtcNow -ge $deadline) {
+				$timedOut = $true
+				Stop-OwnedProcessTree -Process $process
+				$killed = $true
+				$drainDeadline = [DateTime]::UtcNow.AddSeconds(2)
+			}
+			if (-not $progressed) { Start-Sleep -Milliseconds 10 }
 		}
-		$stdout = ''
-		$stderr = ''
-		# Reading .Result on an incomplete task blocks with no deadline, so only read a task that
-		# actually completed. A deadline kill that leaves output undrained must not stall the run.
-		$drainDeadline = [DateTime]::UtcNow.AddSeconds(2)
-		while (-not $stdoutTask.IsCompleted -and [DateTime]::UtcNow -lt $drainDeadline) { Start-Sleep -Milliseconds 50 }
-		while (-not $stderrTask.IsCompleted -and [DateTime]::UtcNow -lt $drainDeadline) { Start-Sleep -Milliseconds 50 }
-		if ($stdoutTask.IsCompleted) { try { $stdout = $stdoutTask.Result } catch { } }
-		if ($stderrTask.IsCompleted) { try { $stderr = $stderrTask.Result } catch { } }
+		if ($killed) { $null = $process.WaitForExit(2000) }
+		# A budget overrun outranks a deadline kill that fired in the same drain window.
+		if ($outputLimitExceeded) { $timedOut = $false }
 		$exitCode = $null
-		if (-not $timedOut) {
+		if (-not $timedOut -and -not $outputLimitExceeded) {
 			try { $exitCode = $process.ExitCode } catch { }
 		}
 		return [ordered]@{
 			started = $true
 			timedOut = $timedOut
+			outputLimitExceeded = $outputLimitExceeded
+			stdoutTruncated = $streams[0].exceeded
+			stderrTruncated = $streams[1].exceeded
 			exit_code = $exitCode
-			stdout = $stdout
-			stderr = $stderr
+			stdout = $streams[0].builder.ToString()
+			stderr = $streams[1].builder.ToString()
 			error = ''
 		}
 	} catch {
 		return [ordered]@{
 			started = $false
 			timedOut = $false
+			outputLimitExceeded = $false
+			stdoutTruncated = $false
+			stderrTruncated = $false
 			exit_code = $null
 			stdout = ''
 			stderr = ''
@@ -502,11 +556,13 @@ if (-not [string]::IsNullOrWhiteSpace($DecoderPath)) {
 if (-not [string]::IsNullOrWhiteSpace($decoder.path)) {
 	$versionProbe = Invoke-BoundedProcess -FilePath $decoder.path -ArgumentList @('-version') -TimeoutMilliseconds ([Math]::Min($DecoderTimeoutMilliseconds, 15000))
 	$decoder.version_probe_exit = $versionProbe.exit_code
-	if ($versionProbe.started -and -not $versionProbe.timedOut -and $versionProbe.exit_code -eq 0) {
+	if ($versionProbe.started -and -not $versionProbe.timedOut -and -not $versionProbe.outputLimitExceeded -and $versionProbe.exit_code -eq 0) {
 		$firstLine = @(($versionProbe.stdout -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) | Select-Object -First 1
 		if (-not [string]::IsNullOrWhiteSpace($firstLine)) { $decoder.version = $firstLine.Trim() }
 	} elseif ($versionProbe.timedOut) {
 		$decoder.version = 'unknown (version probe timed out)'
+	} elseif ($versionProbe.outputLimitExceeded) {
+		$decoder.version = 'unknown (version probe output exceeded the capture limit)'
 	} else {
 		$decoder.version = 'unknown (version probe failed)'
 	}
@@ -521,6 +577,7 @@ $decodeFailures = New-Object System.Collections.Generic.List[object]
 $codecMismatches = New-Object System.Collections.Generic.List[object]
 $resolutionMismatches = New-Object System.Collections.Generic.List[object]
 $decodeTimeouts = New-Object System.Collections.Generic.List[object]
+$decodeOutputOverflows = New-Object System.Collections.Generic.List[object]
 $decodeNotEvaluated = New-Object System.Collections.Generic.List[object]
 $decodeBudgetExhausted = $false
 $retriedFrameCount = 0
@@ -623,6 +680,18 @@ foreach ($frame in $inRangeFrames) {
 	if (-not $probe.started) {
 		$entry.decode = 'failed'
 		$entry.detail = "decoder could not be started: $($probe.error)"
+		$decodeFailures.Add([ordered]@{ file = $frame.name; index = [int]$frame.index; detail = $entry.detail })
+		$frameChecks.Add($entry)
+		continue
+	}
+	if ($probe.outputLimitExceeded) {
+		$overflowNames = @()
+		if ($probe.stdoutTruncated) { $overflowNames += 'stdout' }
+		if ($probe.stderrTruncated) { $overflowNames += 'stderr' }
+		$overflowStreams = $overflowNames -join ' and '
+		$entry.decode = 'failed'
+		$entry.detail = "decoder $overflowStreams exceeded the $($script:DecoderOutputLimitBytes) byte capture limit; the probe was killed and its truncated output was not parsed"
+		$decodeOutputOverflows.Add([ordered]@{ file = $frame.name; index = [int]$frame.index; streams = $overflowStreams })
 		$decodeFailures.Add([ordered]@{ file = $frame.name; index = [int]$frame.index; detail = $entry.detail })
 		$frameChecks.Add($entry)
 		continue
@@ -1007,6 +1076,13 @@ if ($resolutionMismatches.Count -gt 0) {
 		sample = (Format-SampleList -Items $resolutionMismatches)
 	})
 }
+if ($decodeOutputOverflows.Count -gt 0) {
+	$failures.Add([ordered]@{
+		category = 'decode_output_limit'
+		detail = "$($decodeOutputOverflows.Count) frame(s) made the decoder write more than the $($script:DecoderOutputLimitBytes) byte stdout/stderr capture limit"
+		sample = (Format-SampleList -Items $decodeOutputOverflows)
+	})
+}
 if ($decodeTimeouts.Count -gt 0) {
 	$failures.Add([ordered]@{
 		category = 'decode_timeout'
@@ -1182,6 +1258,8 @@ $report = [ordered]@{
 		frames_unverified = @($frameChecks | Where-Object { $_.decode -eq 'unverified' }).Count
 		frames_retried = $retriedFrameCount
 		per_frame_deadline_ms = $DecoderTimeoutMilliseconds
+		output_limit_bytes = $script:DecoderOutputLimitBytes
+		frames_output_limit_exceeded = $decodeOutputOverflows.Count
 		total_budget_ms = $TotalDecodeBudgetMilliseconds
 		budget_exhausted = $decodeBudgetExhausted
 		elapsed_ms = [long]$budgetClock.ElapsedMilliseconds
@@ -1196,6 +1274,7 @@ $report = [ordered]@{
 		empty_files = $emptyFiles.ToArray()
 		decode_failures = $decodeFailures.ToArray()
 		decode_timeouts = $decodeTimeouts.ToArray()
+		decode_output_overflows = $decodeOutputOverflows.ToArray()
 		decode_not_evaluated = $decodeNotEvaluated.ToArray()
 		codec_mismatches = $codecMismatches.ToArray()
 		resolution_mismatches = $resolutionMismatches.ToArray()
