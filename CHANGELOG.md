@@ -1,5 +1,11 @@
 # 変更履歴
 
+## Unreleased — UE-QA-REPORT-REUSE-001 (DOT-3443) — 2026-11-23
+
+- 理由: 画像列検査の report は `evidence/frames-check.json` という固定の1 path で、helper は既存 report を上書きせず拒否する。同じ `Out/run_<runid>/` で「黒frameなら再render」（`docs/05-qa.md`）に従って再検査すると、2回目は何も書かず、QA の証拠欄は現在の `frames/` と対応しない古い pass を指したままになった。さらに引数拒否が artifact の `fail` と同じ exit 1 で終わり、exit code から区別できなかった。
+- 変更: (1) report path を attempt ごとに分けた（`evidence/frames-check-<attempt>.json`、`<attempt>` は同じ run 内の検査回数で1から）。「既存 report を現在の frames の証拠として引用しない」規則の正本は `docs/05-qa.md` の「画像列検査の再実行」節の1箇所だけで、`README.md` と `templates/QA.md` はその節を指し、`Get-UECaptureEncodePlan.ps1` の `FRAMES-CHECK` 行は `<attempt>` 入りの path を出す。(2) `Measure-UERenderArtifacts.ps1` の引数拒否（既存 report path、report が画像列 dir の内側、範囲不正、解像度の片側指定、`FramesDirectory` が無い、reparse point）を、report を書かず exit 3 に統一した（非整数の `-RenderExitCode` は従来から exit 3）。exit 1 は report が書かれ `artifact_verdict` が `fail` のときだけ。判定ロジックは変えていない。(3) `scripts/Test-UERenderArtifacts.ps1` に group `same-run-reinspection-numbered-report-rule` を追加し（正例: 同一 run の2回検査が両方書かれ最新 attempt が現在の frames を反映、旧 report は履歴として不変。負例: 旧 path への再書込は exit 3 で旧 pass を更新しない、規則文の破壊・重複・固定 path への逆戻りを検出）、group 2 などの拒否の期待値を「exit 3 + 拒否文言」に更新した（削除した group は無い）。
+- 移行: 拒否を exit 1 で判定していた呼び出しは exit 3 に読み替える。QA の証拠欄（`QA-IMG-01`）には実際に使った `frames-check-<attempt>.json` の file 名を書く。既に固定名 `frames-check.json` で書いた過去 run の report は読み替え不要で、そのまま履歴として残る。
+- Unverified Scope: UE の compile / Editor / PIE / MRQ / render / ffprobe（MP4）/ 目視 / 音 / Shipping は実行していない。実 MRQ の画像列に対する再検査、実際の run で何 attempt 発生するか、agent が最新 attempt を取り違えないかは未観測。DOT-3401（`run_id` / `source_revision` の必須化）、DOT-3430（report の atomic 書込）は別 Issue で、ここでは扱っていない。
 ## Unreleased — UE-RENDER-EXIT-EVIDENCE-001 (DOT-3458) — 2026-11-22
 
 - 理由: `scripts/Measure-UERenderArtifacts.ps1` は `-RenderExitCode` / `-RenderNotification` を受け取って `render_evidence` に書くだけで、どの判定にも使っていなかった。`conclusion` は常に定数 `unevaluated_by_this_tool` で、`-RenderExitCode 1`（render は exit 1 で落ちた）と明示しても `VERDICT: pass` / process exit 0 / `failures` 0 を返し、「exit 0 なら緑」の機械 gate をそのまま通った。`-RenderExitCode unknown` のような非数値も検証されずに `exit_code: "unknown"` として report へ書かれた。`docs/05-qa.md` が要求する render 通知/exit の独立判定の欄が実装に無かった。
