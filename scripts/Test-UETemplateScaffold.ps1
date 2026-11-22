@@ -99,6 +99,105 @@ function Assert-True([bool]$Condition, [string]$Message) {
 	if (-not $Condition) { throw "ASSERT FAILED: $Message" }
 }
 
+# ---------------------------------------------------------------- assertion-group ledger
+# The one declaration of the assertion groups this suite must run. Every group ends in
+# Register-Group with the same identifier, and the end of the run compares the two. A group that
+# is deleted, skipped or renamed no longer registers, so the run fails and names it instead of
+# finishing with fewer PASS lines. Keys are words, never positions, so reordering cannot break them.
+$expectedGroups = @(
+	'qa-template-carries-repository-required',
+	'dirty-template-rejected-using-isolated',
+	'published-template-commit-recorded-measured',
+	'unpushed-template-commit-stops-default',
+	'checkout-without-remote-records-repository',
+	'offline-bundle-clone-recorded-bundle',
+	'plugin-config-carriers-checked-resolved',
+	'raw-copy-recipe-applies-templatedefs',
+	'game-capture-recipe-official-template',
+	'capture-only-vertical-loop-recipe',
+	'lock-records-every-enabled-plugin',
+	'third-person-recipe-materializes-official',
+	'repo-paths-generated-markdown-resolve',
+	'filenamereplacements-renames-file-names-while',
+	'from-matches-nothing-replaces-nothing',
+	'unimplemented-templatedefs-ini-keys-warned',
+	'per-mount-detaillevels-declaration-decides',
+	'declared-detail-level-engine-lacks',
+	'path-traversal-rejected-before-output',
+	'recipe-directory-added-own-generates',
+	'purpose-change-composition-only-lock',
+	'required-plugins-drives-plugin-payload',
+	'recipe-data-mismatches-stop-generation',
+	'original-two-recipes-keep-their',
+	'optional-engine-build-fields-distinguish',
+	'build-version-only-changelist-still',
+	'two-different-engine-installs-produce',
+	'missing-non-numeric-version-fields',
+	'build-version-without-changelist-records',
+	'path-length-budget-stops-before',
+	'non-numeric-build-version-fields',
+	'unresolvable-project-identity-stops-generation',
+	'unmodified-qa-template-copy-satisfies',
+	'dropping-qa-acceptance-row-fails',
+	'templatedefs-ini-accepts-spaced-unspaced',
+	'folderrenames-line-reader-drops-stops',
+	'identity-declared-under-two-section',
+	'default-map-resolution-accepts-pack',
+	'missing-default-map-stops-generation',
+	'plugin-declares-module-without-implement',
+	'commented-out-implement-module-count',
+	'implement-module-whose-module-argument',
+	'online-player-count-excludes-leaving',
+	'delivery-set-agents-md-folder',
+	'enabled-plugin-installed-engine-ship',
+	'contained-folderrenames-target-still-materializes',
+	'folderrenames-target-outside-output-directory',
+	'folderrenames-target-outside-production-rejected',
+	'folderrenames-target-inside-another-run',
+	'sharedcontentpacks-mountname-outside-output-directory',
+	'shared-content-pack-colliding-template',
+	'exclusive-output-directory-creation-preserves',
+	'preflight-lease-placement-stated-once',
+	'preflight-lease-recorded-outside-generated',
+	'empty-generated-project-directory-reported',
+	'lease-only-generated-project-directory',
+	'out-only-generated-project-directory',
+	'editing-tracked-qa-template-still',
+	'existing-output-rejected-before-any',
+	'missing-plugin-descriptor-leaves-published',
+	'failure-recipe-copy-stage-leaves',
+	'stopped-run-block-regeneration-same',
+	'group-ledger-drift-fails'
+)
+$registeredGroups = New-Object 'System.Collections.Generic.List[string]'
+
+function Register-Group([string]$Id, [string]$Message) {
+	$script:registeredGroups.Add($Id)
+	Write-Output "PASS: $Message"
+}
+
+function Get-GroupLedgerProblems([string[]]$Expected, [string[]]$Registered) {
+	$Expected = @($Expected)
+	$Registered = @($Registered)
+	$problems = @()
+	if ($Expected.Count -eq 0) { $problems += 'the ledger declares no groups' }
+	$missing = @($Expected | Where-Object { $Registered -notcontains $_ })
+	$undeclared = @($Registered | Where-Object { $Expected -notcontains $_ } | Select-Object -Unique)
+	$duplicated = @($Registered | Group-Object | Where-Object { $_.Count -gt 1 } | ForEach-Object { $_.Name })
+	$declaredTwice = @($Expected | Group-Object | Where-Object { $_.Count -gt 1 } | ForEach-Object { $_.Name })
+	if ($missing.Count -gt 0) { $problems += ('missing groups: ' + ($missing -join ', ')) }
+	if ($undeclared.Count -gt 0) { $problems += ('undeclared groups: ' + ($undeclared -join ', ')) }
+	if ($duplicated.Count -gt 0) { $problems += ('groups registered twice: ' + ($duplicated -join ', ')) }
+	if ($declaredTwice.Count -gt 0) { $problems += ('groups declared twice: ' + ($declaredTwice -join ', ')) }
+	return $problems
+}
+
+function Assert-GroupLedger([string[]]$Expected, [string[]]$Registered) {
+	$problems = @(Get-GroupLedgerProblems $Expected $Registered)
+	Assert-True ($problems.Count -eq 0) ('every declared assertion group ran: expected {0}, got {1}; {2}' -f @($Expected).Count, @($Registered).Count, ($problems -join '; '))
+}
+
+
 function Get-StagingResidue([string]$Root, [string]$Run) {
 	# Staging names carry the run id, so a leftover is attributable to the run that failed to clean up.
 	return @(Get-ChildItem -LiteralPath $Root -Force -Filter ('.stage-{0}-*' -f $Run) | ForEach-Object { $_.Name })
@@ -829,7 +928,7 @@ try {
 		$row = @($qaRows | Where-Object { $_.Id -eq $required })[0]
 		Assert-True ([string]::IsNullOrWhiteSpace($row.Evidence) -eq $false) "QA row $required says what evidence proves it"
 	}
-	Write-Output 'PASS: QA template carries the repository-required acceptance rows for Play, online/LAN, and timeout cleanup'
+	Register-Group 'qa-template-carries-repository-required' 'QA template carries the repository-required acceptance rows for Play, online/LAN, and timeout cleanup'
 
 	[System.IO.Directory]::CreateDirectory($fixtureEngine) | Out-Null
 	# Epic's own Engine/Build/Build.version keeps Changelist 0 and puts the build identifier in
@@ -984,7 +1083,7 @@ try {
 	Assert-True ($dirtyFailure.Contains('template working tree is dirty')) 'dirty template is rejected when AllowDirtyTemplate is omitted'
 	Assert-True (-not (Test-Path -LiteralPath $dirtyOutput)) 'dirty-template rejection creates no output project'
 	Assert-True ([System.IO.File]::ReadAllText($dirtyMarker) -ceq 'fixture only') 'dirty-template rejection leaves the isolated fixture marker unchanged'
-	Write-Output 'PASS: dirty template is rejected using an isolated fixture without touching the developer checkout'
+	Register-Group 'dirty-template-rejected-using-isolated' 'dirty template is rejected using an isolated fixture without touching the developer checkout'
 
 	# Provenance group: the lock must name the template actually used and must only claim a published
 	# commit when the recorded repository can serve it. Four fixture repositories cover the states a
@@ -1047,7 +1146,7 @@ try {
 	& git -C $thirdPartyClone checkout --quiet --detach $provPublishedLock.template_commit
 	if ($LASTEXITCODE -ne 0) { throw 'A third party could not check out the commit the published lock names.' }
 	Assert-True (Test-Path -LiteralPath (Join-Path $thirdPartyClone 'scripts\New-UETemplateScaffold.ps1') -PathType Leaf) 'the commit the lock names contains the template the lock describes'
-	Write-Output 'PASS: a published template commit is recorded with its measured repository and stays retrievable'
+	Register-Group 'published-template-commit-recorded-measured' 'a published template commit is recorded with its measured repository and stays retrievable'
 
 	# (b) unpushed head: default stops, and the explicit switch records published = false.
 	[System.IO.File]::AppendAllText((Join-Path $provTemplateRoot 'PROVENANCE-FIXTURE.txt'), "unpublished change`n", [System.Text.UTF8Encoding]::new($false))
@@ -1069,7 +1168,7 @@ try {
 	Assert-True ($provUnpublishedLock.template_commit -ceq $provUnpublishedRevision) 'the explicit switch still records the real template commit'
 	Assert-True ($provUnpublishedLock.template_commit_published -eq $false) 'the explicit switch records published = false instead of claiming the commit exists remotely'
 	Assert-True ($null -ne $provUnpublishedLock.PSObject.Properties['template_commit_published']) 'an unpublished lock spells out template_commit_published rather than omitting it'
-	Write-Output 'PASS: an unpushed template commit stops the default path and is recorded as unpublished when allowed'
+	Register-Group 'unpushed-template-commit-stops-default' 'an unpushed template commit stops the default path and is recorded as unpublished when allowed'
 
 	# (c) no remote: the lock must not fall back to the public repository constant.
 	$provNoRemoteRoot = Join-Path $provenanceRoot 'ProvNoRemote'
@@ -1097,7 +1196,7 @@ try {
 	Assert-True ($null -eq $provNoRemoteLock.template_repository) 'a checkout without an origin records no repository instead of the public repository constant'
 	Assert-True ($provNoRemoteLock.template_source_kind -ceq 'no-remote') 'a checkout without an origin records the no-remote source kind'
 	Assert-True ($null -eq $provNoRemoteLock.template_commit_published) 'an unprobeable commit is recorded as null and not as published'
-	Write-Output 'PASS: a checkout without a remote records no repository and an unverified publication state'
+	Register-Group 'checkout-without-remote-records-repository' 'a checkout without a remote records no repository and an unverified publication state'
 
 	# (d) offline bundle clone: the lock must identify the bundle as the source, never the public repository.
 	$provBundle = Join-Path $provenanceRoot 'prov-template.bundle'
@@ -1128,7 +1227,7 @@ try {
 	Assert-True ($provBundleLock.template_repository -cne 'https://github.com/eiei114/ue5-agent-template') 'a bundle clone does not claim the public repository'
 	Assert-True ($provBundleLock.template_commit -ceq $provBundleRevision) 'a bundle clone records its own head'
 	Assert-True ($null -eq $provBundleLock.template_commit_published) 'an offline bundle cannot establish publication, so the state stays null'
-	Write-Output 'PASS: an offline bundle clone is recorded as a bundle with an unverified publication state'
+	Register-Group 'offline-bundle-clone-recorded-bundle' 'an offline bundle clone is recorded as a bundle with an unverified publication state'
 
 	$projectName = $projectPrefix
 	$diff = @('Map: /Game/Test/Maps/L_Set', 'Exposure: capture preset A')
@@ -1207,7 +1306,7 @@ try {
 	Write-FixtureJson (Join-Path $resolvableCarrierRoot 'Config\DefaultMulticaOnlineStarter.ini') "[MulticaOnlineStarter]`r`n"
 	Write-FixtureJson (Join-Path $resolvableCarrierRoot 'Config\Windows\WindowsEngine.ini') "[OnlineSubsystem]`r`n"
 	Assert-True (@(Get-PluginConfigCarrierProblems -PluginDirectory $resolvableCarrierRoot -PluginName 'MulticaOnlineStarter' -PlatformName 'Windows').Count -eq 0) 'Config/Engine.ini, Config/Default<PluginName>.ini and Config/Windows/WindowsEngine.ini resolve to engine branches'
-	Write-Output 'PASS: plugin config carriers are checked by resolved branch name, not by file content'
+	Register-Group 'plugin-config-carriers-checked-resolved' 'plugin config carriers are checked by resolved branch name, not by file content'
 	$generatedPlayPath = Join-Path $firstOutput 'Recipe\Play.md'
 	Assert-True (Test-Path -LiteralPath $generatedPlayPath) 'game recipe has a play delta'
 	$generatedPlay = [System.IO.File]::ReadAllText($generatedPlayPath)
@@ -1307,8 +1406,8 @@ try {
 	Assert-True ($lockData.template_defs_ignore_rules.files_to_ignore -eq 4) 'lock records how many file ignore rules the template declared'
 	$otherLockPacks = @($otherLockData.shared_content_packs) -join ','
 	Assert-True ($otherLockPacks -ceq 'Characters,LevelPrototyping,Input') 'the pack list does not depend on the project name'
-	Write-Output 'PASS: raw-copy recipe applies TemplateDefs.ini ignore rules and mounts shared content packs'
-	Write-Output 'PASS: game+capture recipe, official template copy, online plugin, and deterministic lock'
+	Register-Group 'raw-copy-recipe-applies-templatedefs' 'raw-copy recipe applies TemplateDefs.ini ignore rules and mounts shared content packs'
+	Register-Group 'game-capture-recipe-official-template' 'game+capture recipe, official template copy, online plugin, and deterministic lock'
 
 	Invoke-Generator 'vertical-loop' $loopProjectName "$testId-a" @('capture: 1080x1920')
 	$loopOutput = $outputPaths[2]
@@ -1335,7 +1434,7 @@ try {
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $loopOutput 'Media'))) 'video-only recipe honours the blank template FoldersToIgnore for Media'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $loopOutput 'Config\TemplateDefs.ini'))) 'video-only recipe honours the blank template FilesToIgnore'
 	Assert-True (@($loopLock.shared_content_packs).Count -eq 0) 'a template without SharedContentPacks records an empty pack list instead of an invented one'
-	Write-Output 'PASS: capture-only vertical-loop recipe'
+	Register-Group 'capture-only-vertical-loop-recipe' 'capture-only vertical-loop recipe'
 
 	$tpName = "Tp_$testId"
 	Invoke-Generator 'third-person-game' $tpName "$testId-a" @('Variant: Combat')
@@ -1399,10 +1498,10 @@ try {
 	}
 	Assert-True ($tpLock.plugins.GameplayStateTree.version -eq '1.0') 'a plugin one directory deeper than its category is resolved, not recorded as unknown'
 	Assert-True ($tpLock.plugins.StateTree.version -eq '0.1') 'a plugin directly under its category is resolved'
-	Write-Output 'PASS: lock records every enabled plugin of the generated project with its resolved version'
+	Register-Group 'lock-records-every-enabled-plugin' 'lock records every enabled plugin of the generated project with its resolved version'
 	Assert-GeneratorFails { Invoke-Generator 'third-person-game' 'Bad-Name' "$testId-bad" @() } 'materialized recipe rejects non-identifier project names'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $productionRoot "Bad-Name_$testId-bad"))) 'invalid materialized project name creates no output'
-	Write-Output 'PASS: third-person recipe materializes the official template with the implemented TemplateDefs.ini keys'
+	Register-Group 'third-person-recipe-materializes-official' 'third-person recipe materializes the official template with the implemented TemplateDefs.ini keys'
 
 	# --- Reference closure of generated documents (DOT-3441) ------------------------------------
 	# A generated project is handed to an agent without the source checkout, so every repo path a
@@ -1480,7 +1579,7 @@ try {
 	$unmarkedClosure = Get-UnresolvedRepoReferences $closureMutation
 	Assert-True (@($unmarkedClosure.Problems | Where-Object { $_ -match '^docs/05-qa\.md:\d+ points at scripts/' }).Count -ge 1) 'dropping the source-checkout notice from the shipped guide fails the closure check on its scripts/ reference'
 	Remove-Item -LiteralPath $closureMutation -Recurse -Force
-	Write-Output 'PASS: repo paths in generated markdown resolve in the output or are marked source-checkout relative, and the gate names a broken reference'
+	Register-Group 'repo-paths-generated-markdown-resolve' 'repo paths in generated markdown resolve in the output or are marked source-checkout relative, and the gate names a broken reference'
 
 	# --- TemplateDefs.ini rule engine (DOT-3135) -----------------------------------------------
 	# Each group below runs the materialize path in an isolated clone, because the fixture recipe has to
@@ -1550,7 +1649,7 @@ try {
 	Assert-True ([System.IO.File]::ReadAllText($asymCfg) -ceq 'Marker=Zzz_NoSuchSymbol') 'an extension neither rule declares is copied byte for byte'
 	$asymLock = [System.IO.File]::ReadAllText((Join-Path $asym.Output 'template-lock.json')) | ConvertFrom-Json
 	Assert-True (@($asymLock.template_defs.applied_keys) -contains 'FilenameReplacements' -and @($asymLock.template_defs.applied_keys) -contains 'ReplacementsInFiles') 'lock records both rule keys as applied'
-	Write-Output 'PASS: FilenameReplacements renames file names while ReplacementsInFiles rewrites bodies, from separate extension lists'
+	Register-Group 'filenamereplacements-renames-file-names-while' 'FilenameReplacements renames file names while ReplacementsInFiles rewrites bodies, from separate extension lists'
 
 	# From that matches nothing must replace nothing. The declared folder rename still applies, so the
 	# run must stop at the identity check instead of publishing a tree whose module name no longer matches
@@ -1574,7 +1673,7 @@ try {
 	$noMatchRule = [pscustomobject]@{ Extensions=@('cpp'); From='Zzz_NoSuchSymbol'; To=$fromName; CaseSensitive=$true }
 	Assert-True ((Invoke-TemplateRules -Text "// $fromTemplate module impl" -Rules @($noMatchRule) -Extension 'cpp') -ceq "// $fromTemplate module impl") 'a From that occurs nowhere replaces nothing in the file body'
 	Assert-True (-not (Test-Path -LiteralPath $fromCase.Output)) 'identity failure publishes no partial tree'
-	Write-Output 'PASS: a From that matches nothing replaces nothing and the identity mismatch stops the run'
+	Register-Group 'from-matches-nothing-replaces-nothing' 'a From that matches nothing replaces nothing and the identity mismatch stops the run'
 
 	# Keys this generator does not implement (wizard metadata) are reported instead of dropped. The chosen
 	# behaviour is warn-and-continue, because a real engine template carries them and a hard stop would
@@ -1609,7 +1708,7 @@ try {
 		Assert-True (@($keysLock.template_defs.ignored_keys) -notcontains $appliedKey) "lock does not record the applied key $appliedKey as ignored"
 	}
 	Assert-True (@($keysLock.template_defs.unreadable_lines).Count -eq 0) 'every implemented key produced a rule in the unknown-key fixture'
-	Write-Output 'PASS: unimplemented TemplateDefs.ini keys are warned about and recorded in the lock instead of being dropped'
+	Register-Group 'unimplemented-templatedefs-ini-keys-warned' 'unimplemented TemplateDefs.ini keys are warned about and recorded in the lock instead of being dropped'
 
 	# A per-mount DetailLevel that differs from EditDetailLevelPreference must decide the search path. The
 	# pack exists at Low only, so a generator using the template preference (High) would report it missing.
@@ -1631,7 +1730,7 @@ try {
 	$lowLock = [System.IO.File]::ReadAllText((Join-Path $lowCase.Output 'template-lock.json')) | ConvertFrom-Json
 	$lowPack = @($lowLock.template_defs.shared_content_packs | Where-Object { $_.mount -eq 'Characters' })[0]
 	Assert-True ($lowPack.detail_level -eq 'Low' -and $lowPack.declared -eq $true) 'lock records the declared Low level as the one actually used'
-	Write-Output 'PASS: a per-mount DetailLevels declaration decides the search path instead of EditDetailLevelPreference'
+	Register-Group 'per-mount-detaillevels-declaration-decides' 'a per-mount DetailLevels declaration decides the search path instead of EditDetailLevelPreference'
 
 	# A declared level that the installed engine does not have must fall back explicitly: the pack is found
 	# at another level, the run continues, and both the warning and the lock say the level was not declared.
@@ -1652,12 +1751,12 @@ try {
 	$fallbackLock = [System.IO.File]::ReadAllText((Join-Path $fallbackCase.Output 'template-lock.json')) | ConvertFrom-Json
 	$fallbackPack = @($fallbackLock.template_defs.shared_content_packs | Where-Object { $_.mount -eq 'Input' })[0]
 	Assert-True ($fallbackPack.detail_level -eq 'High' -and $fallbackPack.declared -eq $false) 'lock records the fall back level and that it was not the declared one'
-	Write-Output 'PASS: a declared detail level that the engine lacks is replaced by an explicit, recorded fall back'
+	Register-Group 'declared-detail-level-engine-lacks' 'a declared detail level that the engine lacks is replaced by an explicit, recorded fall back'
 
 	Assert-GeneratorFails { Invoke-Generator 'spectator-explore' "..\escape_$testId" 'path-test' @() } 'path traversal project name is rejected'
 	Assert-GeneratorFails { Invoke-Generator 'spectator-explore' "TestExplore_$testId" '..\escape' @() } 'path traversal run ID is rejected'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $productionRoot "escape_$testId"))) 'path traversal did not create an out-of-scope directory'
-	Write-Output 'PASS: path traversal rejected before output creation'
+	Register-Group 'path-traversal-rejected-before-output' 'path traversal rejected before output creation'
 
 	# Recipe layer group (DOT-3118): the selectable recipes are data. The suite proves this by adding
 	# and breaking recipe directories in an isolated clone of the committed template, so the checked-in
@@ -1689,7 +1788,7 @@ try {
 	Assert-True ($captureLock.online_session_identifier -eq $null) 'a recipe without the online plugin records no session identifier'
 	$genreDescriptor = [System.IO.File]::ReadAllText((Join-Path $genreOutput 'TP_FirstPerson.uproject')) | ConvertFrom-Json
 	Assert-True (@($genreDescriptor.Plugins | Where-Object { $_.Name -eq 'MulticaOnlineStarter' }).Count -eq 1) 'the project descriptor enables exactly the plugins the recipe declares'
-	Write-Output 'PASS: a recipe directory added on its own generates a project, and Play.md / required_plugins drive the composition'
+	Register-Group 'recipe-directory-added-own-generates' 'a recipe directory added on its own generates a project, and Play.md / required_plugins drive the composition'
 
 	# Same declared data, different purpose: the purpose is recorded in the lock and in the copied
 	# recipe.json only. Composition (file set, plugins, play delta) must not move, so an agent cannot
@@ -1721,7 +1820,7 @@ try {
 	Assert-True ($purposeCopiedRecipe.purpose -ceq 'game-and-capture') 'the copied Recipe/recipe.json carries the edited purpose verbatim'
 	$purposeLock = [System.IO.File]::ReadAllText((Join-Path $purposeOutput 'template-lock.json')) | ConvertFrom-Json
 	Assert-True ($purposeLock.purpose -ceq 'game-and-capture' -and $captureLock.purpose -ceq 'capture-only') 'the differing purpose is visible in the lock'
-	Write-Output 'PASS: purpose does not change composition; only the lock purpose and the copied recipe.json change'
+	Register-Group 'purpose-change-composition-only-lock' 'purpose does not change composition; only the lock purpose and the copied recipe.json change'
 
 	# required_plugins is the single truth for the plugin payload: removing the online plugin from an
 	# existing recipe must remove Plugins/, the descriptor entry and the lock entry together.
@@ -1751,7 +1850,7 @@ try {
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $withOnlineOutput 'Recipe\Play.md'))) 'adding a plugin does not add a play delta the recipe does not ship'
 	# Restore the committed vertical-loop data so the regression group below measures the shipped recipe.
 	Copy-Item -LiteralPath (Join-Path $repoRoot 'templates\recipes\vertical-loop\recipe.json') -Destination $loopRecipePath -Force
-	Write-Output 'PASS: required_plugins drives the plugin payload, the descriptor and the lock together'
+	Register-Group 'required-plugins-drives-plugin-payload' 'required_plugins drives the plugin payload, the descriptor and the lock together'
 
 	# Stop conditions: every mismatch must refuse before the output directory exists, and none of them
 	# may record an unknown value as an empty string.
@@ -1795,7 +1894,7 @@ try {
 	Assert-True (-not ($listedRecipes -contains 'common')) ('the selectable-recipe list omits the directory that ships no recipe.json, observed: ' + ($listedRecipes -join ', '))
 	Assert-True ($listedRecipes -contains 'spectator-explore' -and $listedRecipes -contains 'vertical-loop') ('the selectable-recipe list names only directories carrying recipe.json, observed: ' + ($listedRecipes -join ', '))
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $recipeRepoProduction "Rh_${testId}_${testId}-common"))) 'choosing a directory without recipe.json creates no output directory'
-	Write-Output 'PASS: recipe data mismatches stop generation before any output directory exists'
+	Register-Group 'recipe-data-mismatches-stop-generation' 'recipe data mismatches stop generation before any output directory exists'
 
 	# Regression: the two original recipes keep the exact tree they had before the data-driven rewrite.
 	$spectatorData.required_plugins = @('MovieRenderPipeline', 'OnlineSubsystem', 'OnlineSubsystemNull', 'OnlineSubsystemUtils', 'MulticaOnlineStarter')
@@ -1822,7 +1921,7 @@ try {
 	$loopRegressionLock = [System.IO.File]::ReadAllText((Join-Path $loopRegressionOutput 'template-lock.json')) | ConvertFrom-Json
 	Assert-True ($loopRegressionLock.recipe -ceq 'vertical-loop' -and (@($loopRegressionLock.plugins.PSObject.Properties.Name) -join ',') -ceq 'MovieRenderPipeline') 'the original video recipe keeps its recorded recipe and single plugin'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $loopRegressionOutput 'Plugins'))) 'the original video recipe still ships no plugin payload'
-	Write-Output 'PASS: the original two recipes keep their recorded recipe, purpose, plugin set and recipe files'
+	Register-Group 'original-two-recipes-keep-their' 'the original two recipes keep their recorded recipe, purpose, plugin set and recipe files'
 
 	# Engine build identity cases (UE-LOCK-001). Each case runs the shipped generator against its own
 	# installed-engine fixture, because the effective changelist, the optional fields and the plugin
@@ -1848,7 +1947,7 @@ try {
 	Assert-True ($null -eq $compatibleOnlyLock.engine_branch_name) 'a missing BranchName is recorded as null, not as an empty string'
 	Assert-True ($null -eq $compatibleOnlyLock.plugins.MovieRenderPipeline.version) 'a plugin that declares no version is recorded as null, not as an empty string'
 	Assert-True ($null -ne $compatibleOnlyLock.plugins.PSObject.Properties['MovieRenderPipeline']) 'the plugin without a declared version is still named in the lock'
-	Write-Output 'PASS: optional engine build fields distinguish unknown (null) from a reported zero'
+	Register-Group 'optional-engine-build-fields-distinguish' 'optional engine build fields distinguish unknown (null) from a reported zero'
 	$emptyBranchEngine = Join-Path $fixtureRoot 'EmptyBranchEngineRoot'
 	New-FixtureEngineRoot $emptyBranchEngine '{"MajorVersion":5,"MinorVersion":8,"PatchVersion":4,"Changelist":0,"BranchName":""}'
 	$emptyBranchName = "Eb_$testId"
@@ -1867,7 +1966,7 @@ try {
 	Assert-True ($changelistOnlyLock.engine_changelist_source -eq 'Changelist') 'the effective changelist names Changelist as its source'
 	Assert-True ($null -eq $changelistOnlyLock.engine_compatible_changelist) 'a missing CompatibleChangelist is recorded as null, not as 0'
 	Assert-True ($changelistOnlyLock.plugins.MovieRenderPipeline.version -eq '1.0') 'a plugin that declares a version records it'
-	Write-Output 'PASS: a Build.version with only Changelist still records its build identity'
+	Register-Group 'build-version-only-changelist-still' 'a Build.version with only Changelist still records its build identity'
 
 	# The baseline wrote the same lock for both: Changelist 0 in both installs, CompatibleChangelist
 	# never read. The lock has to separate them through the raw fields it now records.
@@ -1886,7 +1985,7 @@ try {
 	Assert-True ($installALock.engine_version -eq $installBLock.engine_version) 'the two installs agree on the engine version so only the build identity can separate them'
 	Assert-True ($installALock.engine_compatible_changelist -ne $installBLock.engine_compatible_changelist) 'two installs whose CompatibleChangelist differs record different build identifiers'
 	Assert-True ($installALockText -cne $installBLockText) 'two different engine installs do not produce byte-identical locks'
-	Write-Output 'PASS: two different engine installs do not produce the same lock record'
+	Register-Group 'two-different-engine-installs-produce' 'two different engine installs do not produce the same lock record'
 
 	# Negative cases: a Build.version whose version fields are absent. `[string]$null` is '', so the
 	# baseline concatenated nothing and still reported success with '.8' or '5.8.'. The generator has
@@ -1914,7 +2013,7 @@ try {
 		Assert-True ($caseFailure.Contains($missingCase.Expected)) ('a Build.version without ' + $missingCase.Label + ' stops the generator instead of writing a fabricated value')
 		Assert-True (-not (Test-Path -LiteralPath $caseOutput)) ('a Build.version without ' + $missingCase.Label + ' writes no project')
 	}
-	Write-Output 'PASS: missing or non-numeric version fields stop generation instead of fabricating an empty version string'
+	Register-Group 'missing-non-numeric-version-fields' 'missing or non-numeric version fields stop generation instead of fabricating an empty version string'
 
 	# A Build.version that omits Changelist entirely. UE's own parser leaves the field at 0 when the
 	# file omits it, but an absent key is not the same evidence as a written 0: writing 0 would claim
@@ -1930,7 +2029,7 @@ try {
 	Assert-True ($null -eq $noChangelistLock.engine_changelist_source) 'an unknown effective changelist names no source field'
 	Assert-True ($noChangelistLock.engine_compatible_changelist -eq 44201111) 'the CompatibleChangelist that was present is still recorded'
 	Assert-True ($noChangelistLock.engine_version -eq '5.8.4') 'the version string is complete when every version field exists'
-	Write-Output 'PASS: a Build.version without Changelist records unknown as null instead of 0'
+	Register-Group 'build-version-without-changelist-records' 'a Build.version without Changelist records unknown as null instead of 0'
 
 	# Path-length budget group. The repository records 260 characters as a failure it already hit
 	# (docs/08-online-foundations.md:47), so the generator must stop before the exclusive mkdir when
@@ -2034,7 +2133,7 @@ try {
 	$materializedDir = Join-Path $productionRoot (('{0}_' + $testId) -f $pathBudgetMaterializedName)
 	$actualLongest = (Get-ChildItem -LiteralPath $materializedDir -Recurse -File -Force | ForEach-Object { $_.FullName.Length } | Measure-Object -Maximum).Maximum
 	Assert-True ([int]$materializedMatch.Groups[1].Value -eq $actualLongest) 'the measured longest path equals the longest file actually written for a materializing recipe'
-	Write-Output 'PASS: path-length budget stops before output creation and reports the measured longest path'
+	Register-Group 'path-length-budget-stops-before' 'path-length budget stops before output creation and reports the measured longest path'
 
 	# Negative case: Build.version carries a non-numeric version field. Deriving 5.8 from it would
 	# write a fragment such as '.8' into the descriptor and the lock and then report success, so the
@@ -2059,7 +2158,7 @@ try {
 	}
 	Assert-True ($badVersionFailure.Contains('does not define a numeric MajorVersion')) 'a non-numeric Build.version field stops the generator instead of deriving a fragment'
 	Assert-True (-not (Test-Path -LiteralPath $badVersionOutput)) 'bad Build.version stop writes no project'
-	Write-Output 'PASS: non-numeric Build.version fields stop generation instead of writing a partial EngineAssociation'
+	Register-Group 'non-numeric-build-version-fields' 'non-numeric Build.version fields stop generation instead of writing a partial EngineAssociation'
 
 	# Negative case: the template project file names a module that its Source/ tree does not
 	# contain. The generator must stop instead of emitting a raw copy with an unresolved identity.
@@ -2086,7 +2185,7 @@ try {
 	Assert-True ($driftFailure.Contains('Project identity check stopped')) 'unresolved project identity stops the generator'
 	Assert-True ($driftFailure.Contains('Source/TP_IdentityDrift/TP_IdentityDrift.Build.cs')) 'the stop names the unmatched source path instead of guessing'
 	Assert-True (-not (Test-Path -LiteralPath $driftOutput)) 'identity stop writes no raw-copied project'
-	Write-Output 'PASS: unresolvable project identity stops generation instead of emitting a raw copy'
+	Register-Group 'unresolvable-project-identity-stops-generation' 'unresolvable project identity stops generation instead of emitting a raw copy'
 
 	# Negative case: the QA row check must fail when a row is dropped, so it cannot report PASS on a
 	# template that silently stopped asking for an acceptance item. The copy lives inside the fixture
@@ -2097,7 +2196,7 @@ try {
 	$qaCopyPath = Join-Path $qaFixtureDirectory 'QA.md'
 	[System.IO.File]::WriteAllText($qaCopyPath, [System.IO.File]::ReadAllText($qaSource), [System.Text.UTF8Encoding]::new($false))
 	Assert-QaTemplateContract $qaCopyPath
-	Write-Output 'PASS: an unmodified QA template copy satisfies the row contract'
+	Register-Group 'unmodified-qa-template-copy-satisfies' 'an unmodified QA template copy satisfies the row contract'
 
 	$qaMissingRowFailures = @()
 	foreach ($droppedId in @('QA-NET-02', 'QA-NET-09', 'QA-PLAY-01', 'QA-BUILD-01')) {
@@ -2132,7 +2231,7 @@ try {
 
 	[System.IO.File]::WriteAllText($qaCopyPath, [System.IO.File]::ReadAllText($qaSource), [System.Text.UTF8Encoding]::new($false))
 	Assert-QaTemplateContract $qaCopyPath
-	Write-Output 'PASS: dropping a QA acceptance row fails the row contract and names the missing row'
+	Register-Group 'dropping-qa-acceptance-row-fails' 'dropping a QA acceptance row fails the row contract and names the missing row'
 
 	# Format coverage: the installed engine templates write the same FolderRenames tuple two ways —
 	# `", To="` (TP_Blank and TP_SIM_Blank, the two spaced templates that actually carry Source/)
@@ -2193,7 +2292,7 @@ try {
 	Assert-True ($formatDescriptor.Modules[0].Name -ceq $formatProjectName) 'a spaced FolderRenames tuple keeps descriptor and Source/ in agreement'
 	$formatLock = [System.IO.File]::ReadAllText((Join-Path $formatOutput 'template-lock.json')) | ConvertFrom-Json
 	Assert-True (@($formatLock.identity.project_modules) -join ',' -ceq $formatProjectName) 'the lock records the module name the spaced rule produced'
-	Write-Output 'PASS: TemplateDefs.ini accepts spaced and unspaced separators and reports uninterpretable known-key lines'
+	Register-Group 'templatedefs-ini-accepts-spaced-unspaced' 'TemplateDefs.ini accepts spaced and unspaced separators and reports uninterpretable known-key lines'
 
 	# The warning must not become the whole contract: a FolderRenames line the reader cannot parse
 	# leaves the template's own module directory in place, so the run has to stop on the identity
@@ -2221,7 +2320,7 @@ try {
 	Assert-True ($silentWarningText.Contains('FolderRenames=(From="Source/%TEMPLATENAME%" To=')) 'a FolderRenames line the reader cannot parse is reported'
 	Assert-True ($silentFailure.Contains('Project identity check stopped')) 'an unparsed module rename stops the run instead of reporting success'
 	Assert-True ($silentFailure.Contains('Source/TP_SilentRenames')) 'the stop names the source path that kept the template module name'
-	Write-Output 'PASS: a FolderRenames line the reader drops stops the run through the identity check'
+	Register-Group 'folderrenames-line-reader-drops-stops' 'a FolderRenames line the reader drops stops the run through the identity check'
 
 
 	# Negative case: the template declares ProjectID / ProjectName twice, under two different section
@@ -2264,7 +2363,7 @@ try {
 	if (Test-Path -LiteralPath $ambiguousGameIni -PathType Leaf) {
 		Assert-True (@(Get-DefaultGameSectionEntries $ambiguousOutput).Count -eq 4) 'the stopped run left the template identity untouched instead of writing a fresh one'
 	}
-	Write-Output 'PASS: an identity declared under two section headers stops generation and names the sections'
+	Register-Group 'identity-declared-under-two-section' 'an identity declared under two section headers stops generation and names the sections'
 
 	# The generated project's own Config declares the map it opens. If that map is only available
 
@@ -2301,7 +2400,7 @@ try {
 	& $packMapGenerator -Recipe 'vertical-loop' -ProjectName $packMapProjectName -RunId 'ok' -EngineRoot $fixtureEngine -ProjectDiff @() -AllowDirtyTemplate -MaxPathLength 32767 -SkipTemplatePublishCheck | Out-Null
 	Assert-True (Test-Path -LiteralPath (Join-Path $packMapOutput 'Content\LevelPrototyping\Lvl_Prototype.umap')) 'the default map check accepts a map provided by a declared shared content pack'
 	Assert-True ((([System.IO.File]::ReadAllText((Join-Path $packMapOutput 'template-lock.json'))) | ConvertFrom-Json).shared_content_packs -contains 'LevelPrototyping') 'lock records the pack that supplied the default map'
-	Write-Output 'PASS: default map resolution accepts pack-provided maps'
+	Register-Group 'default-map-resolution-accepts-pack' 'default map resolution accepts pack-provided maps'
 
 	# Negative half: the same template with the pack declaration removed. The map is now nowhere in the
 	# output, so the generator must stop before writing the lock and reporting success.
@@ -2320,7 +2419,7 @@ try {
 	Assert-True ($missingMapFailure.Contains('/Game/LevelPrototyping/Lvl_Prototype')) 'the stop names the declared map package path'
 	Assert-True ($missingMapFailure.Contains('Content/LevelPrototyping/Lvl_Prototype.umap')) 'the stop names the missing asset path instead of guessing'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $missingMapOutput 'template-lock.json'))) 'the default map stop happens before the lock is written, so success is never recorded'
-	Write-Output 'PASS: a missing default map stops generation instead of reporting success'
+	Register-Group 'missing-default-map-stops-generation' 'a missing default map stops generation instead of reporting success'
 	# Negative case: the commit `a9e31bc` shape - a .uplugin that declares a module while no .cpp in
 	# Source/ holds its IMPLEMENT_MODULE entry point. The detector must name the declared module, so
 	# the previous "the descriptor and the folder exist, therefore the module loads" reading cannot
@@ -2339,7 +2438,7 @@ try {
 	Assert-True ($baselineViolations[0].Contains("declares module 'MulticaOnlineStarter'")) 'the entry-point-less plugin is reported by its declared module name, matching the a9e31bc baseline'
 	$declaredModuleOnly = [System.IO.File]::ReadAllText((Join-Path $baselinePluginRoot 'MulticaOnlineStarter.uplugin')) | ConvertFrom-Json
 	Assert-True (@($declaredModuleOnly.Modules).Count -eq 1 -and $declaredModuleOnly.Modules[0].Name -eq 'MulticaOnlineStarter') 'the negative fixture keeps the declaration that the detector must contradict'
-	Write-Output 'PASS: a plugin that declares a module without IMPLEMENT_MODULE fails the module entry-point check'
+	Register-Group 'plugin-declares-module-without-implement' 'a plugin that declares a module without IMPLEMENT_MODULE fails the module entry-point check'
 
 	# Negative case: the entry point is still in the file but commented out. A bare regex over the
 	# file text accepts it while UBT sees no IMPLEMENT_MODULE_<Name> symbol at all, so the commented
@@ -2360,7 +2459,7 @@ try {
 	$commentedViolations = @(Get-PluginModuleEntryPointViolations $commentedPluginRoot)
 	Assert-True ($commentedViolations.Count -eq 1) ('the commented-out entry point is reported exactly once: ' + ($commentedViolations -join '; '))
 	Assert-True ($commentedViolations[0].Contains("no .cpp under") -and $commentedViolations[0].Contains("'MulticaOnlineStarter'")) 'the commented-out entry point is reported as a missing entry point for the declared module'
-	Write-Output 'PASS: a commented-out IMPLEMENT_MODULE does not count as a module entry point'
+	Register-Group 'commented-out-implement-module-count' 'a commented-out IMPLEMENT_MODULE does not count as a module entry point'
 
 	# Negative case: the entry point names a different module than the descriptor declares. UBT
 	# forces a reference to `IMPLEMENT_MODULE_<declared name>`, so a mismatched argument links
@@ -2381,12 +2480,12 @@ try {
 	$mismatchViolations = @(Get-PluginModuleEntryPointViolations $mismatchPluginRoot)
 	Assert-True ($mismatchViolations.Count -eq 2) ('a renamed entry point is reported for both the unbacked declaration and the stray entry point: ' + ($mismatchViolations -join '; '))
 	Assert-True (($mismatchViolations -join ' ').Contains("no .cpp under") -and ($mismatchViolations -join ' ').Contains($mismatchedName)) 'the mismatch report names both the declared module and the entry point that does not match it'
-	Write-Output 'PASS: an IMPLEMENT_MODULE whose module argument differs from the declared module fails the check'
+	Register-Group 'implement-module-whose-module-argument' 'an IMPLEMENT_MODULE whose module argument differs from the declared module fails the check'
 
 	$playerCountGate = Join-Path $PSScriptRoot 'Test-MulticaOnlinePlayerCountContract.ps1'
 	$playerCountFindings = @(& $playerCountGate -RepositoryRoot $repoRoot)
 	Assert-True ($LASTEXITCODE -eq 0) ('the online player-count contract gate passes (the Logout path excludes the leaving controller and keeps the engine predicate): ' + ($playerCountFindings -join '; '))
-	Write-Output 'PASS: online player count excludes the leaving controller and keeps the engine player predicate'
+	Register-Group 'online-player-count-excludes-leaving' 'online player count excludes the leaving controller and keeps the engine player predicate'
 
 	# Delivery contract: docs/06-delivery.md defines the delivery set, AGENTS.md must enumerate the same
 	# files, and every template the set points at must exist. Without this gate an agent can finish a
@@ -2431,7 +2530,7 @@ try {
 	Assert-True ((@(Get-DeliveryContractProblems -RepositoryRoot $contractRepoRoot) -join '; ').Contains('templates/DELIVERY.json: readme_receipt is missing')) 'dropping readme_receipt from the delivery manifest fails the gate'
 	[System.IO.File]::WriteAllText($fixtureDelivery, $fixtureDeliveryBody, $fixtureUtf8)
 	Assert-True (@(Get-DeliveryContractProblems -RepositoryRoot $contractRepoRoot).Count -eq 0) 'every mutation restored leaves the delivery-contract gate silent'
-	Write-Output 'PASS: delivery set, AGENTS.md folder contract and templates agree, and each removal fails the gate'
+	Register-Group 'delivery-set-agents-md-folder' 'delivery set, AGENTS.md folder contract and templates agree, and each removal fails the gate'
 
 	# Negative case: the template enables a plugin that this engine install does not ship. The
 	# generator must stop before creating the output directory instead of writing a lock (and a
@@ -2454,7 +2553,7 @@ try {
 	Assert-True ($pluginGapFailure.Contains('PhantomPlugin')) 'the stop names the unresolvable plugin instead of a generic message'
 	Assert-True ($pluginGapFailure.Contains('PhantomPlugin.uplugin')) 'the stop lists the paths that were searched for the plugin'
 	Assert-True (-not (Test-Path -LiteralPath $pluginGapOutput)) 'the plugin stop creates no output directory'
-	Write-Output 'PASS: an enabled plugin that the installed engine does not ship stops generation before any output'
+	Register-Group 'enabled-plugin-installed-engine-ship' 'an enabled plugin that the installed engine does not ship stops generation before any output'
 
 	# Negative case: the *file* write targets chosen by Config/TemplateDefs.ini. Only the output
 	# directory was ever contained; FolderRenames / SharedContentPacks decided the rest, so a value
@@ -2498,7 +2597,7 @@ try {
 	$wsControlOutput = Join-Path $wsProduction "${wsProjectName}_ws-a"
 	Assert-True (Test-Path -LiteralPath (Join-Path $wsControlOutput "Content2\$wsProjectName\Notes.md")) 'a contained FolderRenames target still materializes normally'
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $wsProduction "Sib_$wsShort"))) 'the control run creates no sibling directory'
-	Write-Output 'PASS: contained FolderRenames target still materializes the template'
+	Register-Group 'contained-folderrenames-target-still-materializes' 'contained FolderRenames target still materializes the template'
 
 	# Case B: FolderRenames To escapes into a sibling directory under Production.
 	Write-FixtureJson (Join-Path $wsTemplateRoot 'Config\TemplateDefs.ini') (@(
@@ -2510,7 +2609,7 @@ try {
 	Assert-True ($wsSiblingFailure.Contains('Container escape stopped the scaffold')) 'a FolderRenames target escaping the output directory stops the generator'
 	Assert-True ($wsSiblingFailure.Contains('FolderRenames')) 'the stop names FolderRenames as the escaping rule'
 	Assert-True (-not (Test-Path -LiteralPath $wsSibling)) 'an escaping FolderRenames target writes no sibling directory'
-	Write-Output 'PASS: FolderRenames target outside the output directory is rejected before writing'
+	Register-Group 'folderrenames-target-outside-output-directory' 'FolderRenames target outside the output directory is rejected before writing'
 
 	# Case C: FolderRenames To escapes Production entirely (repo root).
 	Write-FixtureJson (Join-Path $wsTemplateRoot 'Config\TemplateDefs.ini') (@(
@@ -2523,7 +2622,7 @@ try {
 	Assert-True ($wsOutOfProductionFailure.Contains('outside the allowed root')) 'the stop reports the resolved outside path instead of only failing silently'
 	Assert-True (-not (Test-Path -LiteralPath $wsInRepo)) 'an escaping FolderRenames target writes nothing outside Production'
 	Assert-True (-not (Test-Path -LiteralPath "$wsInRepo\Notes.md")) 'the repo root receives no materialized file from an escaping rename'
-	Write-Output 'PASS: FolderRenames target outside Production is rejected and leaves the repo root untouched'
+	Register-Group 'folderrenames-target-outside-production-rejected' 'FolderRenames target outside Production is rejected and leaves the repo root untouched'
 
 	# Case D: FolderRenames To points into another run's existing working directory.
 	$wsVictim = Join-Path $wsProduction "Other_${wsShort}_run"
@@ -2539,7 +2638,7 @@ try {
 	Assert-True ($wsVictimFailure.Contains('Container escape stopped the scaffold')) 'a FolderRenames target pointing into another run stops the generator'
 	$wsVictimAfter = @(Get-DirectoryFileSet $wsVictim)
 	Assert-True (($wsVictimBefore -join "`n") -ceq ($wsVictimAfter -join "`n")) 'another run working directory keeps its exact file set and contents'
-	Write-Output 'PASS: FolderRenames target inside another run working directory is rejected and leaves it unchanged'
+	Register-Group 'folderrenames-target-inside-another-run' 'FolderRenames target inside another run working directory is rejected and leaves it unchanged'
 
 	# Case E: SharedContentPacks MountName escapes the output directory.
 	Write-FixtureJson (Join-Path $wsTemplateRoot 'Config\TemplateDefs.ini') (@(
@@ -2551,7 +2650,7 @@ try {
 	Assert-True ($wsPackFailure.Contains('Container escape stopped the scaffold')) 'an escaping SharedContentPacks MountName stops the generator'
 	Assert-True ($wsPackFailure.Contains('SharedContentPacks')) 'the stop names SharedContentPacks as the escaping rule'
 	Assert-True (-not (Test-Path -LiteralPath $wsEscapedPack)) 'an escaping MountName copies no pack content outside the output directory'
-	Write-Output 'PASS: SharedContentPacks MountName outside the output directory is rejected before copying'
+	Register-Group 'sharedcontentpacks-mountname-outside-output-directory' 'SharedContentPacks MountName outside the output directory is rejected before copying'
 
 	# Case F: a shared pack file collides with a template-owned file and must not overwrite it.
 	Write-FixtureJson (Join-Path $wsTemplateRoot 'Config\TemplateDefs.ini') (@(
@@ -2563,7 +2662,7 @@ try {
 	$wsCollisionOutput = Join-Path $wsProduction "${wsProjectName}_ws-f"
 	Assert-True (-not (Test-Path -LiteralPath $wsCollisionOutput)) 'a pack collision publishes no partial project'
 	Assert-True ([System.IO.File]::ReadAllText((Join-Path $wsTemplateRoot 'Content\Characters\SK.uasset')) -ceq 'TEMPLATE-OWNED-BYTES') 'the template-owned source file keeps its own bytes after a pack collision'
-	Write-Output 'PASS: shared content pack colliding with a template file is rejected instead of overwriting it'
+	Register-Group 'shared-content-pack-colliding-template' 'shared content pack colliding with a template file is rejected instead of overwriting it'
 
 	$existingOutput = $outputPaths[3]
 	[System.IO.Directory]::CreateDirectory($existingOutput) | Out-Null
@@ -2574,7 +2673,7 @@ try {
 	try { Invoke-Generator 'spectator-explore' $existingProjectName $existingRun @() } catch { $existingFailure = $_.Exception.Message }
 	Assert-True ($existingFailure.Contains('Output already exists; it was not modified')) 'existing output is rejected with the unchanged-output wording'
 	Assert-True ([System.IO.File]::ReadAllText($sentinel) -ceq 'untouched') 'existing output content is not overwritten'
-	Write-Output 'PASS: exclusive output-directory creation preserves existing content'
+	Register-Group 'exclusive-output-directory-creation-preserves' 'exclusive output-directory creation preserves existing content'
 
 	# Ordering contract (UE-FIRSTRUN-001): the documented first run writes preflight and lease to
 	# Production/.runs/run_<runid>/, outside the generated project. Before the fix, every documented
@@ -2615,7 +2714,7 @@ try {
 		Assert-True ($rule.Contains('Production/.runs/run_<runid>/')) 'docs/01-start.md places the lease in Production/.runs/run_<runid>/, outside the generated project'
 	}
 	Assert-True (-not ($startText -split "`n" | Where-Object { $_.Contains('`templates/QA.md`') -and -not $_.Contains('Production/.runs/run_<runid>/preflight.md') }).Count -gt 0) 'docs/01-start.md never treats the tracked template as the record destination'
-	Write-Output 'PASS: preflight/lease placement is stated once and referenced by AGENTS.md, README.md and docs/01-start.md'
+	Register-Group 'preflight-lease-placement-stated-once' 'preflight/lease placement is stated once and referenced by AGENTS.md, README.md and docs/01-start.md'
 
 	# The documented order actually completes: copy the QA template into the ledger directory, leave a
 	# lease there, then generate. The generated project directory is created only by the generator.
@@ -2638,7 +2737,7 @@ try {
 	Assert-GeneratedProject $ledgerProjectName $ledgerProjectNameRun 'the documented preflight -> lease -> generation order completes with a generated project'
 	Assert-True ([System.IO.File]::ReadAllText($preflightPath) -ceq [System.IO.File]::ReadAllText((Join-Path $repoRoot 'templates\QA.md'))) 'the ledger preflight record is left unchanged by generation'
 	Assert-True ([System.IO.File]::ReadAllText((Join-Path (Join-Path $productionRoot ("${ledgerProjectName}_$ledgerProjectNameRun")) 'template-lock.json')) -match '"engine_template":\s*"TP_BlankBP"') 'the generated project records its engine template'
-	Write-Output 'PASS: preflight and lease recorded outside the generated project still allow generation (exit 0)'
+	Register-Group 'preflight-lease-recorded-outside-generated' 'preflight and lease recorded outside the generated project still allow generation (exit 0)'
 
 	# Ordering errors must be distinguishable from a real existing project: an empty directory, a
 	# lease-only directory, and an Out/-only directory all used to produce the same message.
@@ -2648,7 +2747,7 @@ try {
 	Assert-True ($emptyFailure.Contains('Ordering error') -or $emptyFailure.Contains('ordering error')) 'an empty output directory is reported as an ordering error'
 	Assert-True ($emptyFailure.Contains('Production/.runs/run_<runid>/')) 'the empty-directory message names the correct preflight/lease placement'
 	Assert-True (-not $emptyFailure.Contains('An existing output is present')) 'the empty directory is not reported as an existing project'
-	Write-Output 'PASS: an empty generated-project directory is reported as an ordering error, not an existing project'
+	Register-Group 'empty-generated-project-directory-reported' 'an empty generated-project directory is reported as an ordering error, not an existing project'
 
 	$leaseOnlyOutput = Join-Path $productionRoot ("${existingProjectName}_$leaseRunId")
 	[System.IO.Directory]::CreateDirectory($leaseOnlyOutput) | Out-Null
@@ -2657,7 +2756,7 @@ try {
 	Assert-True ($leaseOnlyFailure.Contains('ordering error')) 'a lease-only output directory is reported as an ordering error'
 	Assert-True ($leaseOnlyFailure.Contains('LEASE.json')) 'the lease-only message lists the bookkeeping entry it found'
 	Assert-True ([System.IO.File]::ReadAllText((Join-Path $leaseOnlyOutput 'LEASE.json')) -ceq '{"run":"fixture"}') 'the ordering-error refusal leaves the lease file untouched'
-	Write-Output 'PASS: a lease-only generated-project directory is reported as an ordering error without deleting the lease'
+	Register-Group 'lease-only-generated-project-directory' 'a lease-only generated-project directory is reported as an ordering error without deleting the lease'
 
 	$outOnlyOutput = Join-Path $productionRoot ("${existingProjectName}_$outRunId")
 	[System.IO.Directory]::CreateDirectory((Join-Path $outOnlyOutput 'Out\run_fixture')) | Out-Null
@@ -2666,7 +2765,7 @@ try {
 	Assert-True ($outOnlyFailure.Contains('ordering error')) 'an Out/-only output directory is reported as an ordering error'
 	Assert-True ($outOnlyFailure.Contains('Out')) 'the Out/-only message lists the bookkeeping entry it found'
 	Assert-True (Test-Path -LiteralPath (Join-Path $outOnlyOutput 'Out\run_fixture\QA.md') -PathType Leaf) 'the ordering-error refusal does not delete the existing Out/ content'
-	Write-Output 'PASS: an Out/-only generated-project directory is reported as an ordering error without deleting content'
+	Register-Group 'out-only-generated-project-directory' 'an Out/-only generated-project directory is reported as an ordering error without deleting content'
 
 	# The clean-tree contract is unchanged: editing the tracked QA template still stops generation.
 	$cleanTreeRepoRoot = Join-Path $fixtureRoot 'CleanTreeTemplate'
@@ -2689,11 +2788,11 @@ try {
 	}
 	Assert-True ($cleanTreeFailure.Contains('template working tree is dirty')) 'editing templates/QA.md still stops generation through the clean-tree gate'
 	Assert-True (-not (Test-Path -LiteralPath $cleanTreeOutput)) 'the clean-tree refusal writes no project'
-	Write-Output 'PASS: editing the tracked QA template still stops generation (clean-tree contract preserved)'
+	Register-Group 'editing-tracked-qa-template-still' 'editing the tracked QA template still stops generation (clean-tree contract preserved)'
 
 	Assert-True (-not (Test-Path -LiteralPath (Join-Path $existingOutput 'template-lock.json'))) 'a rejected run adds no completion marker to the existing output'
 	Assert-NoStagingResidue $productionRoot $existingRun
-	Write-Output 'PASS: an existing output is rejected before any copy and its content is preserved'
+	Register-Group 'existing-output-rejected-before-any' 'an existing output is rejected before any copy and its content is preserved'
 
 	# A run that stops after it has already copied parts of the template must publish nothing. Before
 	# the staging rewrite these three cases each left a partial Production/<Name>_<runid>/ that later
@@ -2723,7 +2822,7 @@ try {
 	Assert-True ($midFailFailure.Contains('Required plugin metadata is missing')) 'a missing plugin descriptor stops generation after template staging'
 	Assert-True (-not (Test-Path -LiteralPath $midFailOutput)) 'a mid-copy failure publishes no Production/<Name>_<runid> directory'
 	Assert-NoStagingResidue $productionRoot $midFailRun
-	Write-Output 'PASS: a missing plugin descriptor leaves no published project or staging directory'
+	Register-Group 'missing-plugin-descriptor-leaves-published' 'a missing plugin descriptor leaves no published project or staging directory'
 
 	# Case B: the recipe copy stage stops part-way (a recipe file is missing). The clone lives under a
 	# short directory name and the run id is short because the staging name adds the run id and a
@@ -2745,7 +2844,7 @@ try {
 	Assert-True ($lateFailFailure.Contains('Capture.md')) 'a missing recipe file stops the run at the recipe copy stage'
 	Assert-True (-not (Test-Path -LiteralPath $lateFailOutput)) 'the recipe-copy failure publishes no Production/<Name>_<runid> directory'
 	Assert-NoStagingResidue (Join-Path $recipeRepoRoot 'Production') $lateFailRun
-	Write-Output 'PASS: a failure at the recipe copy stage leaves no partial output project and no staging directory'
+	Register-Group 'failure-recipe-copy-stage-leaves' 'a failure at the recipe copy stage leaves no partial output project and no staging directory'
 
 	# Case C: the same Name/RunId succeeds once the engine is sound again, so a stopped run never
 	# blocks its own retry.
@@ -2754,7 +2853,30 @@ try {
 	Assert-True (Test-Path -LiteralPath (Join-Path $midFailOutput 'TP_FirstPerson.uproject')) 'the retried run publishes the complete project'
 	$retryLock = [System.IO.File]::ReadAllText((Join-Path $midFailOutput 'template-lock.json')) | ConvertFrom-Json
 	Assert-True ($retryLock.identity.project_file -eq 'TP_FirstPerson.uproject') 'the retried run records the same project identity as a first run'
-	Write-Output 'PASS: a stopped run does not block regeneration of the same Name/RunId'
+	Register-Group 'stopped-run-block-regeneration-same' 'a stopped run does not block regeneration of the same Name/RunId'
+
+	# ============================================================ the declared groups all ran
+	# The ledger gate must fail for a dropped, undeclared, duplicated or empty ledger, or it is a
+	# tautology again. Each drift is applied to a copy of what this run registered and has to throw
+	# with the offending identifier in the message; the real ledger is then compared.
+	$selfGroup = 'group-ledger-drift-fails'
+	$simulatedRegistration = @($registeredGroups) + $selfGroup
+	$driftCases = @(
+		@{ Name = 'a declared group that never registers'; Expected = $expectedGroups; Registered = @($simulatedRegistration | Select-Object -Skip 1); Needle = ('missing groups: ' + $expectedGroups[0]) },
+		@{ Name = 'a registered group that was never declared'; Expected = $expectedGroups; Registered = @($simulatedRegistration) + 'injected-undeclared-group'; Needle = 'undeclared groups: injected-undeclared-group' },
+		@{ Name = 'a group that registers twice'; Expected = $expectedGroups; Registered = @($simulatedRegistration) + $expectedGroups[0]; Needle = ('groups registered twice: ' + $expectedGroups[0]) },
+		@{ Name = 'an empty declaration'; Expected = @(); Registered = @($simulatedRegistration); Needle = 'the ledger declares no groups' }
+	)
+	foreach ($driftCase in $driftCases) {
+		$driftMessage = $null
+		try { Assert-GroupLedger $driftCase.Expected $driftCase.Registered } catch { $driftMessage = $_.Exception.Message }
+		Assert-True ($null -ne $driftMessage) ("the ledger gate fails for $($driftCase.Name)")
+		Assert-True ($driftMessage.Contains($driftCase.Needle)) ("the ledger failure for $($driftCase.Name) names it: $($driftCase.Needle); got: $driftMessage")
+	}
+	Assert-GroupLedger $expectedGroups $simulatedRegistration
+	Register-Group $selfGroup 'a declared group that never registers, an undeclared or duplicated group and an empty declaration each fail the ledger by identifier'
+	Assert-GroupLedger $expectedGroups @($registeredGroups)
+	Write-Output ('GROUPS: {0}/{1} registered' -f $registeredGroups.Count, $expectedGroups.Count)
 } catch {
 	# `$_` is not the in-flight error inside a bare `finally`; capture it here so a cleanup failure
 	# cannot hide the original assertion.
