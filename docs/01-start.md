@@ -39,6 +39,8 @@ recipeの正本は各 [`recipe.json`](../templates/recipes/)。選択可能な�
 
 `-Recipe`には `templates/recipes/` にある`recipe.json`付きのレシピ名（上表の3つと、追加したレシピ）を指定する。存在しない名前と`recipe.json`を持たないディレクトリはgeneratorのデータ検証で停止し、出力ディレクトリを作らない。実行前に既存UEのversion/path、当該templateと必要なtoolchainを確認し、`Production/<ProjectName>_<runid>/`が未使用であることを確かめる。生成後は`template-lock.json`の`identity`と`.uproject`のplugin設定を照合してからEditorで開く。generatorはidentityの照合に失敗したら停止し、既存projectを上書きしない。実際のmap/Sequence/作品Contentは生成しない。
 
+作ったlevelやvariantを作品差分としてlockへ残すときは、生成後に`.\scripts\Update-UETemplateProjectDifference.ps1 -LockPath <project>\template-lock.json -Difference '<label>: <value>'`を使う。lockへ足してよいのは`project_differences`だけで、手編集と同じ出力先への再生成は使わない。`identity`ほかのfieldは書き換えない。手動経路でlockを作る・編集することは捏造になるのでしない。値の書式と停止条件は[構造と更新](07-architecture.md)の「`project_differences` の契約」。
+
 生成前にtemplate側のprovenanceも検査される。既定では、記録する`template_commit`を`template_repository`（実測したclone元）から`git fetch`で取得できることを確認し、取得不能・未push・origin無し・bundleなどなら停止する。停止した場合は先にcommitをrepoへpushするか、その状態で作業する必要がある場合だけ`-AllowUnpublishedTemplate`（lockに実測の`false`/`null`を残す）または`-SkipTemplatePublishCheck`（probeせず`null`）を明示する。`template_commit_published`が`true`でないlockは、`template_commit`を取得できる保証がないため、第三者へ渡さない（新RunIdで再生成する）。契約は[構造と更新](07-architecture.md)。
 
 ### パス長の予算

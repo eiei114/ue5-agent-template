@@ -225,6 +225,28 @@ lockはtemplate commit SHA、clean/dirty状態、UE version/changelist、Engine/
 
 共通更新は新RunIdの空Production directoryへ生成し、既存projectを上書きせず、lock・作品差分・移行手順・対象版の検品結果を比較する。UE/Plugin更新の自動伝播はしない。
 
+### `project_differences` の契約（正本はここ1箇所）
+
+`project_differences` は作品側で決めた差分（作ったmap・選んだvariant・GameModeなど）を固定する、lockの再現性成果物の一部である。**生成後にlockへ足してよいfieldはこれだけ**で、`identity` / `schema_version` / `template_*` / `engine_*` / `plugins` ほかの全fieldは生成後に変えない。足す経路は1本だけで、手編集でも同じ出力先への再生成でもない。
+
+```powershell
+.\scripts\Update-UETemplateProjectDifference.ps1 -LockPath Production\<Name>_<runid>\template-lock.json -Difference 'Map: /Game/<Name>/Maps/<Level>'
+```
+
+このscriptは、lockを読み、(1) `schema_version` が5以上でJSONとして読めること、(2) `identity` がlockの隣の`.uproject`（project file名・module名・`EngineAssociation`）と一致すること、(3) 既存値と追加値の全部が下の書式に合うことを確かめ、`project_differences` 配列の文字列だけを置き換える。置換前後でそれ以外のfieldが等しいこと（本文のbyteも配列部分を除いて同一）を自分で確かめてから、同じdirectoryの一時fileと原子的置換で書く。確認に失敗した場合、またはlockが読み取りから書き込みまでの間に変わった場合は停止し、lockを書き換えない・修復しない。追記前後のSHA256を出力し、追記が説明できるようにする。値が既に記録済みなら何も書かない。
+
+値の書式は `<label>: <value>`（自由文ではない）。labelは先頭が英字の2〜40文字（ASCII英数字・空白・`_`・`.`・`-`、末尾は空白以外）、コロンの後に空白1つと空でないvalueを置く。生成時の`-ProjectDiff`と追記時の`-Difference`は**同じ検証関数**（`scripts/UETemplateProjectDifference.ps1`）を通り、次は停止条件で、値を直して続行することはしない。
+
+| 停止条件 | 例 |
+|---|---|
+| 制御文字（改行・タブなど） | `Note: 1行目<LF>2行目` |
+| 長さ上限200文字（trim後）超過 | 201文字の値 |
+| ホスト固有の絶対path（drive path・先頭の`/`か`\`・UNC） | `C:\Users\x\note.txt` / `Path: D:/work/x` / `\\server\share` |
+| 親ディレクトリ参照（区切りか空白に挟まれた`..`） | `Map: ../../Outside/Thing` |
+| 書式違反（labelなし・コロンの後に空白がない） | `free text` / `Map:/Game/X` |
+
+Unrealのpackage path（`/Game/...`）はlabel付きのvalueとして許す。空・空白のみの値は従来どおり捨て、重複除去とOrdinal sortは変えない。生成時に違反した場合は出力directoryもstagingも作らない。`scripts/Test-UETemplateScaffold.ps1` が、lockの値がCLI入力のtrim・重複除去・sort後と一致すること（正規化を固定文字列に差し替えた変異が落ちること）、各停止条件、追記経路が`project_differences`以外を変えないこと、identityを改変したlockを拒否してbyte不変であることを固定している。
+
 ### 変更理由・移行手順の宛先（`CHANGELOG.md`）
 
 上の「移行手順を比較する」は、差分を読んだ人が後から追える形で残さなければ意味がない。置き場はリポジトリ直下の `CHANGELOG.md` 1 つだけ（作品ごとの記録は作品の `QA.md` / `DELIVERY.json`）。`## ` 見出しは `## Unreleased — <DOT番号 or 名前> — <YYYY-MM-DD or 40桁SHA>` の形にし、識別子は必須。各節の本文に (1) 何が変わったか、(2) 移行が必要か（不要なら「移行不要」）、(3) Unverified Scope を 1 項目ずつ書く。識別子は日付を必須、SHA は書かれたときだけ `git cat-file -e <sha>^{commit}` で解決を検査する（CI の checkout が shallow で古い SHA を解決できないため）。
@@ -233,7 +255,7 @@ lockはtemplate commit SHA、clean/dirty状態、UE version/changelist、Engine/
 
 **変更理由:** 共通環境の二重管理を避けながら、同じsetのプレイ/撮影と映像専用入口を小さく始める。生成時のdependency driftをlockで可視化し、template更新で制作中作品を壊さない。
 
-lockは`schema_version: 5`で、上記3項目を`identity`に持ち、plugin identityを`plugins`に持つ。単位は作品（`Production/<Name>_<runid>/template-lock.json`）であり、identityを手で書き換えない。
+lockは`schema_version: 5`で、上記3項目を`identity`に持ち、plugin identityを`plugins`に持つ。単位は作品（`Production/<Name>_<runid>/template-lock.json`）であり、identityを手で書き換えない。lockは手編集しない（生成後に変えてよいのは`project_differences`だけで、その経路は「`project_differences` の契約」の1本）。
 
 ### plugin identity契約（1つだけ）
 
